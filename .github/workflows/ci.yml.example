@@ -1,0 +1,31 @@
+# vibe-starter CI skeleton — INACTIVE.
+#
+# This file is named ci.yml.example on purpose: GitHub Actions only runs *.yml,
+# so a freshly-cloned, stackless repo stays green instead of going red on its
+# first push. Once you choose a stack:
+#   1. rename this to ci.yml
+#   2. uncomment the Install / Tests steps and fill in {{INSTALL_CMD}} / {{TEST_CMD}}
+#
+# The check step (scripts/check.sh) is stack-neutral and can run as-is.
+
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # - name: Install
+      #   run: {{INSTALL_CMD}}
+
+      - name: Checks (guards run before tests)
+        run: ./scripts/check.sh
+
+      # - name: Tests
+      #   run: {{TEST_CMD}}

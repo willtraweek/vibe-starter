@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# vibe-starter bootstrap — run once on a fresh clone to personalize the template.
+#
+# Usage:
+#   ./bootstrap                         # interactive (prompts for the name)
+#   ./bootstrap --name my-project       # non-interactive name
+#   ./bootstrap --name my-project --yes # no prompts at all
+#
+# It replaces the bootstrap-owned placeholders ({{PROJECT_NAME}}, {{YEAR}}),
+# initializes git if needed, optionally notes gstack, prints a checklist of the
+# placeholders you still need to hand-fill, then deletes itself and TEMPLATE.md.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+ROOT="$(pwd)"
+
+# --- Re-entry guard (must be first) -----------------------------------------
+if [ -f .bootstrapped ]; then
+  echo "Already bootstrapped ($(cat .bootstrapped)). Nothing to do."
+  exit 0
+fi
+
+# --- Parse args -------------------------------------------------------------
+NAME=""
+ASSUME_YES=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --name)   NAME="${2:-}"; shift 2 ;;
+    --name=*) NAME="${1#*=}"; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    -h|--help) echo "Usage: ./bootstrap [--name <project>] [--yes]"; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# --- Project name -----------------------------------------------------------
+default="$(basename "$ROOT")"
+if [ -z "$NAME" ]; then
+  if [ "$ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+    NAME="$default"
+  else
+    printf "Project name [%s]: " "$default"
+    read -r NAME </dev/tty || NAME=""
+    [ -z "$NAME" ] && NAME="$default"
+  fi
+fi
+case "$NAME" in
+  *[!A-Za-z0-9._\ -]*) echo "Project name has unexpected characters: '$NAME'" >&2; exit 2 ;;
+esac
+YEAR="$(date +%Y)"
+echo "Personalizing template -> name='$NAME', year='$YEAR'"
+
+# --- Replace bootstrap-owned placeholders -----------------------------------
+# Portable in-place edit via perl (uniform on macOS/BSD + Linux). Values are
+# passed through the environment so they're never re-interpreted as regex/shell.
+# The bootstrap script itself is excluded so its literal tokens survive until
+# self-delete.
+files="$(grep -rlI \
+  --exclude=bootstrap \
+  --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv \
+  --exclude-dir=target --exclude-dir=dist \
+  -e '{{PROJECT_NAME}}' -e '{{YEAR}}' . 2>/dev/null || true)"
+if [ -n "$files" ]; then
+  printf '%s\n' "$files" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    NAME="$NAME" YEAR="$YEAR" perl -pi -e \
+      's/\Q{{PROJECT_NAME}}\E/$ENV{NAME}/g; s/\Q{{YEAR}}\E/$ENV{YEAR}/g' "$f"
+  done
+  echo "Replaced {{PROJECT_NAME}} / {{YEAR}} across the docs."
+fi
+
+# --- git init (only if not already a repo) ----------------------------------
+if [ ! -d .git ]; then
+  git init -q && echo "Initialized a fresh git repository."
+fi
+
+# --- Optional gstack wiring (guarded; gstack is not on PATH) -----------------
+GSTACK_SLUG="$HOME/.claude/skills/gstack/bin/gstack-slug"
+if [ -x "$GSTACK_SLUG" ]; then
+  eval "$("$GSTACK_SLUG" 2>/dev/null)" 2>/dev/null || true
+  echo "gstack detected (slug: ${SLUG:-unknown})."
+else
+  echo "gstack not found on this machine -> skipped (harmless)."
+fi
+
+# --- First-run checklist ----------------------------------------------------
+cat <<'CHECKLIST'
+
+Bootstrap done. Hand-fill the placeholders that remain (grep the repo for '{{' ):
+  CLAUDE.md   - tagline, architecture, key files, command placeholders
+  AGENTS.md   - install command, trust boundary, ship gate
+  TESTING.md  - tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
+  README.md   - what / why / stack
+  TODOS.md    - the first real task
+Then choose a stack and:
+  - add the build/test files (package.json / pyproject.toml / Cargo.toml ...)
+  - uncomment your language section in .gitignore
+  - rename .github/workflows/ci.yml.example -> ci.yml and fill in the test command
+  - delete DESIGN.md and/or MISSION.md if this project doesn't need them
+CHECKLIST
+
+# --- Finalize: mark done, drop template meta, self-delete (last) ------------
+date +%Y-%m-%d > .bootstrapped
+rm -f TEMPLATE.md
+rm -f "$ROOT/bootstrap"
+echo "Removed bootstrap. Welcome to $NAME."
