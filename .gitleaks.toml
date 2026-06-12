@@ -1,0 +1,13 @@
+title = "{{PROJECT_NAME}} gitleaks config"
+
+# Build on gitleaks' default ruleset (API keys, private keys, tokens, etc.).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths that legitimately contain key-shaped placeholders"
+paths = [
+  '''\.env\..*\.example$''',
+  '''(^|/)tests?/fixtures/''',
+  '''(^|/)CHANGELOG\.md$''',
+]

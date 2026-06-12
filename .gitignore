@@ -1,0 +1,50 @@
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# --- Secrets / env (keep the *.example templates) ---
+.env
+.env.*
+!.env.*.example
+
+# --- Logs ---
+*.log
+logs/
+
+# --- gstack / Conductor local state ---
+.gstack/
+brain-cache/
+# .context/ is local scratch (Conductor handoff space); never committed.
+# How the workflow works: docs/context-workflow.md
+.context/
+
+# --- Claude Code local overrides (project-shared settings.json stays tracked if you add one) ---
+.claude/settings.local.json
+
+# =========================================================================
+# Language sections — uncomment the block(s) for your chosen stack.
+# =========================================================================
+
+# --- Python ---
+# __pycache__/
+# *.py[cod]
+# .venv/
+# venv/
+# .pytest_cache/
+# .mypy_cache/
+# .ruff_cache/
+# dist/
+# *.egg-info/
+
+# --- Node / TypeScript ---
+# node_modules/
+# dist/
+# build/
+# .turbo/
+# *.tsbuildinfo
+# *.bun-build
+
+# --- Rust ---
+# /target/
