@@ -25,7 +25,7 @@ if command -v "$GITLEAKS_BIN" >/dev/null 2>&1; then
   echo "- gitleaks: scanning the files git would commit..."
   # Absolute path: the scan below runs from inside a temp dir.
   GITLEAKS_BIN="$(command -v "$GITLEAKS_BIN")"
-  case "$GITLEAKS_BIN" in /*) ;; *) GITLEAKS_BIN="$root/$GITLEAKS_BIN" ;; esac
+  case "$GITLEAKS_BIN" in /*) ;; */*) GITLEAKS_BIN="$root/$GITLEAKS_BIN" ;; esac
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     scan_dir="$(mktemp -d "${TMPDIR:-/tmp}/check-gitleaks.XXXXXX")"
     trap 'rm -rf "$scan_dir"' EXIT
