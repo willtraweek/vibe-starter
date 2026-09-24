@@ -48,25 +48,33 @@ if [ "$NAME_GIVEN" = "1" ] && [ -z "$NAME" ]; then
   exit 2
 fi
 
+# --- Is this directory its own git repo? ------------------------------------
+# `git rev-parse`, not `[ -d .git ]`: in worktrees and submodules .git is a
+# file. Only this directory's own repo counts: git also finds an enclosing
+# repo, which belongs to a different project. `-ef` compares inodes, so
+# symlinked paths (macOS /tmp -> /private/tmp) and case-insensitive
+# filesystems still match.
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+OWN_REPO=0
+if [ -n "$TOPLEVEL" ] && [ "$TOPLEVEL" -ef . ]; then OWN_REPO=1; fi
+
 # --- Refuse to personalize the template itself ------------------------------
 # Default name source: the `origin` remote's repo name. NOT the directory name
 # alone: in a Conductor workspace that is the workspace codename (e.g.
-# "montreal"), which is never the project's name. Only this directory's own
-# repo counts: a copy nested inside another repo must not take that repo's name.
-# `-ef` compares inodes, so symlinked paths (macOS /tmp -> /private/tmp) and
-# case-insensitive filesystems still match.
-toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-OWN_REPO=0
-if [ -n "$toplevel" ] && [ "$toplevel" -ef . ]; then OWN_REPO=1; fi
+# "montreal"), which is never the project's name.
 remote_repo_name() {
   local url
   [ "$OWN_REPO" = "1" ] || return 0
   url="$(git remote get-url origin 2>/dev/null)" || return 0
-  # Strip trailing slashes and .git suffixes (any case, any order) so
-  # .../widget/, .../widget.GIT// and a local .../widget.git/.git all give "widget".
+  # Drop user:token@ so a URL with no repo path can't turn a token into a name.
+  case "$url" in *://*@*) url="${url%%://*}://${url#*://*@}" ;; esac
+  # Strip trailing /, /., /.. and .git (any case, any order) so .../widget/,
+  # .../widget.GIT// and a local .../widget.git/.git/. all give "widget".
   while :; do
     case "$url" in
       */) url="${url%/}" ;;
+      */.) url="${url%/.}" ;;
+      */..) url="${url%/..}"; url="${url%/*}" ;;
       *.[Gg][Ii][Tt]) url="${url%????}" ;;
       *) break ;;
     esac
@@ -74,15 +82,17 @@ remote_repo_name() {
   printf '%s\n' "${url##*[/:]}"
 }
 REMOTE_NAME="$(remote_repo_name)"
-# Case-insensitive (GitHub URLs are); the message never echoes the URL, which
-# can carry a token.
-if [ "$(printf '%s' "$REMOTE_NAME" | tr '[:upper:]' '[:lower:]')" = "vibe-starter" ] \
-  && [ "$FORCE" != "1" ]; then
-  echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
-  echo "(origin repo: $REMOTE_NAME). Run ./bootstrap in a repo created from the" >&2
-  echo "template, or pass --force --name <project> if you really mean it." >&2
-  exit 3
-fi
+# Case-insensitive (GitHub URLs are) without tr, whose case mapping depends on
+# the locale. The message never echoes the URL, which can carry a token.
+case "$REMOTE_NAME" in
+  [Vv][Ii][Bb][Ee]-[Ss][Tt][Aa][Rr][Tt][Ee][Rr])
+    if [ "$FORCE" != "1" ]; then
+      echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
+      echo "(origin repo: $REMOTE_NAME). Run ./bootstrap in a repo created from the" >&2
+      echo "template, or pass --force --name <project> if you really mean it." >&2
+      exit 3
+    fi ;;
+esac
 
 # --- Project name -----------------------------------------------------------
 default="${REMOTE_NAME:-$(basename "$ROOT")}"
@@ -95,12 +105,18 @@ if [ -z "$NAME" ]; then
     [ -z "$NAME" ] && NAME="$default"
   fi
 fi
+# A rejected default should say where it came from and how to override it.
+NAME_HINT=""
+if [ "$NAME_GIVEN" != "1" ] && [ "$NAME" = "$default" ]; then
+  if [ -n "$REMOTE_NAME" ]; then from="the origin remote"; else from="the directory name"; fi
+  NAME_HINT=" (from $from; pass --name <project>)"
+fi
 case "$NAME" in
   [A-Za-z0-9]*) ;;
-  *) echo "Project name must start with a letter or digit: '$NAME'" >&2; exit 2 ;;
+  *) echo "Project name must start with a letter or digit: '$NAME'$NAME_HINT" >&2; exit 2 ;;
 esac
 case "$NAME" in
-  *[!A-Za-z0-9._\ -]*) echo "Project name has unexpected characters: '$NAME'" >&2; exit 2 ;;
+  *[!A-Za-z0-9._\ -]*) echo "Project name has unexpected characters: '$NAME'$NAME_HINT" >&2; exit 2 ;;
 esac
 YEAR="$(date +%Y)"
 echo "Personalizing template -> name='$NAME', year='$YEAR'"
@@ -125,17 +141,17 @@ if [ -n "$files" ]; then
 fi
 
 # --- git init (only if this directory is not already a repository root) ------
-# OWN_REPO comes from `git rev-parse` above, not `[ -d .git ]`: in worktrees
-# and submodules .git is a file. A .git that git can't read (corrupt, or owned
-# by another user) is left alone, as the old `[ -d .git ]` check did.
+# OWN_REPO comes from "Is this directory its own git repo?" above. Never
+# re-initialize an existing .git, even one git can't read (corrupt, owned by
+# another user, or a dangling symlink).
 if [ "$OWN_REPO" = "1" ]; then
   echo "Already a git repository - skipped git init."
-elif [ -e .git ]; then
+elif [ -e .git ] || [ -L .git ]; then
   echo "Found a .git that git can't read - left it alone and skipped git init."
 elif git init -q; then
   echo "Initialized a fresh git repository."
-  if [ -n "$toplevel" ]; then
-    echo "Note: this directory is inside another repository ($toplevel); it now has its own nested repo."
+  if [ -n "$TOPLEVEL" ]; then
+    echo "Note: this directory is inside another repository ($TOPLEVEL); it now has its own nested repo."
   fi
 else
   echo "git init failed (is git installed?) - skipped."

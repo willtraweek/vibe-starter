@@ -296,11 +296,15 @@ test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
   # Any case or URL shape, even with an explicit --name. The URL can carry a token.
   local i=0 url d rc
   for url in git@github.com:acme-example/Vibe-Starter.git \
+             https://github.com/acme-example/VIBE-STARTER.git \
              ssh://git@github.com/acme-example/vibe-starter \
+             git@git.example.com:vibe-starter.git \
              https://github.com/acme-example/vibe-starter/ \
              https://github.com/acme-example/vibe-starter.GIT// \
              /srv/git/vibe-starter/.git \
              /srv/git/vibe-starter.git/.git \
+             /srv/git/vibe-starter/.git/. \
+             /srv/git/vibe-starter/.git/.. \
              https://user-example:not-a-real-token@github.com/acme-example/vibe-starter.git; do
     i=$((i + 1)); d="$WORK/refuse-variants/$i/proj"
     fresh_copy "$d"
@@ -376,6 +380,7 @@ test_bootstrap_name_must_start_with_a_letter_or_digit() {
   run_bootstrap "$d" --yes; rc=$?
   assert_exit 2 "$rc" || return 1
   assert_contains "$d.out" "must start with a letter or digit: '.dotfiles'" || return 1
+  assert_contains "$d.out" "(from the origin remote; pass --name <project>)" || return 1
   [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections" || return 1
   run_bootstrap "$d" --name 9lives --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d/.gitleaks.toml" 'title = "9lives gitleaks config"'
@@ -396,9 +401,46 @@ test_bootstrap_leaves_an_unreadable_git_alone() {
   fresh_copy "$d"
   (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
-  assert_contains "$d.out" "skipped git init" || return 1
+  assert_contains "$d.out" "Found a .git that git can't read" || return 1
   assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
   assert_absent "$d/.git/HEAD"
+}
+test_bootstrap_leaves_a_dangling_git_symlink_alone() {
+  # -e follows symlinks, so a dangling .git link looked absent and git init
+  # created a repository at its target, outside the project.
+  local d="$WORK/dangling-link/proj" target="$WORK/dangling-link/elsewhere/.git"
+  fresh_copy "$d"
+  mkdir -p "${target%/.git}" && ln -s "$target" "$d/.git" || fail "symlink setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "Found a .git that git can't read" || return 1
+  assert_absent "$target"
+}
+test_bootstrap_origin_shapes_give_the_repo_name() {
+  # The name is the repo after the last / or :, near-misses of the template's
+  # name are not refused, and a token in a URL with no repo path never shows.
+  local i=0 pair url want d
+  for pair in 'git@git.example.com:widget.git|widget' \
+              'git@github.com:acme-example/vibe-starter-app.git|vibe-starter-app' \
+              'https://github.com/vibe-starter/widget.git|widget' \
+              'https://user-example:not-a-real-token@git.example.com/|git.example.com'; do
+    url="${pair%|*}"; want="${pair#*|}"
+    i=$((i + 1)); d="$WORK/origin-shapes/$i/proj"
+    fresh_copy "$d"
+    (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
+    run_bootstrap "$d" --yes || fail "origin $url: bootstrap exited $?: $(cat "$d.out")" || return 1
+    assert_contains "$d/.gitleaks.toml" "title = \"$want gitleaks config\"" || return 1
+    assert_not_contains "$d.out" "not-a-real-token" || return 1
+  done
+}
+test_bootstrap_non_tty_without_yes_takes_the_default_silently() {
+  # Plan 003 defect 1's agent path: no --name, no --yes, stdin not a TTY.
+  local d="$WORK/no-yes/montreal"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/widget.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_not_contains "$d.out" "Project name [" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "widget gitleaks config"'
 }
 
 # --- runner -------------------------------------------------------------------
