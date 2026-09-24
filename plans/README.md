@@ -12,7 +12,7 @@ deletes `plans/`, so none of this reaches projects created from the template.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | DONE (11 tests: the plan's 9 + 2 approved review fixes) |
-| [002](002-trustworthy-check-guards.md) | Make `scripts/check.sh` trustworthy: scan what git would commit, fail closed in CI, keep `.env.example` committable | P1 | S | 001 | TODO |
+| [002](002-trustworthy-check-guards.md) | Make `scripts/check.sh` trustworthy: scan what git would commit, fail closed in CI, keep `.env.example` committable | P1 | S | 001 | DONE (18 tests: 001's 11 + the plan's 7) |
 | [003](003-harden-bootstrap.md) | Harden `bootstrap`: remote-derived name, refuse to run on the template, strict args, worktree-aware git init | P1 | S | 001 | TODO |
 | [004](004-agents-md-only.md) | Fold `CLAUDE.md` into `AGENTS.md` (one instruction file), and keep gstack from quietly recreating it | P1 | M | 001, 002, 003 | TODO |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | TODO |
