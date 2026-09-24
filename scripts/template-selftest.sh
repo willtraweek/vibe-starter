@@ -12,12 +12,21 @@
 # no associative arrays, no ${var,,}, no `local -n`.
 set -uo pipefail   # no -e: one failing assertion must not abort the whole run
 
+# git exports GIT_DIR and friends to aliases, hooks, `rebase -x` and
+# `bisect run`. Left set, the `git init` in a temp copy re-initializes the
+# caller's repository instead (as bare, from a linked worktree), so drop them.
+for v in $(git rev-parse --local-env-vars); do unset "$v"; done
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 if ! git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "selftest: $REPO is not a git checkout (fresh_copy needs git ls-files)" >&2
   exit 2
 fi
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/vs-selftest.XXXXXX")"
+# Unchecked, a failed mktemp leaves WORK empty and roots every fixture at /.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/vs-selftest.XXXXXX")" || {
+  echo "selftest: cannot create a temp dir under ${TMPDIR:-/tmp}" >&2
+  exit 2
+}
 trap 'rm -rf "$WORK"' EXIT
 FILTER="${1:-}"
 PASS=0; FAIL=0; SKIP=0
@@ -153,6 +162,28 @@ test_check_passes_on_clean_template() {
   fresh_copy "$d"
   (cd "$d" && git init -q && git add -A && git commit -qm init) || fail "git setup failed" || return 1
   (cd "$d" && ./scripts/check.sh >"$d.out" 2>&1) || fail "check.sh exited $?: $(tail -5 "$d.out")"
+}
+
+# --- tests: the harness itself ------------------------------------------------
+test_selftest_ignores_inherited_git_env() {
+  # A nested run under an inherited GIT_DIR (a worktree-style gitdir, so git
+  # would guess "bare") must still bootstrap its own copy and leave that
+  # repository alone.
+  local d="$WORK/inherited-git-env"
+  mkdir -p "$d"
+  git init -q --separate-git-dir "$d/caller.git" "$d/caller" || fail "caller repo setup failed" || return 1
+  GIT_DIR="$d/caller.git" "$REPO/scripts/template-selftest.sh" happy_path >"$d.out" 2>&1 \
+    || fail "nested run under GIT_DIR failed: $(tail -3 "$d.out")" || return 1
+  [ "$(git --git-dir="$d/caller.git" config --bool core.bare)" = "false" ] \
+    || fail "the nested run re-initialized the GIT_DIR repository"
+}
+test_selftest_refuses_an_unusable_tmpdir() {
+  # The filter matches no test, so even a regressed harness creates nothing.
+  local d="$WORK/bad-tmpdir" rc
+  mkdir -p "$d"
+  TMPDIR="$d/missing" "$REPO/scripts/template-selftest.sh" no-such-test >"$d.out" 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "cannot create a temp dir"
 }
 
 # --- runner -------------------------------------------------------------------
