@@ -16,7 +16,9 @@ permissions:
 jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
-    runs-on: ubuntu-latest
+    # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
+    # job cap). It ships bash, git, perl, GNU tar, curl and shellcheck: all this needs.
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
 
