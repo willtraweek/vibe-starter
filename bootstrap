@@ -43,8 +43,26 @@ if [ "$NAME_GIVEN" = "1" ] && [ -z "$NAME" ]; then
   exit 2
 fi
 
+# --- Refuse to personalize the template itself ------------------------------
+# Default name source: the `origin` remote's repo name. NOT the directory name
+# alone: in a Conductor workspace that is the workspace codename (e.g.
+# "montreal"), which is never the project's name.
+remote_repo_name() {
+  local url
+  url="$(git remote get-url origin 2>/dev/null)" || return 0
+  url="${url%/}"; url="${url%.git}"
+  printf '%s\n' "${url##*[/:]}"
+}
+REMOTE_NAME="$(remote_repo_name)"
+if [ "$REMOTE_NAME" = "vibe-starter" ] && [ "$FORCE" != "1" ]; then
+  echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
+  echo "(origin: $(git remote get-url origin)). Run ./bootstrap in a repo created" >&2
+  echo "from the template, or pass --force if you really mean it." >&2
+  exit 3
+fi
+
 # --- Project name -----------------------------------------------------------
-default="$(basename "$ROOT")"
+default="${REMOTE_NAME:-$(basename "$ROOT")}"
 if [ -z "$NAME" ]; then
   if [ "$ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
     NAME="$default"
@@ -54,6 +72,10 @@ if [ -z "$NAME" ]; then
     [ -z "$NAME" ] && NAME="$default"
   fi
 fi
+case "$NAME" in
+  [A-Za-z0-9]*) ;;
+  *) echo "Project name must start with a letter or digit: '$NAME'" >&2; exit 2 ;;
+esac
 case "$NAME" in
   *[!A-Za-z0-9._\ -]*) echo "Project name has unexpected characters: '$NAME'" >&2; exit 2 ;;
 esac
