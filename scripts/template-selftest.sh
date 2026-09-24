@@ -330,6 +330,76 @@ test_bootstrap_repo_reached_through_a_symlink_skips_git_init() {
   run_bootstrap "$link" --name proj --yes || fail "bootstrap exited $?: $(cat "$link.out")" || return 1
   assert_contains "$link.out" "Already a git repository"
 }
+test_bootstrap_refuses_the_template_from_a_worktree() {
+  # The maintainer's real layout: a Conductor workspace is a linked worktree of
+  # the template, so .git is a file and origin lives in the main repo's config.
+  local main="$WORK/wt-template/main" wt="$WORK/wt-template/montreal" before rc
+  fresh_copy "$main"
+  (cd "$main" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git \
+    && git add -A && git commit -qm init && git worktree add -q "$wt" -b feature) \
+    || fail "worktree setup failed" || return 1
+  before="$(tree_fingerprint "$wt")"
+  run_bootstrap "$wt" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$wt.out" "vibe-starter template repo itself" || return 1
+  [ "$before" = "$(tree_fingerprint "$wt")" ] || fail "files changed despite the refusal"
+}
+test_bootstrap_reports_a_failed_git_init() {
+  # A git that fails every call (here: a stub standing in for "not installed")
+  # must not abort the run: bootstrap says so and finishes without a repo.
+  local d="$WORK/no-git/proj" bin="$WORK/no-git/bin" rc
+  fresh_copy "$d"
+  mkdir -p "$bin" && printf '#!/bin/sh\nexit 127\n' > "$bin/git" && chmod +x "$bin/git" \
+    || fail "git stub setup failed" || return 1
+  (PATH="$bin:$PATH"; run_bootstrap "$d" --name proj --yes); rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.out" "git init failed (is git installed?) - skipped." || return 1
+  assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
+  assert_absent "$d/.git" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "proj gitleaks config"' || return 1
+  assert_exists "$d/.bootstrapped" || return 1
+  assert_absent "$d/bootstrap"
+}
+test_bootstrap_name_must_start_with_a_letter_or_digit() {
+  # Explicit names and an origin-derived default get the same leading-character
+  # rule, and a rejected default is recoverable with --name.
+  local d="$WORK/leading-char/proj" before rc name
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/.dotfiles.git) \
+    || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  for name in .hidden _private .. ' spaced'; do
+    run_bootstrap "$d" --name "$name" --yes; rc=$?
+    [ "$rc" -eq 2 ] || fail "name '$name': expected exit 2, got $rc" || return 1
+    assert_contains "$d.out" "must start with a letter or digit: '$name'" || return 1
+  done
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "must start with a letter or digit: '.dotfiles'" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections" || return 1
+  run_bootstrap "$d" --name 9lives --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "9lives gitleaks config"'
+}
+test_bootstrap_defaults_name_from_directory_in_a_repo_without_origin() {
+  # Its own repo but no origin remote: fall back to the directory name.
+  local d="$WORK/no-origin/localproj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "localproj gitleaks config"' || return 1
+  assert_contains "$d.out" "Already a git repository"
+}
+test_bootstrap_leaves_an_unreadable_git_alone() {
+  # The old `[ -d .git ]` check never re-initialized an existing .git, even one
+  # git can't read (corrupt, or owned by another user). Keep it that way.
+  local d="$WORK/unreadable-git/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "skipped git init" || return 1
+  assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
+  assert_absent "$d/.git/HEAD"
+}
 
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
