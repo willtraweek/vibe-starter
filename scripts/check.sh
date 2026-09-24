@@ -45,25 +45,27 @@ while [ -L "$script" ]; do
     *) script="$(dirname "$script")/${link}" ;;
   esac
 done
-script_dir="$(CDPATH='' cd "$(dirname "$script")" && pwd)" || exit 1
+script_dir="$(CDPATH='' cd "$(dirname "$script")" && pwd -P)" || exit 1
 script_rel="$(basename "$script_dir")/$(basename "$script")"   # from the project root
 # Git runs hooks from the root of the worktree being committed. Linked worktrees
 # share one hooks dir, so a symlinked hook resolves into the main checkout.
-# Invoked through a link, prefer the copy at the same path inside the current
-# directory's tree (e.g. packages/app/scripts/check.sh), if there is one.
-root_rel=""
-if [ "$script" != "$0" ]; then
+# Invoked through a link from inside a git work tree, check that tree's own copy
+# at the same path (e.g. packages/app/scripts/check.sh). A tree with no copy (a
+# worktree of a branch without it) is not checked by scanning another checkout.
+root_dir=""
+if [ "$script" != "$0" ] && here="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$here" ]; then
   top="$script_dir"
   while [ "$top" != "/" ] && [ ! -e "$top/.git" ]; do top="$(dirname "$top")"; done
-  case "$script_dir" in
-    "$top"/*)
-      if [ -f "${script_dir#"$top"/}/$(basename "$script")" ]; then
-        root_rel="$(dirname "${script_dir#"$top"/}")"
-      fi ;;
-  esac
+  case "$script_dir" in "$top"/*) rel="${script_dir#"$top"/}" ;; *) rel="" ;; esac
+  if [ -n "$rel" ] && [ -f "$here/$rel/$(basename "$script")" ]; then
+    root_dir="$here/$(dirname "$rel")"
+  elif [ -n "$rel" ] && [ "$(CDPATH='' cd "$here" && pwd -P)" != "$top" ]; then
+    echo "check.sh: run through a link from $here, which has no $rel/$(basename "$script") - not checking a different checkout." >&2
+    exit 1
+  fi
 fi
-if [ -n "$root_rel" ]; then
-  CDPATH='' cd "./$root_rel" || exit 1
+if [ -n "$root_dir" ]; then
+  CDPATH='' cd "$root_dir" || exit 1
 else
   CDPATH='' cd "$(dirname "$script")/.." || exit 1
 fi

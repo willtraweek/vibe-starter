@@ -601,6 +601,21 @@ test_check_symlinked_hook_scans_a_subdirectory_project_in_the_worktree() {
     || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
   assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
 }
+test_check_symlinked_hook_refuses_a_worktree_without_check_sh() {
+  # A linked worktree on a branch without check.sh (say gh-pages) has no copy to
+  # run. Checking the main checkout instead would let any commit through.
+  local main="$WORK/check-wt-bare/main" wt="$WORK/check-wt-bare/site"
+  check_fixture "$main" || fail "fixture setup failed" || return 1
+  git -C "$main" worktree add -q -b site "$wt" || fail "git worktree add failed" || return 1
+  (cd "$wt" && git rm -rq scripts && git commit -qm "no scripts") || fail "branch setup failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  ln -s ../../scripts/check.sh "$main/.git/hooks/pre-commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/leak.txt"
+  (cd "$wt" && git add leak.txt \
+    && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker git commit -qm leak >"$wt.out" 2>&1) \
+    || fail "the hook let a commit through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "not checking a different checkout"
+}
 
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
