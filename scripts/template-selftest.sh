@@ -205,6 +205,88 @@ test_selftest_refuses_an_unusable_tmpdir() {
   assert_contains "$d.out" "cannot create a temp dir"
 }
 
+# --- tests: check.sh secret-scan scope and CI behavior (plan 002) -------------
+check_fixture() {  # $1 = dir: a committed git copy of the template, ready for check.sh
+  fresh_copy "$1"
+  (cd "$1" && git init -q && git add -A && git commit -qm init)
+}
+fake_token() {  # synthetic, freshly random GitHub-token-shaped string; never a real credential
+  printf 'ghp_%s' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)"
+}
+run_check() {  # $1 = dir, rest = VAR=value env overrides. Output goes to "$1.out".
+  # editorconfig-checker is hidden so these tests isolate the gitleaks guard.
+  local dir="$1"; shift
+  (cd "$dir" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker "$@" \
+    ./scripts/check.sh >"$dir.out" 2>&1)
+}
+test_check_ignores_gitignored_secret_file() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-ignored/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  # A deleted final tracked path must not make the copy pipeline fail under pipefail.
+  printf 'delete me\n' > "$d/zzzz-deleted.txt"
+  (cd "$d" && git add zzzz-deleted.txt && rm zzzz-deleted.txt) || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  run_check "$d" || fail "check.sh flagged a gitignored file: $(tail -5 "$d.out")"
+}
+test_check_flags_force_added_secret_file_without_printing_it() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-forced/proj" tok rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  tok="$(fake_token)"
+  printf 'GITHUB_TOKEN=%s\n' "$tok" > "$d/.env"
+  (cd "$d" && git add -f .env) || fail "git add -f failed" || return 1
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".env" || return 1
+  assert_not_contains "$d.out" "$tok"
+}
+test_check_flags_untracked_committable_secret_file() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-untracked/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt"
+}
+test_check_fails_when_gitleaks_missing_in_ci() {
+  local d="$WORK/check-ci-missing/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI=true GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "REQUIRED in CI"
+}
+test_check_skips_missing_gitleaks_locally() {
+  local d="$WORK/check-local-missing/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "check.sh failed locally without gitleaks: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "gitleaks not installed - skipping"
+}
+
+# --- tests: .env example hygiene (plan 002) -----------------------------------
+test_gitignore_keeps_env_example_files_committable() {
+  local d="$WORK/gitignore/proj" f
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  for f in .env.example .env.local.example; do
+    (cd "$d" && ! git check-ignore -q "$f") || fail "$f is gitignored" || return 1
+  done
+  for f in .env .env.local .env.production; do
+    (cd "$d" && git check-ignore -q "$f") || fail "$f is NOT gitignored" || return 1
+  done
+}
+test_check_allowlists_env_example_files() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-env-example/proj" f
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  for f in .env.example .env.local.example; do
+    printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/$f"
+  done
+  (cd "$d" && git add .env.example .env.local.example) || fail "an .env example file is gitignored" || return 1
+  run_check "$d" || fail "check.sh flagged an allowlisted example file: $(tail -5 "$d.out")"
+}
+
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac
