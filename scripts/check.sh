@@ -45,12 +45,26 @@ while [ -L "$script" ]; do
     *) script="$(dirname "$script")/${link}" ;;
   esac
 done
+script_dir="$(CDPATH='' cd "$(dirname "$script")" && pwd)" || exit 1
+script_rel="$(basename "$script_dir")/$(basename "$script")"   # from the project root
 # Git runs hooks from the root of the worktree being committed. Linked worktrees
-# share one hooks dir, so a symlinked hook resolves to the main checkout's copy:
-# when $0 was a link and the current directory has its own copy of this script,
-# check the current directory instead.
-script_rel="$(basename "$(CDPATH='' cd "$(dirname "$script")" && pwd)")/$(basename "$script")"
-if [ "$script" = "$0" ] || [ ! -f "$script_rel" ]; then
+# share one hooks dir, so a symlinked hook resolves into the main checkout.
+# Invoked through a link, prefer the copy at the same path inside the current
+# directory's tree (e.g. packages/app/scripts/check.sh), if there is one.
+root_rel=""
+if [ "$script" != "$0" ]; then
+  top="$script_dir"
+  while [ "$top" != "/" ] && [ ! -e "$top/.git" ]; do top="$(dirname "$top")"; done
+  case "$script_dir" in
+    "$top"/*)
+      if [ -f "${script_dir#"$top"/}/$(basename "$script")" ]; then
+        root_rel="$(dirname "${script_dir#"$top"/}")"
+      fi ;;
+  esac
+fi
+if [ -n "$root_rel" ]; then
+  CDPATH='' cd "./$root_rel" || exit 1
+else
   CDPATH='' cd "$(dirname "$script")/.." || exit 1
 fi
 

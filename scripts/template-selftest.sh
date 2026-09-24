@@ -584,6 +584,23 @@ test_check_symlinked_hook_scans_the_worktree_being_committed() {
     || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
   assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
 }
+test_check_symlinked_hook_scans_a_subdirectory_project_in_the_worktree() {
+  # The same for a project below the repo root: the hook links to
+  # packages/app/scripts/check.sh, and the worktree's own copy must be scanned.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local main="$WORK/check-wt-sub/main" wt="$WORK/check-wt-sub/wt"
+  fresh_copy "$main/packages/app" || fail "fresh_copy failed" || return 1
+  (cd "$main" && git init -q && git config core.excludesFile /dev/null \
+    && git add -A && git commit -qm init) || fail "repo setup failed" || return 1
+  git -C "$main" worktree add -q -b wt "$wt" || fail "git worktree add failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  ln -s ../../packages/app/scripts/check.sh "$main/.git/hooks/pre-commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/packages/app/wt-secret.txt"
+  (cd "$wt" && git add packages/app/wt-secret.txt \
+    && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker git commit -qm secret >"$wt.out" 2>&1) \
+    || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
+}
 
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
