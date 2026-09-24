@@ -47,6 +47,13 @@ changelog references in 004, corrected 006's filtered test count, and aligned 00
 with its Rust toolchain pin. Targeted checks cover these corrections; the full sequential
 rehearsal totals above precede them and are not a new execution of the updated plans.
 
+**Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
+container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
+shellcheck 0.11.0; the image's shellcheck 0.9.0 flags plan 004's harness code. Plans 005–007
+were edited to keep those choices, and 007 now installs a pinned rustup and must check the job
+time. Those edits were not rehearsed. The review also added 2 harness tests, so the baseline
+after 001 is 11 and every later total above is 2 higher.
+
 ## How to run these plans
 
 1. Commit `plans/` on its own (a docs-only PR is fine). Until 001 merges, `bootstrap` doesn't

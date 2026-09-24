@@ -116,9 +116,10 @@ offers. After this plan, a new Rust project:
 
 After revised plans 001–006, verify these contracts before editing:
 
-- `.github/workflows/template-selftest.yml` has checkout, `install-gitleaks`, pinned `setup-uv`,
-  shellcheck and the self-test. Step 3 adds Rust setup to this workflow while preserving its
-  predecessor checks and repository guard.
+- `.github/workflows/template-selftest.yml` runs on `ubuntu-slim` and has checkout,
+  `install-gitleaks`, a pinned shellcheck install, pinned `setup-uv`, shellcheck and the
+  self-test. Step 3 adds Rust setup to this workflow while preserving its predecessor checks,
+  runner and repository guard.
 - `.editorconfig` contains `[*.{py,go}]` with `indent_size = 4`.
 - `TEMPLATE.md` has `## Stack packs` documenting the Python pack and separate 90% line and
   branch floors. Extend that paragraph; do not restore the old combined-floor wording.
@@ -809,6 +810,12 @@ Extend `.github/workflows/template-selftest.yml` from revised plan 006, preservi
 permissions and repository guard. The complete intended workflow below shows the Rust setup
 and expanded shell-lint coverage. Preserve any stricter predecessor no-skip CI enforcement.
 
+The job runs on `ubuntu-slim` (plan 001): one vCPU, a hard 15-minute job limit, and no Rust
+preinstalled, so the workflow first installs a pinned, checksum-verified `rustup`. After the
+first CI run on GitHub, check the job's duration. If it takes more than about 10 minutes, move
+the Rust stack-pack tests to their own `ubuntu-latest` job (rustup preinstalled, no 15-minute
+cap), or switch this job back to `ubuntu-latest` and drop the rustup install step.
+
 ```yaml
 # Template self-test — runs ONLY on willtraweek/vibe-starter itself.
 #
@@ -828,17 +835,46 @@ permissions:
 jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
-    runs-on: ubuntu-latest
+    # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
+    # job cap). It ships bash, git, perl, GNU tar and curl; the tools are pinned below.
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
 
       - name: Install gitleaks
         uses: ./.github/actions/install-gitleaks
 
+      - name: Install shellcheck (pinned, checksum-verified)
+        # The image ships shellcheck 0.9.0, which flags code that 0.11.0 accepts.
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" \
+            --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Install uv (for the python stack-pack tests)
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.17"
+
+      - name: Install rustup (pinned, checksum-verified; ubuntu-slim has no Rust)
+        env:
+          RUSTUP_VERSION: 1.29.1
+          RUSTUP_INIT_SHA256: dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/rustup-init" \
+            "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+          echo "${RUSTUP_INIT_SHA256}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain none
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
 
       - name: Install the pinned toolchain for the rust stack-pack tests (CI only)
         run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt,llvm-tools-preview
@@ -850,7 +886,7 @@ jobs:
           fallback: none
 
       - name: Lint shell scripts
-        run: shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
 
       - name: Template self-test
         env:

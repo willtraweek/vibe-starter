@@ -514,7 +514,7 @@ runs:
           "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
         echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
         mkdir -p "$RUNNER_TEMP/bin"
-        tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" gitleaks
+        tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" gitleaks
         echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 ```
 
@@ -523,6 +523,8 @@ Replace `.github/workflows/template-selftest.yml` with the content below. Compar
 - gitleaks now comes from the composite action;
 - a pinned `setup-uv` step lets the Python pack tests run;
 - shellcheck also covers the pack scripts.
+
+It keeps plan 001's `ubuntu-slim` runner and pinned shellcheck install unchanged.
 
 ```yaml
 # Template self-test — runs ONLY on willtraweek/vibe-starter itself.
@@ -543,12 +545,29 @@ permissions:
 jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
-    runs-on: ubuntu-latest
+    # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
+    # job cap). It ships bash, git, perl, GNU tar and curl; the tools are pinned below.
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
 
       - name: Install gitleaks
         uses: ./.github/actions/install-gitleaks
+
+      - name: Install shellcheck (pinned, checksum-verified)
+        # The image ships shellcheck 0.9.0, which flags code that 0.11.0 accepts.
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" \
+            --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Install uv (for the python stack-pack tests)
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -556,7 +575,7 @@ jobs:
           version: "0.12.17"
 
       - name: Lint shell scripts
-        run: shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
 
       - name: Template self-test
         run: ./scripts/template-selftest.sh
