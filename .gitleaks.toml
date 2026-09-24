@@ -7,7 +7,7 @@ useDefault = true
 [allowlist]
 description = "Paths that legitimately contain key-shaped placeholders"
 paths = [
-  '''\.env(\..*)?\.example$''',
+  '''(^|/)\.env(\.[^/]+)?\.example$''',
   '''(^|/)tests?/fixtures/''',
   '''(^|/)CHANGELOG\.md$''',
 ]
