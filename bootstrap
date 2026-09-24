@@ -51,18 +51,28 @@ fi
 # --- Refuse to personalize the template itself ------------------------------
 # Default name source: the `origin` remote's repo name. NOT the directory name
 # alone: in a Conductor workspace that is the workspace codename (e.g.
-# "montreal"), which is never the project's name.
+# "montreal"), which is never the project's name. Only this directory's own
+# repo counts: a copy nested inside another repo must not take that repo's name.
+# `-ef` compares inodes, so symlinked paths (macOS /tmp -> /private/tmp) and
+# case-insensitive filesystems still match.
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+OWN_REPO=0
+if [ -n "$toplevel" ] && [ "$toplevel" -ef . ]; then OWN_REPO=1; fi
 remote_repo_name() {
   local url
+  [ "$OWN_REPO" = "1" ] || return 0
   url="$(git remote get-url origin 2>/dev/null)" || return 0
   url="${url%/}"; url="${url%.git}"
   printf '%s\n' "${url##*[/:]}"
 }
 REMOTE_NAME="$(remote_repo_name)"
-if [ "$REMOTE_NAME" = "vibe-starter" ] && [ "$FORCE" != "1" ]; then
+# Case-insensitive (GitHub URLs are); the message never echoes the URL, which
+# can carry a token.
+if [ "$(printf '%s' "$REMOTE_NAME" | tr '[:upper:]' '[:lower:]')" = "vibe-starter" ] \
+  && [ "$FORCE" != "1" ]; then
   echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
-  echo "(origin: $(git remote get-url origin)). Run ./bootstrap in a repo created" >&2
-  echo "from the template, or pass --force if you really mean it." >&2
+  echo "(origin repo: $REMOTE_NAME). Run ./bootstrap in a repo created from the" >&2
+  echo "template, or pass --force --name <project> if you really mean it." >&2
   exit 3
 fi
 
@@ -107,12 +117,11 @@ if [ -n "$files" ]; then
 fi
 
 # --- git init (only if this directory is not already a repository root) ------
-# `git rev-parse`, not `[ -d .git ]`: in worktrees and submodules .git is a file.
-# Physical paths on both sides: on macOS /tmp is a symlink to /private/tmp.
-toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ "$toplevel" = "$(pwd -P)" ]; then
+# OWN_REPO comes from `git rev-parse` above, not `[ -d .git ]`: in worktrees
+# and submodules .git is a file.
+if [ "$OWN_REPO" = "1" ]; then
   echo "Already a git repository - skipped git init."
-elif git init -q 2>/dev/null; then
+elif git init -q; then
   echo "Initialized a fresh git repository."
   if [ -n "$toplevel" ]; then
     echo "Note: this directory is inside another repository ($toplevel); it now has its own nested repo."

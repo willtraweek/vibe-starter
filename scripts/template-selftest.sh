@@ -278,6 +278,55 @@ test_bootstrap_checklist_names_every_file_with_placeholders() {
   done
   [ -z "$missing" ] || fail "checklist does not mention:$missing"
 }
+test_bootstrap_nested_copy_ignores_the_enclosing_repo() {
+  # A copy inside another repo is its own project: it must not take that repo's
+  # name, nor be refused because that repo is the template.
+  local outer="$WORK/nested/outer" d="$WORK/nested/outer/packages/newsvc"
+  mkdir -p "$outer"
+  (cd "$outer" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git) \
+    || fail "outer repo setup failed" || return 1
+  fresh_copy "$d"
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "newsvc gitleaks config"' || return 1
+  assert_contains "$d.out" "Initialized a fresh git repository." || return 1
+  assert_contains "$d.out" "Note: this directory is inside another repository" || return 1
+  [ -d "$d/.git" ] || fail "expected a nested repo: $d/.git is not a directory"
+}
+test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
+  # Any case or URL shape, even with an explicit --name. The URL can carry a token.
+  local i=0 url d rc
+  for url in git@github.com:acme-example/Vibe-Starter.git \
+             ssh://git@github.com/acme-example/vibe-starter \
+             https://github.com/acme-example/vibe-starter/ \
+             https://user-example:not-a-real-token@github.com/acme-example/vibe-starter.git; do
+    i=$((i + 1)); d="$WORK/refuse-variants/$i/proj"
+    fresh_copy "$d"
+    (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
+    run_bootstrap "$d" --name other --yes; rc=$?
+    [ "$rc" -eq 3 ] || fail "origin $url: expected exit 3, got $rc" || return 1
+    assert_not_contains "$d.out" "not-a-real-token" || return 1
+  done
+}
+test_bootstrap_name_equals_form() {
+  local d="$WORK/name-equals/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name= --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a non-empty value" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection" || return 1
+  run_bootstrap "$d" --name=eqform --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "eqform gitleaks config"'
+}
+test_bootstrap_repo_reached_through_a_symlink_skips_git_init() {
+  # Pins the path comparison on Linux too, where /tmp is not a symlink.
+  local real="$WORK/symlinked/real" link="$WORK/symlinked/link"
+  fresh_copy "$real"
+  (cd "$real" && git init -q) || fail "git setup failed" || return 1
+  ln -s "$real" "$link" || fail "symlink setup failed" || return 1
+  run_bootstrap "$link" --name proj --yes || fail "bootstrap exited $?: $(cat "$link.out")" || return 1
+  assert_contains "$link.out" "Already a git repository"
+}
 
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
