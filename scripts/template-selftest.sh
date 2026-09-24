@@ -486,7 +486,17 @@ test_bootstrap_refuses_when_git_cannot_read_the_repo() {
   GIT_TEST_ASSUME_DIFFERENT_OWNER=1 run_bootstrap "$d" --name proj --yes; rc=$?
   assert_exit 3 "$rc" || return 1
   assert_contains "$d.out" "there is a .git here that git can't read" || return 1
-  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal"
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  # Inside another repo, git skips a corrupt .git silently: still refuse, and
+  # say why instead of printing an empty error.
+  d="$WORK/refuses-unreadable-git/nested/outer/proj"
+  mkdir -p "${d%/proj}" && (cd "${d%/proj}" && git init -q) || fail "outer repo setup failed" || return 1
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "git ignores it: not a valid repository"
 }
 test_bootstrap_origin_shapes_give_the_repo_name() {
   # The name is the repo after the last / or :, near-misses of the template's

@@ -59,12 +59,13 @@ TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 OWN_REPO=0
 if [ -n "$TOPLEVEL" ] && [ "$TOPLEVEL" -ef . ]; then OWN_REPO=1; fi
 
-# A `.git` that exists but that git can't read (corrupt, a dangling symlink or
-# gitfile, or owned by someone else) leaves OWN_REPO=0 with no signal why --
-# indistinguishable from a plain, un-repo'd directory. Refuse instead of
-# silently personalizing what might still be someone's repository.
+# A .git that git can't read (corrupt, a dangling symlink or gitfile, or owned
+# by another user) hides origin, so the template refusal below can't fire.
+# Refuse instead of personalizing what may still be someone's repository.
 if { [ -e .git ] || [ -L .git ]; } && [ "$OWN_REPO" != "1" ] && [ "$FORCE" != "1" ]; then
   GIT_ERR="$(git rev-parse --show-toplevel 2>&1 >/dev/null || true)"
+  # Inside another repo, git skips an invalid .git without an error.
+  [ -n "$GIT_ERR" ] || GIT_ERR="git ignores it: not a valid repository"
   echo "Refusing to run: there is a .git here that git can't read:" >&2
   echo "  ${GIT_ERR//$'\n'/$'\n'  }" >&2
   echo "Fix the repository (see the error above), or pass --force if you really mean it." >&2
@@ -102,13 +103,14 @@ case "$REMOTE_NAME" in
     if [ "$FORCE" != "1" ]; then
       echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
       echo "(origin repo: $REMOTE_NAME). Run ./bootstrap in a repo created from the" >&2
-      echo "template, or point origin at your own repo (git remote set-url origin" >&2
-      echo "<your-repo-url>) and rerun; otherwise pass --force --name <project>." >&2
+      echo "template, or point origin at your own repo and rerun:" >&2
+      echo "  git remote set-url origin <your-repo-url>" >&2
+      echo "To personalize this copy anyway, pass --force --name <project>." >&2
       exit 3
     else
-      echo "Warning: --force: origin still points at the vibe-starter template;" >&2
-      echo "point it at your own repo (git remote set-url origin <your-repo-url>)" >&2
-      echo "before you push." >&2
+      echo "Warning: --force: origin still points at the vibe-starter template." >&2
+      echo "Point it at your own repo before you push:" >&2
+      echo "  git remote set-url origin <your-repo-url>" >&2
     fi ;;
 esac
 
