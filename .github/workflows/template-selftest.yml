@@ -17,7 +17,7 @@ jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
     # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
-    # job cap). It ships bash, git, perl, GNU tar, curl and shellcheck: all this needs.
+    # job cap). It ships bash, git, perl, GNU tar and curl; the tools are pinned below.
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
@@ -35,8 +35,23 @@ jobs:
           tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" gitleaks
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: Install shellcheck (pinned, checksum-verified)
+        # The image ships shellcheck 0.9.0, which flags code that 0.11.0 accepts.
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" \
+            --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Lint shell scripts
-        run: shellcheck bootstrap scripts/*.sh
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh
 
       - name: Template self-test
         run: ./scripts/template-selftest.sh

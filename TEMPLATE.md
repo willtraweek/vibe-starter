@@ -37,13 +37,14 @@ Changes to `bootstrap` or `scripts/check.sh` must keep the self-test and shellch
 ```sh
 ./scripts/template-selftest.sh             # every test
 ./scripts/template-selftest.sh bootstrap   # only tests whose name contains "bootstrap"
-shellcheck bootstrap scripts/*.sh          # the lint CI runs before the self-test
+shellcheck bootstrap scripts/*.sh          # CI lints first, with shellcheck 0.11.0
 ```
 
-The self-test copies this working tree into a temp dir and exercises `./bootstrap` and `scripts/check.sh`
-there; your checkout is never modified. It needs git, perl, and tar. Tests that need gitleaks
-are skipped locally when it is missing; CI installs it and treats skips as failures. CI runs it
-via `.github/workflows/template-selftest.yml`, which only runs on `willtraweek/vibe-starter`.
+The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
+`scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
+that need gitleaks are skipped locally when it is missing; CI installs it and treats skips as
+failures. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
+`willtraweek/vibe-starter`.
 
 Template-only paths, deleted by `./bootstrap`: `TEMPLATE.md`, `scripts/template-selftest.sh`,
 `.github/workflows/template-selftest.yml`, `plans/`. A repo created with **Use this template**
