@@ -5,7 +5,7 @@
 #   ./bootstrap                         # interactive (prompts for the name)
 #   ./bootstrap --name my-project       # non-interactive name
 #   ./bootstrap --name my-project --yes # no prompts at all
-#   ./bootstrap --force                 # allow running inside the vibe-starter repo itself
+#   ./bootstrap --force --name my-project # override the template-repo refusal
 #
 # It replaces the bootstrap-owned placeholders ({{PROJECT_NAME}}, {{YEAR}}),
 # initializes git if needed, optionally notes gstack, prints a checklist of the
@@ -102,8 +102,13 @@ case "$REMOTE_NAME" in
     if [ "$FORCE" != "1" ]; then
       echo "Refusing to run: this looks like the vibe-starter template repo itself" >&2
       echo "(origin repo: $REMOTE_NAME). Run ./bootstrap in a repo created from the" >&2
-      echo "template, or pass --force --name <project> if you really mean it." >&2
+      echo "template, or point origin at your own repo (git remote set-url origin" >&2
+      echo "<your-repo-url>) and rerun; otherwise pass --force --name <project>." >&2
       exit 3
+    else
+      echo "Warning: --force: origin still points at the vibe-starter template;" >&2
+      echo "point it at your own repo (git remote set-url origin <your-repo-url>)" >&2
+      echo "before you push." >&2
     fi ;;
 esac
 

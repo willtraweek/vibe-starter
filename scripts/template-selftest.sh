@@ -314,6 +314,19 @@ test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
     assert_not_contains "$d.out" "not-a-real-token" || return 1
   done
 }
+test_bootstrap_forced_run_on_the_template_warns_about_origin() {
+  local d="$WORK/forced-warns/proj" rc
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "git remote set-url origin" || return 1
+  run_bootstrap "$d" --force --name forced --yes; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.out" "origin still points at the vibe-starter template" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "forced gitleaks config"'
+}
 test_bootstrap_name_equals_form() {
   local d="$WORK/name-equals/proj" before rc
   fresh_copy "$d"
