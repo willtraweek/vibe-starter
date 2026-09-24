@@ -101,9 +101,19 @@ if [ -n "$files" ]; then
   echo "Replaced {{PROJECT_NAME}} / {{YEAR}} across the docs."
 fi
 
-# --- git init (only if not already a repo) ----------------------------------
-if [ ! -d .git ]; then
-  git init -q && echo "Initialized a fresh git repository."
+# --- git init (only if this directory is not already a repository root) ------
+# `git rev-parse`, not `[ -d .git ]`: in worktrees and submodules .git is a file.
+# Physical paths on both sides: on macOS /tmp is a symlink to /private/tmp.
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ "$toplevel" = "$(pwd -P)" ]; then
+  echo "Already a git repository - skipped git init."
+elif git init -q 2>/dev/null; then
+  echo "Initialized a fresh git repository."
+  if [ -n "$toplevel" ]; then
+    echo "Note: this directory is inside another repository ($toplevel); it now has its own nested repo."
+  fi
+else
+  echo "git init failed (is git installed?) - skipped."
 fi
 
 # --- Optional gstack wiring (guarded; gstack is not on PATH) -----------------
