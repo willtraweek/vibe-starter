@@ -13,8 +13,9 @@
 # template-only paths (TEMPLATE.md, the template self-test, plans/).
 #
 # The default name is the repo name of the `origin` remote, else the directory
-# name. Exit codes: 0 done (or already bootstrapped), 2 usage or name error,
-# 3 refused because this is the vibe-starter template repo itself.
+# name. Exit codes: 0 done (or already bootstrapped), 2 usage or name error, 3
+# refused because this is the vibe-starter template repo itself, or git can't
+# read this directory's .git.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -57,6 +58,18 @@ fi
 TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 OWN_REPO=0
 if [ -n "$TOPLEVEL" ] && [ "$TOPLEVEL" -ef . ]; then OWN_REPO=1; fi
+
+# A `.git` that exists but that git can't read (corrupt, a dangling symlink or
+# gitfile, or owned by someone else) leaves OWN_REPO=0 with no signal why --
+# indistinguishable from a plain, un-repo'd directory. Refuse instead of
+# silently personalizing what might still be someone's repository.
+if { [ -e .git ] || [ -L .git ]; } && [ "$OWN_REPO" != "1" ] && [ "$FORCE" != "1" ]; then
+  GIT_ERR="$(git rev-parse --show-toplevel 2>&1 >/dev/null || true)"
+  echo "Refusing to run: there is a .git here that git can't read:" >&2
+  echo "  ${GIT_ERR//$'\n'/$'\n'  }" >&2
+  echo "Fix the repository (see the error above), or pass --force if you really mean it." >&2
+  exit 3
+fi
 
 # --- Refuse to personalize the template itself ------------------------------
 # Default name source: the `origin` remote's repo name. NOT the directory name

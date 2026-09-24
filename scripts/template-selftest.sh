@@ -396,24 +396,62 @@ test_bootstrap_defaults_name_from_directory_in_a_repo_without_origin() {
 }
 test_bootstrap_leaves_an_unreadable_git_alone() {
   # The old `[ -d .git ]` check never re-initialized an existing .git, even one
-  # git can't read (corrupt, or owned by another user). Keep it that way.
+  # git can't read (corrupt, or owned by another user). Keep it that way under
+  # --force, which is now required here since an unreadable .git otherwise
+  # refuses outright (see test_bootstrap_refuses_when_git_cannot_read_the_repo).
   local d="$WORK/unreadable-git/proj"
   fresh_copy "$d"
   (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
-  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  run_bootstrap "$d" --name proj --yes --force || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d.out" "Found a .git that git can't read" || return 1
   assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
   assert_absent "$d/.git/HEAD"
 }
 test_bootstrap_leaves_a_dangling_git_symlink_alone() {
   # -e follows symlinks, so a dangling .git link looked absent and git init
-  # created a repository at its target, outside the project.
+  # created a repository at its target, outside the project. --force is now
+  # required here too (see test_bootstrap_refuses_when_git_cannot_read_the_repo).
   local d="$WORK/dangling-link/proj" target="$WORK/dangling-link/elsewhere/.git"
   fresh_copy "$d"
   mkdir -p "${target%/.git}" && ln -s "$target" "$d/.git" || fail "symlink setup failed" || return 1
-  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  run_bootstrap "$d" --name proj --yes --force || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d.out" "Found a .git that git can't read" || return 1
   assert_absent "$target"
+}
+test_bootstrap_refuses_when_git_cannot_read_the_repo() {
+  # OWN_REPO is 0 whenever git can't read .git (corrupt, a dangling gitfile,
+  # dubious ownership) -- exactly the gap where the refusal used to fail open
+  # and bootstrap would personalize (and delete plans/ from) someone's repo.
+  local d before rc
+
+  d="$WORK/refuses-unreadable-git/corrupt/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  d="$WORK/refuses-unreadable-git/dangling-gitfile/proj"
+  fresh_copy "$d"
+  printf 'gitdir: %s\n' "$WORK/refuses-unreadable-git/gone" > "$d/.git"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  # Optional third case: dubious ownership, simulated the same way git's own
+  # test suite does (real different-UID setup needs privileges we don't have).
+  d="$WORK/refuses-unreadable-git/dubious-ownership/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q) || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  GIT_TEST_ASSUME_DIFFERENT_OWNER=1 run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal"
 }
 test_bootstrap_origin_shapes_give_the_repo_name() {
   # The name is the repo after the last / or :, near-misses of the template's
