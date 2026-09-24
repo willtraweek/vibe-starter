@@ -398,6 +398,28 @@ test_bootstrap_name_must_start_with_a_letter_or_digit() {
   run_bootstrap "$d" --name 9lives --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d/.gitleaks.toml" 'title = "9lives gitleaks config"'
 }
+test_bootstrap_name_checks_are_ascii_only() {
+  # Bracket ranges collate per-locale; en_US.UTF-8 on macOS bash 3.2 folds
+  # accented letters into A-Za-z, so both checks must still catch them.
+  local d="$WORK/ascii-only/proj" before cafe eclair loc locales rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  cafe=$(printf 'caf\303\251')
+  eclair=$(printf '\303\251clair')
+  locales="C"
+  case "$(locale -a 2>/dev/null)" in
+    *en_US.UTF-8*|*en_US.utf8*) locales="$locales en_US.UTF-8" ;;
+  esac
+  for loc in $locales; do
+    (LC_ALL="$loc"; export LC_ALL; run_bootstrap "$d" --name "$cafe" --yes); rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "unexpected characters" || return 1
+    (LC_ALL="$loc"; export LC_ALL; run_bootstrap "$d" --name "$eclair" --yes); rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "must start with a letter or digit" || return 1
+  done
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections"
+}
 test_bootstrap_defaults_name_from_directory_in_a_repo_without_origin() {
   # Its own repo but no origin remote: fall back to the directory name.
   local d="$WORK/no-origin/localproj"

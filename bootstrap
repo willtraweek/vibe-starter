@@ -129,12 +129,15 @@ if [ "$NAME_GIVEN" != "1" ] && [ "$NAME" = "$default" ]; then
   if [ -n "$REMOTE_NAME" ]; then from="the origin remote"; else from="the directory name"; fi
   NAME_HINT=" (from $from; pass --name <project>)"
 fi
+# Enumerated, not A-Za-z0-9 ranges: bracket ranges collate per-locale (macOS
+# bash 3.2 under en_US.UTF-8 folds accented letters into A-Za-z), so spelling
+# the set out keeps both checks ASCII-only on every platform and locale.
 case "$NAME" in
-  [A-Za-z0-9]*) ;;
+  [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) ;;
   *) echo "Project name must start with a letter or digit: '$NAME'$NAME_HINT" >&2; exit 2 ;;
 esac
 case "$NAME" in
-  *[!A-Za-z0-9._\ -]*) echo "Project name has unexpected characters: '$NAME'$NAME_HINT" >&2; exit 2 ;;
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._\ -]*) echo "Project name has unexpected characters: '$NAME'$NAME_HINT" >&2; exit 2 ;;
 esac
 YEAR="$(date +%Y)"
 echo "Personalizing template -> name='$NAME', year='$YEAR'"
