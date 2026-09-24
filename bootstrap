@@ -101,8 +101,8 @@ Then choose a stack and:
 CHECKLIST
 
 # --- Finalize: mark done, drop template-only paths, self-delete (last) ------
-# Template-only paths exist to maintain vibe-starter itself; they must never
-# ship into a project created from it. Keep this list in sync with TEMPLATE.md.
+# Template-only paths exist to maintain vibe-starter itself and don't belong in
+# a project created from it. Keep this list in sync with TEMPLATE.md.
 TEMPLATE_ONLY="TEMPLATE.md scripts/template-selftest.sh .github/workflows/template-selftest.yml plans"
 date +%Y-%m-%d > .bootstrapped
 for p in $TEMPLATE_ONLY; do rm -rf "$p"; done

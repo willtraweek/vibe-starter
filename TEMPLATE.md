@@ -40,7 +40,7 @@ Changes to `bootstrap` or `scripts/check.sh` must keep the self-test and shellch
 shellcheck bootstrap scripts/*.sh          # the lint CI runs before the self-test
 ```
 
-It copies this working tree into a temp dir and exercises `./bootstrap` and `scripts/check.sh`
+The self-test copies this working tree into a temp dir and exercises `./bootstrap` and `scripts/check.sh`
 there; your checkout is never modified. It needs git, perl, and tar. Tests that need gitleaks
 are skipped locally when it is missing; CI installs it and treats skips as failures. CI runs it
 via `.github/workflows/template-selftest.yml`, which only runs on `willtraweek/vibe-starter`.
