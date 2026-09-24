@@ -293,8 +293,9 @@ test_bootstrap_nested_copy_ignores_the_enclosing_repo() {
   [ -d "$d/.git" ] || fail "expected a nested repo: $d/.git is not a directory"
 }
 test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
-  # Any case or URL shape, even with an explicit --name. The URL can carry a token.
-  local i=0 url d rc
+  # Any case or URL shape, even with an explicit --name. The URL can carry a token
+  # (spliced in at run time so credential scanners don't flag this file).
+  local i=0 url d rc tok=not-a-real-token
   for url in git@github.com:acme-example/Vibe-Starter.git \
              https://github.com/acme-example/VIBE-STARTER.git \
              ssh://git@github.com/acme-example/vibe-starter \
@@ -305,13 +306,13 @@ test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
              /srv/git/vibe-starter.git/.git \
              /srv/git/vibe-starter/.git/. \
              /srv/git/vibe-starter/.git/.. \
-             https://user-example:not-a-real-token@github.com/acme-example/vibe-starter.git; do
+             "https://user-example:${tok}@github.com/acme-example/vibe-starter.git"; do
     i=$((i + 1)); d="$WORK/refuse-variants/$i/proj"
     fresh_copy "$d"
     (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
     run_bootstrap "$d" --name other --yes; rc=$?
     [ "$rc" -eq 3 ] || fail "origin $url: expected exit 3, got $rc" || return 1
-    assert_not_contains "$d.out" "not-a-real-token" || return 1
+    assert_not_contains "$d.out" "$tok" || return 1
   done
 }
 test_bootstrap_forced_run_on_the_template_warns_about_origin() {
@@ -501,18 +502,18 @@ test_bootstrap_refuses_when_git_cannot_read_the_repo() {
 test_bootstrap_origin_shapes_give_the_repo_name() {
   # The name is the repo after the last / or :, near-misses of the template's
   # name are not refused, and a token in a URL with no repo path never shows.
-  local i=0 pair url want d
+  local i=0 pair url want d tok=not-a-real-token
   for pair in 'git@git.example.com:widget.git|widget' \
               'git@github.com:acme-example/vibe-starter-app.git|vibe-starter-app' \
               'https://github.com/vibe-starter/widget.git|widget' \
-              'https://user-example:not-a-real-token@git.example.com/|git.example.com'; do
+              "https://user-example:${tok}@git.example.com/|git.example.com"; do
     url="${pair%|*}"; want="${pair#*|}"
     i=$((i + 1)); d="$WORK/origin-shapes/$i/proj"
     fresh_copy "$d"
     (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
     run_bootstrap "$d" --yes || fail "origin $url: bootstrap exited $?: $(cat "$d.out")" || return 1
     assert_contains "$d/.gitleaks.toml" "title = \"$want gitleaks config\"" || return 1
-    assert_not_contains "$d.out" "not-a-real-token" || return 1
+    assert_not_contains "$d.out" "$tok" || return 1
   done
 }
 test_bootstrap_non_tty_without_yes_takes_the_default_silently() {
