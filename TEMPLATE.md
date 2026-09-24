@@ -27,7 +27,8 @@ directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run 
 - `README.md`, `CHANGELOG.md`, `TODOS.md`, `VERSION`, `docs/`, `.context/` — working scaffold.
 - `DESIGN.md`, `MISSION.md` — optional; delete if a project doesn't need them.
 - config: `.gitignore`, `.editorconfig`, `.gitleaks.toml`, an inert `.github/workflows/ci.yml.example`.
-- `scripts/check.sh` — the stack-neutral pre-test guard (gitleaks + editorconfig if present).
+- `scripts/check.sh` — the stack-neutral pre-test guard: a gitleaks scan of what git would commit
+  (gitleaks 8.22+; skipped locally if missing, required in CI) and editorconfig-checker if present.
 
 ## Note
 

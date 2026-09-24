@@ -17,7 +17,16 @@ set -uo pipefail   # no -e: one failing assertion must not abort the whole run
 # caller's repository instead (as bare, from a linked worktree), so drop them.
 for v in $(git rev-parse --local-env-vars); do unset "$v"; done
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Same resolution as scripts/check.sh: follow symlinks, and clear CDPATH for the cd only.
+script="$0"
+while [ -L "$script" ]; do
+  link=$(readlink "$script")
+  case "$link" in
+    /*) script="$link" ;;
+    *) script="$(dirname "$script")/${link}" ;;
+  esac
+done
+REPO="$(CDPATH='' cd "$(dirname "$script")/.." && pwd)" || exit 1
 if ! git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "selftest: $REPO is not a git checkout (fresh_copy needs git ls-files)" >&2
   exit 2
@@ -37,6 +46,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@example.invalid
 export GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@example.invalid
 unset GIT_TEMPLATE_DIR   # an env var, not config: it would still install the user's hooks
+unset GITLEAKS_BIN EDITORCONFIG_CHECKER_BIN   # check.sh overrides: tests set them explicitly
 
 # --- assertion helpers: print a reason, return non-zero on failure ------------
 fail()                { echo "    FAIL: $*"; return 1; }
@@ -203,6 +213,698 @@ test_selftest_refuses_an_unusable_tmpdir() {
   VS_SELFTEST_NESTED=1 TMPDIR="$d/missing" "$REPO/scripts/template-selftest.sh" no-such-test >"$d.out" 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   assert_contains "$d.out" "cannot create a temp dir"
+}
+
+# --- tests: check.sh secret-scan scope and CI behavior (plan 002) -------------
+check_fixture() {  # $1 = dir: a committed git copy of the template, ready for check.sh
+  fresh_copy "$1"
+  # core.excludesFile: GIT_CONFIG_GLOBAL=/dev/null still leaves ~/.config/git/ignore on.
+  (cd "$1" && git init -q && git config core.excludesFile /dev/null && git add -A && git commit -qm init)
+}
+fake_token() {  # synthetic, freshly random GitHub-token-shaped string; never a real credential
+  printf 'ghp_%s' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)"
+}
+run_check() {  # $1 = dir, rest = VAR=value env overrides. Output goes to "$1.out".
+  # editorconfig-checker is hidden so these tests isolate the gitleaks guard.
+  # Blank vendor CI variables first: GitHub sets GITHUB_ACTIONS, and a later
+  # VAR=value argument (same names as ci_requires_gitleaks) overrides the blank.
+  local dir="$1"; shift
+  (cd "$dir" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    GITHUB_ACTIONS= GITLAB_CI= JENKINS_URL= BUILDKITE= CIRCLECI= TRAVIS= \
+    TF_BUILD= APPVEYOR= DRONE= WOODPECKER= TEAMCITY_VERSION= \
+    CODEBUILD_BUILD_ID= BITBUCKET_BUILD_NUMBER= CIRRUS_CI= CONTINUOUS_INTEGRATION= \
+    "$@" ./scripts/check.sh >"$dir.out" 2>&1)
+}
+test_check_ignores_gitignored_secret_file() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-ignored/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  # A deleted final tracked path must not make the copy pipeline fail under pipefail.
+  printf 'delete me\n' > "$d/zzzz-deleted.txt"
+  (cd "$d" && git add zzzz-deleted.txt && rm zzzz-deleted.txt) || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  run_check "$d" || fail "check.sh flagged a gitignored file: $(tail -5 "$d.out")"
+}
+# $1 = output file, $2 = secret or fragment. The failure text never includes $2.
+assert_omits_secret() {
+  if grep -qF -- "$2" "$1"; then
+    fail "secret scan output included a secret or an 8-character fragment"
+    return 1
+  fi
+}
+test_check_flags_force_added_secret_file_without_printing_it() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-forced/proj" tok rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  tok="$(fake_token)"
+  printf 'GITHUB_TOKEN=%s\n' "$tok" > "$d/.env"
+  (cd "$d" && git add -f .env) || fail "git add -f failed" || return 1
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".env:1:github-pat" || return 1
+  assert_omits_secret "$d.out" "$tok" || return 1
+  assert_omits_secret "$d.out" "${tok:4:8}"
+}
+test_check_flags_two_secrets_on_one_line_without_printing_them() {
+  # -v prints ~20 characters of context around each finding, so redacting one
+  # secret still leaks the other when both share a line.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-two-secrets/proj" tok_a tok_b rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  tok_a="$(fake_token)"
+  tok_b="$(fake_token)"
+  printf 'GITHUB_TOKEN=%s %s\n' "$tok_a" "$tok_b" > "$d/.env"
+  (cd "$d" && git add -f .env) || fail "git add -f failed" || return 1
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".env:1:github-pat" || return 1
+  assert_omits_secret "$d.out" "$tok_a" || return 1
+  assert_omits_secret "$d.out" "$tok_b" || return 1
+  assert_omits_secret "$d.out" "${tok_a:4:8}" || return 1
+  assert_omits_secret "$d.out" "${tok_b:4:8}"
+}
+test_check_flags_untracked_committable_secret_file() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-untracked/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt"
+}
+test_check_scans_this_repo_when_git_env_points_elsewhere() {
+  # GIT_DIR / GIT_WORK_TREE for another repository must not redirect the scan.
+  # A clean fixture exits 0 and must not mention that repo's secret; a
+  # committable secret here must still be reported. The token is checked only
+  # against the output file so a failure message never prints it.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-foreign-git-env/proj" other="$WORK/check-foreign-git-env/other"
+  local foreign foreign_git foreign_wt rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  foreign="$(fake_token)"
+  mkdir -p "$other"
+  (
+    cd "$other" \
+      && git init -q \
+      && git config core.excludesFile /dev/null \
+      && printf '%s' "$foreign" > leak.txt \
+      && git add leak.txt \
+      && git commit -qm leak
+  ) || fail "foreign repo setup failed" || return 1
+  foreign_git="$(git -C "$other" rev-parse --absolute-git-dir)"
+  foreign_wt="$(git -C "$other" rev-parse --show-toplevel)"
+  run_check "$d" GIT_DIR="$foreign_git" GIT_WORK_TREE="$foreign_wt"; rc=$?
+  assert_omits_secret "$d.out" "$foreign" || return 1
+  assert_exit 0 "$rc" || fail "clean fixture failed under a foreign GIT_DIR: $(tail -8 "$d.out")" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/zz-committable-secret.txt"
+  run_check "$d" GIT_DIR="$foreign_git" GIT_WORK_TREE="$foreign_wt"; rc=$?
+  assert_omits_secret "$d.out" "$foreign" || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "zz-committable-secret.txt:1:github-pat" || return 1
+  # GIT_DIR alone makes this directory that repo's work tree. Its index lacks
+  # this repo's force-added .env, which .gitignore then hides from the listing.
+  rm "$d/zz-committable-secret.txt"
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  (cd "$d" && git add -f .env) || fail "git add -f failed" || return 1
+  run_check "$d" GIT_DIR="$foreign_git"; rc=$?
+  assert_omits_secret "$d.out" "$foreign" || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".env:1:github-pat"
+}
+test_check_fails_when_gitleaks_missing_in_ci() {
+  local d="$WORK/check-ci-missing/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI=true GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "REQUIRED in CI"
+}
+test_check_skips_missing_gitleaks_locally() {
+  local d="$WORK/check-local-missing/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "check.sh failed locally without gitleaks: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "gitleaks not installed - skipping"
+}
+test_check_fails_when_gitleaks_missing_ci_is_1() {
+  local d="$WORK/check-ci-1/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI=1 GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "REQUIRED in CI"
+}
+test_check_fails_when_gitleaks_missing_ci_is_True() {
+  local d="$WORK/check-ci-True/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI=True GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "REQUIRED in CI"
+}
+test_check_fails_when_gitleaks_missing_github_actions() {
+  local d="$WORK/check-gha-missing/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  # CI= clears an inherited CI=true so this asserts the vendor variable alone.
+  run_check "$d" CI= GITHUB_ACTIONS=true GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "REQUIRED in CI"
+}
+test_check_skips_missing_gitleaks_when_ci_false_overrides_github_actions() {
+  local d="$WORK/check-ci-false-gha/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  run_check "$d" CI=false GITHUB_ACTIONS=true GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "CI=false did not override GITHUB_ACTIONS: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "gitleaks not installed - skipping"
+}
+test_check_skips_missing_gitleaks_when_ci_is_0() {
+  local d="$WORK/check-ci-0/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  # CI=0 is an explicit local skip and beats a vendor variable.
+  run_check "$d" CI=0 GITHUB_ACTIONS=true GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "CI=0 did not skip: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "gitleaks not installed - skipping"
+}
+test_check_ci_requires_gitleaks_predicate() {
+  # Every vendor variable, every CI spelling. The driver is a separate script
+  # so it does not execute check.sh.
+  local d="$WORK/check-ci-predicate"
+  mkdir -p "$d"
+  sed -n '/^ci_requires_gitleaks()/,/^}/p' "$REPO/scripts/check.sh" > "$d/predicate.sh"
+  [ -s "$d/predicate.sh" ] || fail "could not extract ci_requires_gitleaks" || return 1
+  cat > "$d/driver.sh" << 'EOF'
+#!/bin/bash
+set -u
+d="$1"
+# shellcheck disable=SC1091
+. "$d/predicate.sh"
+vendors="GITHUB_ACTIONS GITLAB_CI JENKINS_URL BUILDKITE CIRCLECI TRAVIS TF_BUILD APPVEYOR DRONE WOODPECKER TEAMCITY_VERSION CODEBUILD_BUILD_ID BITBUCKET_BUILD_NUMBER CIRRUS_CI CONTINUOUS_INTEGRATION"
+unset CI
+for name in $vendors; do
+  unset "$name"
+done
+if ci_requires_gitleaks; then
+  echo "nothing set was treated as CI"
+  exit 1
+fi
+for name in $vendors; do
+  unset CI
+  printf -v "$name" '%s' 'x'
+  ci_requires_gitleaks || { echo "$name was not treated as CI"; exit 1; }
+  CI=false
+  if ci_requires_gitleaks; then
+    echo "CI=false did not win over $name"
+    exit 1
+  fi
+  unset "$name"
+done
+GITHUB_ACTIONS=true
+for v in 0 no NO False FALSE; do
+  CI="$v"
+  if ci_requires_gitleaks; then
+    echo "CI=$v did not win over GITHUB_ACTIONS"
+    exit 1
+  fi
+done
+unset GITHUB_ACTIONS
+# Any other non-empty value counts (Woodpecker sets CI=woodpecker).
+for v in 1 true True yes YES woodpecker; do
+  CI="$v"
+  ci_requires_gitleaks || { echo "CI=$v was not treated as CI"; exit 1; }
+done
+EOF
+  /bin/bash "$d/driver.sh" "$d" >"$d.out" 2>&1 \
+    || fail "ci_requires_gitleaks: $(cat "$d.out")" || return 1
+}
+test_check_honors_a_relative_gitleaks_bin() {
+  # The scan runs from a temp copy, so a relative GITLEAKS_BIN (here in an
+  # ignored tools dir, absent from that copy) must be resolved beforehand.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-relbin/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.tools" && printf '.tools/\n' >> "$d/.git/info/exclude" || return 1
+  printf '#!/bin/sh\ntouch "%s"\nexec "%s" "$@"\n' "$d.used" "$(command -v gitleaks)" > "$d/.tools/gitleaks"
+  chmod +x "$d/.tools/gitleaks"
+  run_check "$d" GITLEAKS_BIN=.tools/gitleaks \
+    || fail "check.sh failed with a relative GITLEAKS_BIN: $(tail -3 "$d.out")" || return 1
+  assert_exists "$d.used"
+}
+test_check_scans_every_file_when_git_would_not_commit_it() {
+  # A template copy with no `git init` of its own, inside a gitignored folder of
+  # another repo. rev-parse finds the outer repo, which lists nothing here, and a
+  # scan of nothing would pass: check.sh must scan every file instead.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local outer="$WORK/outer-checkout/repo" copy="$WORK/outer-checkout/repo/nested"
+  local out="$WORK/outer-checkout/check.out" before head_before rc
+  mkdir -p "$outer"
+  (cd "$outer" && git init -q && git config core.excludesFile /dev/null) \
+    || fail "outer git init failed" || return 1
+  printf 'nested/\n' > "$outer/.gitignore"
+  printf 'outer\n' > "$outer/README"
+  (cd "$outer" && git add .gitignore README && git commit -qm init) \
+    || fail "outer commit failed" || return 1
+  fresh_copy "$copy" || fail "fresh_copy failed" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$copy/notes.txt"
+  assert_absent "$copy/.git" || return 1
+  [ -z "$(cd "$outer" && git status --porcelain)" ] || fail "setup left the outer repo dirty" || return 1
+  before="$(tree_fingerprint "$outer")"
+  head_before="$(cd "$outer" && git rev-parse HEAD)"
+  # Output goes outside the outer repo, which must stay untouched.
+  (
+    cd "$copy" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      ./scripts/check.sh >"$out" 2>&1
+  ); rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$out" "git would not commit this project" || return 1
+  assert_contains "$out" "notes.txt:1:github-pat" || return 1
+  [ "$(cd "$outer" && git status --porcelain && git rev-parse HEAD)" = "$head_before" ] \
+    || fail "outer repo HEAD or status changed" || return 1
+  [ "$before" = "$(tree_fingerprint "$outer")" ] || fail "outer repo was modified" || return 1
+  assert_absent "$copy/.git"
+}
+test_check_scans_a_project_in_a_subdirectory_of_a_repo() {
+  # A project can live below the root of a larger repository. It still gets
+  # git's committable set: its gitignored .env is skipped, a committable secret
+  # is caught.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local outer="$WORK/check-monorepo/repo" d="$WORK/check-monorepo/repo/packages/app" rc
+  fresh_copy "$d" || fail "fresh_copy failed" || return 1
+  (cd "$outer" && git init -q && git config core.excludesFile /dev/null \
+    && git add -A && git commit -qm init) || fail "outer repo setup failed" || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  run_check "$d" || fail "check.sh failed in a subdirectory project: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "scanning the files git would commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt:1:github-pat"
+}
+
+# --- tests: .env example hygiene (plan 002) -----------------------------------
+test_gitignore_keeps_env_example_files_committable() {
+  local d="$WORK/gitignore/proj" f
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  for f in .env.example .env.local.example; do
+    (cd "$d" && ! git check-ignore -q "$f") || fail "$f is gitignored" || return 1
+  done
+  for f in .env .env.local .env.production; do
+    (cd "$d" && git check-ignore -q "$f") || fail "$f is NOT gitignored" || return 1
+  done
+}
+test_check_allowlists_env_example_files() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-env-example/proj" f tok rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/config"
+  for f in .env.example .env.local.example config/.env.example; do
+    printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/$f"
+  done
+  (cd "$d" && git add .env.example .env.local.example config/.env.example) \
+    || fail "an .env example file is gitignored" || return 1
+  run_check "$d" || fail "check.sh flagged an allowlisted example file: $(tail -5 "$d.out")" || return 1
+  # Shares only the .env.example suffix, so the allowlist must not cover it.
+  tok="$(fake_token)"
+  printf 'GITHUB_TOKEN=%s\n' "$tok" > "$d/prod.env.example"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "prod.env.example" || return 1
+  assert_omits_secret "$d.out" "$tok" || return 1
+  assert_omits_secret "$d.out" "${tok:4:8}"
+}
+test_check_cdpath_does_not_redirect_the_scan() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-cdpath/proj" decoy="$WORK/check-cdpath/cdpath-decoy" rc invoke
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  # CDPATH is tried before `.`. A decoy that contains scripts/ wins `cd scripts/..`,
+  # and a committable token there shows up only if that tree was the one scanned.
+  check_fixture "$decoy" || fail "decoy setup failed" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$decoy/decoy-secret.txt"
+  (cd "$decoy" && git add decoy-secret.txt) || fail "git add failed" || return 1
+  # bash does not search CDPATH for a target starting with / or ./. The bare
+  # relative form does, and a CDPATH hit prints the chosen directory on stdout.
+  for invoke in ./scripts/check.sh scripts/check.sh; do
+    (cd "$d" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      CDPATH="$decoy" "$invoke" >"$d.out" 2>&1); rc=$?
+    assert_exit 0 "$rc" || fail "$invoke exited $rc: $(tail -8 "$d.out")" || return 1
+    assert_contains "$d.out" "- gitleaks: scanning" || return 1
+    assert_not_contains "$d.out" "decoy-secret.txt" || return 1
+    assert_not_contains "$d.out" "$decoy" || return 1
+  done
+}
+test_check_symlinked_hook_scans_repo_root() {
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-symlink-hook/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.git/hooks"
+  ln -s ../../scripts/check.sh "$d/.git/hooks/pre-commit"
+  # Relative path, as git invokes the hook (cwd is the work tree root).
+  (cd "$d" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    .git/hooks/pre-commit >"$d.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "clean hook exited $rc: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "- gitleaks: scanning" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/hook-secret.txt"
+  (cd "$d" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    .git/hooks/pre-commit >"$d.out" 2>&1); rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "hook-secret.txt"
+}
+test_check_symlinked_hook_scans_the_worktree_being_committed() {
+  # Linked worktrees share one hooks dir, so the link resolves to the main
+  # checkout's check.sh. git runs it from the worktree being committed, and that
+  # is the tree to scan: a clean main checkout must not let a secret through.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local main="$WORK/check-wt-hook/main" wt="$WORK/check-wt-hook/wt"
+  check_fixture "$main" || fail "fixture setup failed" || return 1
+  git -C "$main" worktree add -q -b wt "$wt" || fail "git worktree add failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  ln -s ../../scripts/check.sh "$main/.git/hooks/pre-commit" || return 1
+  printf 'clean\n' > "$wt/clean.txt"
+  (cd "$wt" && git add clean.txt && EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    git commit -qm clean >"$wt.out" 2>&1) \
+    || fail "the hook blocked a clean commit: $(tail -5 "$wt.out")" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/wt-secret.txt"
+  (cd "$wt" && git add wt-secret.txt && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    git commit -qm secret >"$wt.out" 2>&1) \
+    || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
+}
+test_check_symlinked_hook_scans_a_subdirectory_project_in_the_worktree() {
+  # The same for a project below the repo root: the hook links to
+  # packages/app/scripts/check.sh, and the worktree's own copy must be scanned.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local main="$WORK/check-wt-sub/main" wt="$WORK/check-wt-sub/wt"
+  fresh_copy "$main/packages/app" || fail "fresh_copy failed" || return 1
+  (cd "$main" && git init -q && git config core.excludesFile /dev/null \
+    && git add -A && git commit -qm init) || fail "repo setup failed" || return 1
+  git -C "$main" worktree add -q -b wt "$wt" || fail "git worktree add failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  ln -s ../../packages/app/scripts/check.sh "$main/.git/hooks/pre-commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/packages/app/wt-secret.txt"
+  (cd "$wt" && git add packages/app/wt-secret.txt \
+    && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker git commit -qm secret >"$wt.out" 2>&1) \
+    || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
+}
+test_check_symlinked_hook_refuses_a_worktree_without_check_sh() {
+  # A linked worktree on a branch without check.sh (say gh-pages) has no copy to
+  # run. Checking the main checkout instead would let any commit through.
+  local main="$WORK/check-wt-bare/main" wt="$WORK/check-wt-bare/site"
+  check_fixture "$main" || fail "fixture setup failed" || return 1
+  git -C "$main" worktree add -q -b site "$wt" || fail "git worktree add failed" || return 1
+  (cd "$wt" && git rm -rq scripts && git commit -qm "no scripts") || fail "branch setup failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  ln -s ../../scripts/check.sh "$main/.git/hooks/pre-commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/leak.txt"
+  (cd "$wt" && git add leak.txt \
+    && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker git commit -qm leak >"$wt.out" 2>&1) \
+    || fail "the hook let a commit through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "not checking a different checkout"
+}
+
+# --- tests: check.sh paths found by the /ship coverage audit (plan 002) --------
+test_check_scans_the_committable_set_before_the_first_commit() {
+  # ./bootstrap runs git init and commits nothing, so check.sh itself is only
+  # untracked-but-committable. It still gets git's committable set: the
+  # gitignored .env is skipped and an untracked secret is caught.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-first-commit/proj" rc
+  fresh_copy "$d" || fail "fresh_copy failed" || return 1
+  (cd "$d" && git init -q && git config core.excludesFile /dev/null) || fail "git init failed" || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  run_check "$d" || fail "check.sh flagged a gitignored file before the first commit: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "- gitleaks: scanning the files git would commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt:1:github-pat"
+}
+test_check_scans_its_own_project_when_run_from_elsewhere() {
+  # CI steps, Makefiles and agents call check.sh by path from other directories:
+  # from inside another repository, through a link from outside any repository,
+  # or from a subdirectory. It scans its own project every time.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local base="$WORK/check-elsewhere" d="$WORK/check-elsewhere/proj" other="$WORK/check-elsewhere/other" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$other" "$base/bin" && (cd "$other" && git init -q) || fail "other repo setup failed" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$other/other-secret.txt"
+  ln -s "$d/scripts/check.sh" "$base/bin/proj-check" || return 1
+  (cd "$other" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    "$d/scripts/check.sh" >"$d.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "clean project failed when run from another repo: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "- gitleaks: scanning the files git would commit" || return 1
+  assert_not_contains "$d.out" "other-secret.txt" || return 1
+  (cd "$base" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    bin/proj-check >"$d.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "clean project failed through a link from outside a repo: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "- gitleaks: scanning the files git would commit" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/proj-secret.txt"
+  (cd "$d/docs" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    ../scripts/check.sh >"$d.out" 2>&1); rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "proj-secret.txt:1:github-pat"
+}
+test_check_hook_follows_a_link_chain_to_an_absolute_target() {
+  # Hooks are often installed as `ln -s "$PWD/scripts/check.sh" ...`, sometimes
+  # through a hooks dir of their own. Every hop, relative or absolute, must be
+  # followed to the real check.sh, or the hook checks the wrong directory.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-link-chain/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.git/hooks" "$d/tools/hooks"
+  ln -s "$d/scripts/check.sh" "$d/tools/hooks/pre-commit" || return 1
+  ln -s ../../tools/hooks/pre-commit "$d/.git/hooks/pre-commit" || return 1
+  printf 'clean\n' > "$d/clean.txt"
+  (cd "$d" && git add clean.txt && EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    git commit -qm clean >"$d.out" 2>&1) \
+    || fail "the hook blocked a clean commit: $(tail -5 "$d.out")" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/hook-secret.txt"
+  (cd "$d" && git add hook-secret.txt && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    git commit -qm secret >"$d.out" 2>&1) \
+    || fail "the hook let a secret through: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "hook-secret.txt:1:github-pat"
+}
+test_check_scans_files_whose_names_git_would_quote() {
+  # Without -z, git prints a non-ASCII path quoted and escaped. That name fails
+  # [ -f ] and silently drops out of the copy, so its secret would pass.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-quoted-names/proj" name rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  name="$(printf 'caf\303\251 notes.txt')"
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/$name"
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  # macOS bsdtar extracts the name as NFD, so match only its ASCII tail.
+  assert_contains "$d.out" " notes.txt:1:github-pat"
+}
+test_check_fails_closed_when_the_copy_fails() {
+  # A listing or copy that fails part-way (corrupt index, unreadable file, no
+  # temp dir) must fail the guard: a partial or empty copy would pass files
+  # nobody scanned. The git stub stands in for a corrupt index, and unlike
+  # chmod 000 it also works as root.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-copy-fails/proj" bin="$WORK/check-copy-fails/bin" tmp="$WORK/check-copy-fails/tmp" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$bin" "$tmp" || return 1
+  printf '#!/bin/sh\ncase " $* " in *" ls-files -z "*) echo "stub: index unreadable" >&2; exit 128 ;; esac\nexec "%s" "$@"\n' \
+    "$(command -v git)" > "$bin/git" && chmod +x "$bin/git" || fail "git stub setup failed" || return 1
+  # printenv, not $PATH: shellcheck ties any $PATH read to the subshell PATH edit
+  # in test_bootstrap_reports_a_failed_git_init (SC2030/SC2031).
+  run_check "$d" PATH="$bin:$(printenv PATH)" TMPDIR="$tmp"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "could not copy the files git would commit - secret scan NOT run." || return 1
+  assert_not_contains "$d.out" "OK:" || return 1
+  [ -z "$(ls -A "$tmp")" ] || fail "the temp copy outlived a failed copy" || return 1
+  run_check "$d" TMPDIR="$WORK/check-copy-fails/missing"; rc=$?
+  [ "$rc" -ne 0 ] || fail "check.sh passed with no temp dir to copy into" || return 1
+  assert_not_contains "$d.out" "OK:"
+}
+test_check_removes_its_temp_copy() {
+  # The copy holds every committable file, force-added secrets included. It must
+  # not outlive the run, whether the scan passes or finds something.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-cleanup/proj" tmp="$WORK/check-cleanup/tmp" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$tmp" || return 1
+  run_check "$d" TMPDIR="$tmp" || fail "clean scan failed: $(tail -5 "$d.out")" || return 1
+  [ -z "$(ls -A "$tmp")" ] || fail "the temp copy outlived a clean scan" || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  (cd "$d" && git add -f .env) || fail "git add -f failed" || return 1
+  run_check "$d" TMPDIR="$tmp"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  [ -z "$(ls -A "$tmp")" ] || fail "the temp copy outlived a scan with findings"
+}
+test_check_removes_its_temp_copy_when_interrupted() {
+  # The EXIT trap covers a run killed mid-scan (Ctrl-C, a CI job timeout). The
+  # stand-in scanner records its pid, then waits to be interrupted.
+  local d="$WORK/check-interrupted/proj" bin="$WORK/check-interrupted/bin" tmp="$WORK/check-interrupted/tmp" pid i=0
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$bin" "$tmp" || return 1
+  # It answers check.sh's `dir --help` version probe, then stands in for the scan.
+  printf '#!/bin/sh\ncase "$*" in *--help*) echo "--report-template"; exit 0 ;; esac\necho $$ > "%s"\nexec sleep 30\n' \
+    "$d.scanning" > "$bin/gitleaks" && chmod +x "$bin/gitleaks" \
+    || fail "gitleaks stub setup failed" || return 1
+  (cd "$d" && exec env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    GITLEAKS_BIN="$bin/gitleaks" TMPDIR="$tmp" ./scripts/check.sh >"$d.out" 2>&1) &
+  pid=$!
+  while [ ! -s "$d.scanning" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$d.scanning" ] || { kill "$pid" 2>/dev/null; fail "the stub scan never started: $(tail -3 "$d.out")"; return 1; }
+  kill -TERM "$pid"; wait "$pid" 2>/dev/null
+  kill "$(cat "$d.scanning")" 2>/dev/null
+  [ -z "$(ls -A "$tmp")" ] || fail "the temp copy outlived an interrupted run"
+}
+test_check_honors_an_exported_function_as_gitleaks_bin() {
+  # command -v prints a bare name for a function: call it as-is, not as $root/<name>.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-fn-bin/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  (
+    # shellcheck disable=SC2329  # invoked through GITLEAKS_BIN
+    fn_gitleaks() { touch "$FN_USED" && "$FN_REAL" "$@"; }
+    export -f fn_gitleaks
+    run_check "$d" GITLEAKS_BIN=fn_gitleaks FN_USED="$d.used" FN_REAL="$(command -v gitleaks)"
+  ) || fail "check.sh failed with a function GITLEAKS_BIN: $(tail -3 "$d.out")" || return 1
+  assert_exists "$d.used"
+}
+test_check_runs_an_installed_editorconfig_checker() {
+  # Advisory means optional when missing; once installed, its verdict counts. With
+  # gitleaks hidden, the final line also says whether any guard ran at all.
+  local d="$WORK/check-ec/proj" bin="$WORK/check-ec/bin" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$bin" || return 1
+  printf '#!/bin/sh\nexit 0\n' > "$bin/ec-pass"
+  printf '#!/bin/sh\necho "ec-fail: formatting error" >&2\nexit 1\n' > "$bin/ec-fail"
+  chmod +x "$bin/ec-pass" "$bin/ec-fail" || return 1
+  run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "check.sh failed with no tools installed: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "OK: no checks configured yet." || return 1
+  run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks EDITORCONFIG_CHECKER_BIN="$bin/ec-pass" \
+    || fail "a passing editorconfig-checker failed the run: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "- editorconfig-checker: checking formatting..." || return 1
+  assert_contains "$d.out" "OK: checks passed." || return 1
+  run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks EDITORCONFIG_CHECKER_BIN="$bin/ec-fail"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "ec-fail: formatting error" || return 1
+  assert_not_contains "$d.out" "OK:"
+}
+test_check_env_example_allowlist_stops_at_a_directory() {
+  # The allowlist matches a file name, not a path through a .env.<x>/ directory.
+  # .gitignore hides such a directory, so only a force-added file reaches the scan.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-env-dir/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.env.d"
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env.d/app.example"
+  (cd "$d" && git add -f .env.d/app.example) || fail "git add -f failed" || return 1
+  run_check "$d"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".env.d/app.example:1:github-pat"
+}
+test_ci_example_installs_the_gitleaks_the_template_ci_runs() {
+  # ci.yml.example never runs here. Keep its install step byte-identical to the
+  # one template-selftest.yml runs on every push: same version, same checksum.
+  local wf="$REPO/.github/workflows" want got
+  got="$(sed -n '/- name: Install gitleaks/,/GITHUB_PATH/p' "$wf/ci.yml.example")"
+  want="$(sed -n '/- name: Install gitleaks/,/GITHUB_PATH/p' "$wf/template-selftest.yml")"
+  [ -n "$want" ] || fail "template-selftest.yml has no 'Install gitleaks' step" || return 1
+  [ "$got" = "$want" ] || fail "ci.yml.example's gitleaks install step drifted from template-selftest.yml's"
+}
+test_selftest_finds_its_repo_through_a_link_or_cdpath() {
+  # Same resolution as check.sh: a linked harness, or a bare relative call with a
+  # CDPATH entry that has scripts/, must still find this checkout. The filter
+  # matches no test, so each nested run only resolves REPO and reports 0 tests.
+  [ -z "${VS_SELFTEST_NESTED:-}" ] || { skip "nested run"; return; }
+  local d="$WORK/selftest-resolution"
+  mkdir -p "$d/bin" "$d/decoy/scripts" || return 1
+  ln -s "$REPO/scripts/template-selftest.sh" "$d/bin/vs-selftest" || return 1
+  VS_SELFTEST_NESTED=1 "$d/bin/vs-selftest" no-such-test >"$d.link.out" 2>&1
+  assert_contains "$d.link.out" "selftest: 0 passed, 0 failed, 0 skipped" || return 1
+  (cd "$REPO" && CDPATH="$d/decoy" VS_SELFTEST_NESTED=1 scripts/template-selftest.sh no-such-test) >"$d.cdpath.out" 2>&1
+  assert_contains "$d.cdpath.out" "selftest: 0 passed, 0 failed, 0 skipped"
+}
+
+# --- tests: hooks, git errors and gitleaks versions (/ship review, plan 002) --
+test_check_hook_runs_the_committing_worktrees_own_check_sh() {
+  # However a hook reaches the main checkout's check.sh (here a wrapper script,
+  # not a link), a commit in a linked worktree runs that worktree's own copy
+  # against that worktree: its secret is caught and its script edits apply.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local main="$WORK/check-wt-own/main" wt="$WORK/check-wt-own/wt" f
+  check_fixture "$main" || fail "fixture setup failed" || return 1
+  git -C "$main" worktree add -q -b wt "$wt" || fail "git worktree add failed" || return 1
+  mkdir -p "$main/.git/hooks"
+  cat > "$main/.git/hooks/pre-commit" << 'EOF'
+#!/bin/sh
+exec "$(dirname "$0")/../../scripts/check.sh" "$@"
+EOF
+  chmod +x "$main/.git/hooks/pre-commit" || return 1
+  f="$wt/scripts/check.sh"
+  { head -n 1 "$f"; echo 'echo "- the worktree copy of check.sh ran"'; tail -n +2 "$f"; } > "$f.new" \
+    && mv "$f.new" "$f" && chmod +x "$f" || fail "could not edit the worktree copy" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$wt/wt-secret.txt"
+  (cd "$wt" && git add wt-secret.txt \
+    && ! EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker git commit -qm secret >"$wt.out" 2>&1) \
+    || fail "the hook let a secret through: $(tail -5 "$wt.out")" || return 1
+  assert_contains "$wt.out" "- the worktree copy of check.sh ran" || return 1
+  assert_contains "$wt.out" "wt-secret.txt:1:github-pat"
+}
+test_check_foreign_git_env_cannot_redirect_a_linked_check() {
+  # Called through a link with GIT_DIR / GIT_WORK_TREE exported for another
+  # checkout that also has check.sh, the scan must stay on this project.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local base="$WORK/check-foreign-link" d="$WORK/check-foreign-link/proj" rc
+  local other="$WORK/check-foreign-link/other"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  check_fixture "$other" || fail "foreign fixture setup failed" || return 1
+  mkdir -p "$base/bin" && ln -s "$d/scripts/check.sh" "$base/bin/check" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  (cd "$d" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    GIT_DIR="$other/.git" GIT_WORK_TREE="$other" "$base/bin/check" >"$d.out" 2>&1); rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt:1:github-pat"
+}
+test_check_reports_git_errors_instead_of_scanning_every_file() {
+  # git refusing the repository (here: owned by someone else) fails with git's
+  # own error instead of scanning every file and flagging the gitignored .env.
+  # A safe.directory exception passed as GIT_CONFIG_* is honored.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-git-error/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  printf 'GITHUB_TOKEN=%s\n' "$(fake_token)" > "$d/.env"
+  run_check "$d" GIT_TEST_ASSUME_DIFFERENT_OWNER=1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "git failed here - secret scan NOT run" || return 1
+  assert_contains "$d.out" "dubious ownership" || return 1
+  assert_not_contains "$d.out" ".env:1:" || return 1
+  run_check "$d" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
+    || fail "check.sh failed with safe.directory passed as GIT_CONFIG_*: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "- gitleaks: scanning the files git would commit"
+}
+test_check_rejects_a_gitleaks_too_old_for_the_report_template() {
+  # Before 8.22 gitleaks has no `dir --report-template` (Ubuntu's apt package is
+  # 8.16). Name the version and the minimum rather than fail on a flag error.
+  local d="$WORK/check-old-gitleaks/proj" bin="$WORK/check-old-gitleaks/bin" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$bin" || return 1
+  cat > "$bin/gitleaks" << 'EOF'
+#!/bin/sh
+case "$1" in version) echo 8.16.0 ;; *) echo "Usage: gitleaks [command]" ;; esac
+EOF
+  chmod +x "$bin/gitleaks" || return 1
+  run_check "$d" GITLEAKS_BIN="$bin/gitleaks"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "gitleaks 8.16.0 is too old: 8.22 or newer is needed" || return 1
+  assert_not_contains "$d.out" "OK:"
+}
+test_check_works_with_a_relative_tmpdir() {
+  # mktemp returns a relative path for a relative TMPDIR. The report template
+  # must still be found once the scan runs from inside the copy.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-rel-tmp/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$WORK/check-rel-tmp/tmp" || return 1
+  run_check "$d" TMPDIR=../tmp || fail "check.sh failed with a relative TMPDIR: $(tail -5 "$d.out")" || return 1
+  printf 'token = "%s"\n' "$(fake_token)" > "$d/notes.txt"
+  run_check "$d" TMPDIR=../tmp; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "notes.txt:1:github-pat"
 }
 
 # --- tests: bootstrap hardening (plan 003) ------------------------------------
