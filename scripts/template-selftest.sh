@@ -36,6 +36,7 @@ PASS=0; FAIL=0; SKIP=0
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@example.invalid
 export GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@example.invalid
+unset GIT_TEMPLATE_DIR   # an env var, not config: it would still install the user's hooks
 
 # --- assertion helpers: print a reason, return non-zero on failure ------------
 fail()                { echo "    FAIL: $*"; return 1; }
@@ -161,27 +162,45 @@ test_check_passes_on_clean_template() {
   local d="$WORK/check-clean/proj"
   fresh_copy "$d"
   (cd "$d" && git init -q && git add -A && git commit -qm init) || fail "git setup failed" || return 1
-  (cd "$d" && ./scripts/check.sh >"$d.out" 2>&1) || fail "check.sh exited $?: $(tail -5 "$d.out")"
+  (cd "$d" && ./scripts/check.sh >"$d.out" 2>&1) || fail "check.sh exited $?: $(tail -5 "$d.out")" || return 1
+  # Exit 0 alone would also cover check.sh quietly skipping the scan.
+  assert_contains "$d.out" "- gitleaks: scanning"
 }
 
 # --- tests: the harness itself ------------------------------------------------
+# These re-run the harness; VS_SELFTEST_NESTED keeps a nested run from recursing.
 test_selftest_ignores_inherited_git_env() {
-  # A nested run under an inherited GIT_DIR (a worktree-style gitdir, so git
-  # would guess "bare") must still bootstrap its own copy and leave that
-  # repository alone.
-  local d="$WORK/inherited-git-env"
-  mkdir -p "$d"
+  # git hands GIT_DIR (and, from hooks, GIT_INDEX_FILE) to aliases, hooks,
+  # `rebase -x` and `bisect run`, and users may export GIT_TEMPLATE_DIR. Nested
+  # runs under all of them must still use only their own temp repos. The
+  # worktree-style gitdir makes git guess "bare"; the template hook rejects
+  # every commit. The check_passes leg is the one that runs `git add`/`commit`.
+  [ -z "${VS_SELFTEST_NESTED:-}" ] || { skip "nested run"; return; }
+  local d="$WORK/inherited-git-env" legs="happy_path" leg
+  command -v gitleaks >/dev/null 2>&1 && legs="$legs check_passes"
+  mkdir -p "$d/templates/hooks"
+  printf '#!/bin/sh\necho "inherited template hook ran" >&2\nexit 1\n' > "$d/templates/hooks/commit-msg"
+  chmod +x "$d/templates/hooks/commit-msg"
   git init -q --separate-git-dir "$d/caller.git" "$d/caller" || fail "caller repo setup failed" || return 1
-  GIT_DIR="$d/caller.git" "$REPO/scripts/template-selftest.sh" happy_path >"$d.out" 2>&1 \
-    || fail "nested run under GIT_DIR failed: $(tail -3 "$d.out")" || return 1
+  for leg in $legs; do
+    VS_SELFTEST_NESTED=1 GIT_DIR="$d/caller.git" GIT_WORK_TREE="$d/caller" \
+      GIT_INDEX_FILE="$d/caller.git/index" GIT_TEMPLATE_DIR="$d/templates" \
+      "$REPO/scripts/template-selftest.sh" "$leg" >"$d.$leg.out" 2>&1 \
+      || fail "nested $leg run failed: $(tail -3 "$d.$leg.out")" || return 1
+    assert_contains "$d.$leg.out" "selftest: 1 passed" || return 1
+  done
   [ "$(git --git-dir="$d/caller.git" config --bool core.bare)" = "false" ] \
-    || fail "the nested run re-initialized the GIT_DIR repository"
+    || fail "a nested run re-initialized the GIT_DIR repository" || return 1
+  assert_absent "$d/caller.git/index" || return 1
+  ! git --git-dir="$d/caller.git" rev-parse -q --verify HEAD >/dev/null \
+    || fail "a nested run committed into the GIT_DIR repository"
 }
 test_selftest_refuses_an_unusable_tmpdir() {
   # The filter matches no test, so even a regressed harness creates nothing.
+  [ -z "${VS_SELFTEST_NESTED:-}" ] || { skip "nested run"; return; }
   local d="$WORK/bad-tmpdir" rc
   mkdir -p "$d"
-  TMPDIR="$d/missing" "$REPO/scripts/template-selftest.sh" no-such-test >"$d.out" 2>&1; rc=$?
+  VS_SELFTEST_NESTED=1 TMPDIR="$d/missing" "$REPO/scripts/template-selftest.sh" no-such-test >"$d.out" 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   assert_contains "$d.out" "cannot create a temp dir"
 }
