@@ -2,6 +2,40 @@
 
 All notable changes to {{PROJECT_NAME}} are recorded here. Newest first, semver sections.
 
+## [0.0.3] - 2026-09-24
+
+### Added
+- `scripts/check.sh` fails in CI when gitleaks is missing, instead of passing without a scan.
+  Any `CI` value except empty, `false`, `0` or `no`, or a known CI vendor variable, counts as
+  CI; `CI=false` keeps the local skip.
+- The inert CI skeleton (`ci.yml.example`) installs a pinned, checksum-verified gitleaks 8.30.1
+  before the check, runs with read-only repository permissions, and uses `actions/checkout@v7`.
+- `check.sh` works as a git pre-commit hook, linked or wrapped. Committing in a linked worktree
+  runs that worktree's own copy against it, and a worktree whose branch has no `check.sh` is
+  refused rather than checked against another checkout.
+
+### Changed
+- The secret scan covers exactly what git would commit: a gitignored `.env` holding real local
+  credentials no longer fails the check, while a force-added or untracked committable file does.
+- Findings print as `file:line:rule`, never the secret or the text around it (gitleaks' verbose
+  output could show a second secret on the same line).
+- `.env.example` can be committed, and example env files (`.env.example`,
+  `.env.<name>.example`) are allowlisted by file name only.
+- The secret scan needs gitleaks 8.22 or newer; an older one gets a clear message instead of a
+  flag error.
+
+### Fixed
+- The check scans its own project when run from another directory, through a symlink, with
+  `CDPATH` set, with a relative `GITLEAKS_BIN` or `TMPDIR`, or with `GIT_DIR`/`GIT_WORK_TREE`
+  exported for another repository.
+- A project in a subdirectory of a larger repo gets its committable files scanned, and a copy no
+  repository would commit (not yet `git init`-ed) has every file scanned instead of none.
+- git errors such as dubious ownership are reported as such instead of triggering a misleading
+  scan of every file, and a `safe.directory` passed through `GIT_CONFIG_*` is honored.
+- A failed copy of the files to scan fails the check, and the temporary copy is always removed.
+- Template maintenance: 40 new self-tests (74 in total) cover these paths, and the plan index
+  marks plan 002 done.
+
 ## [0.0.2] - 2026-09-24
 
 ### Added
