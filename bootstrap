@@ -5,11 +5,16 @@
 #   ./bootstrap                         # interactive (prompts for the name)
 #   ./bootstrap --name my-project       # non-interactive name
 #   ./bootstrap --name my-project --yes # no prompts at all
+#   ./bootstrap --force                 # allow running inside the vibe-starter repo itself
 #
 # It replaces the bootstrap-owned placeholders ({{PROJECT_NAME}}, {{YEAR}}),
 # initializes git if needed, optionally notes gstack, prints a checklist of the
 # placeholders you still need to hand-fill, then deletes itself and the
 # template-only paths (TEMPLATE.md, the template self-test, plans/).
+#
+# The default name is the repo name of the `origin` remote, else the directory
+# name. Exit codes: 0 done (or already bootstrapped), 2 usage or name error,
+# 3 refused because this is the vibe-starter template repo itself.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -134,6 +139,7 @@ Bootstrap done. Hand-fill the placeholders that remain (grep the repo for '{{' )
   TESTING.md  - tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
   README.md   - what / why / stack
   TODOS.md    - the first real task
+  docs/architecture.md - modules, contracts & invariants
 Then choose a stack and:
   - add the build/test files (package.json / pyproject.toml / Cargo.toml ...)
   - uncomment your language section in .gitignore
