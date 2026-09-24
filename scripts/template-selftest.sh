@@ -208,7 +208,8 @@ test_selftest_refuses_an_unusable_tmpdir() {
 # --- tests: check.sh secret-scan scope and CI behavior (plan 002) -------------
 check_fixture() {  # $1 = dir: a committed git copy of the template, ready for check.sh
   fresh_copy "$1"
-  (cd "$1" && git init -q && git add -A && git commit -qm init)
+  # core.excludesFile: GIT_CONFIG_GLOBAL=/dev/null still leaves ~/.config/git/ignore on.
+  (cd "$1" && git init -q && git config core.excludesFile /dev/null && git add -A && git commit -qm init)
 }
 fake_token() {  # synthetic, freshly random GitHub-token-shaped string; never a real credential
   printf 'ghp_%s' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)"
@@ -239,7 +240,9 @@ test_check_flags_force_added_secret_file_without_printing_it() {
   run_check "$d"; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.out" ".env" || return 1
-  assert_not_contains "$d.out" "$tok"
+  assert_contains "$d.out" "REDACTED" || return 1
+  assert_not_contains "$d.out" "$tok" || return 1
+  assert_not_contains "$d.out" "${tok:4:8}"   # no fragment of the secret either
 }
 test_check_flags_untracked_committable_secret_file() {
   command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
@@ -263,6 +266,19 @@ test_check_skips_missing_gitleaks_locally() {
   run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks \
     || fail "check.sh failed locally without gitleaks: $(tail -5 "$d.out")" || return 1
   assert_contains "$d.out" "gitleaks not installed - skipping"
+}
+test_check_honors_a_relative_gitleaks_bin() {
+  # The scan runs from a temp copy, so a relative GITLEAKS_BIN (here in an
+  # ignored tools dir, absent from that copy) must be resolved beforehand.
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local d="$WORK/check-relbin/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.tools" && printf '.tools/\n' >> "$d/.git/info/exclude" || return 1
+  printf '#!/bin/sh\ntouch "%s"\nexec "%s" "$@"\n' "$d.used" "$(command -v gitleaks)" > "$d/.tools/gitleaks"
+  chmod +x "$d/.tools/gitleaks"
+  run_check "$d" GITLEAKS_BIN=.tools/gitleaks \
+    || fail "check.sh failed with a relative GITLEAKS_BIN: $(tail -3 "$d.out")" || return 1
+  assert_exists "$d.used"
 }
 
 # --- tests: .env example hygiene (plan 002) -----------------------------------

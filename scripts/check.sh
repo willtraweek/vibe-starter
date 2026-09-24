@@ -23,18 +23,28 @@ EDITORCONFIG_CHECKER_BIN="${EDITORCONFIG_CHECKER_BIN:-editorconfig-checker}"
 if command -v "$GITLEAKS_BIN" >/dev/null 2>&1; then
   ran_any=1
   echo "- gitleaks: scanning the files git would commit..."
+  # Absolute path: the scan below runs from inside a temp dir.
+  GITLEAKS_BIN="$(command -v "$GITLEAKS_BIN")"
+  case "$GITLEAKS_BIN" in /*) ;; *) GITLEAKS_BIN="$root/$GITLEAKS_BIN" ;; esac
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     scan_dir="$(mktemp -d "${TMPDIR:-/tmp}/check-gitleaks.XXXXXX")"
     trap 'rm -rf "$scan_dir"' EXIT
-    git ls-files -z --cached --others --exclude-standard \
+    # Copy the committable set, skipping tracked paths deleted from disk. Keep the
+    # if/fi: `[ -f ] && printf` ends the loop non-zero when the last path is deleted.
+    if git ls-files -z --cached --others --exclude-standard \
       | while IFS= read -r -d '' f; do if [ -f "$f" ]; then printf '%s\0' "$f"; fi; done \
-      | tar --null -T - -cf - | tar -xf - -C "$scan_dir"
-    (cd "$scan_dir" && "$GITLEAKS_BIN" dir --no-banner --redact -v -c "$root/.gitleaks.toml" .) || status=1
+      | tar --null -T - -cf - | tar --no-same-owner -xf - -C "$scan_dir"; then
+      (cd "$scan_dir" && "$GITLEAKS_BIN" dir --no-banner --redact -v -c "$root/.gitleaks.toml" .) || status=1
+    else
+      echo "- gitleaks: could not copy the files git would commit - secret scan NOT run." >&2
+      status=1
+    fi
+    rm -rf "$scan_dir"; trap - EXIT
   else
     "$GITLEAKS_BIN" dir --no-banner --redact -v -c .gitleaks.toml . || status=1
   fi
 elif [ "${CI:-}" = "true" ]; then
-  echo "- gitleaks not installed - REQUIRED in CI (see .github/workflows/ci.yml.example)." >&2
+  echo "- gitleaks not installed - REQUIRED in CI: install it in an earlier step (see 'Install gitleaks' in .github/workflows/ci.yml[.example])." >&2
   status=1
 else
   echo "- gitleaks not installed - skipping secret scan (brew install gitleaks)."
