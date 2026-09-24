@@ -298,6 +298,8 @@ test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
   for url in git@github.com:acme-example/Vibe-Starter.git \
              ssh://git@github.com/acme-example/vibe-starter \
              https://github.com/acme-example/vibe-starter/ \
+             https://github.com/acme-example/vibe-starter.GIT// \
+             /srv/git/vibe-starter/.git \
              https://user-example:not-a-real-token@github.com/acme-example/vibe-starter.git; do
     i=$((i + 1)); d="$WORK/refuse-variants/$i/proj"
     fresh_copy "$d"

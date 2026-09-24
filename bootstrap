@@ -62,7 +62,11 @@ remote_repo_name() {
   local url
   [ "$OWN_REPO" = "1" ] || return 0
   url="$(git remote get-url origin 2>/dev/null)" || return 0
-  url="${url%/}"; url="${url%.git}"
+  # Trailing slashes, a .git suffix in any case, then slashes again: so
+  # .../widget/, .../widget.GIT and a local .../widget/.git all give "widget".
+  while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
+  case "$url" in *.[Gg][Ii][Tt]) url="${url%????}" ;; esac
+  while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
   printf '%s\n' "${url##*[/:]}"
 }
 REMOTE_NAME="$(remote_repo_name)"
