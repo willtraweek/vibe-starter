@@ -205,6 +205,80 @@ test_selftest_refuses_an_unusable_tmpdir() {
   assert_contains "$d.out" "cannot create a temp dir"
 }
 
+# --- tests: bootstrap hardening (plan 003) ------------------------------------
+test_bootstrap_name_flag_requires_a_value() {
+  local d="$WORK/name-no-value/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a value" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection"
+}
+test_bootstrap_rejects_empty_name() {
+  local d="$WORK/name-empty/proj" rc
+  fresh_copy "$d"
+  run_bootstrap "$d" --name '' --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a non-empty value"
+}
+test_bootstrap_rejects_a_flag_as_the_name() {
+  local d="$WORK/name-flag/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "must start with a letter or digit" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection"
+}
+test_bootstrap_defaults_name_from_origin_remote_not_workspace_dir() {
+  local d="$WORK/conductor/widget/montreal"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/widget.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "widget gitleaks config"' || return 1
+  assert_not_contains "$d/.gitleaks.toml" "montreal"
+}
+test_bootstrap_defaults_name_from_directory_without_remote() {
+  local d="$WORK/no-remote/plainproj"
+  fresh_copy "$d"
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "plainproj gitleaks config"'
+}
+test_bootstrap_refuses_the_template_repo_itself() {
+  local d="$WORK/template-itself/proj" before rc
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin https://github.com/willtraweek/vibe-starter.git) \
+    || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "vibe-starter template repo itself" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+  run_bootstrap "$d" --name forced --yes --force || fail "--force run exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "forced gitleaks config"'
+}
+test_bootstrap_in_a_worktree_skips_git_init() {
+  local main="$WORK/wt/main" wt="$WORK/wt/workspace"
+  fresh_copy "$main"
+  (cd "$main" && git init -q && git add -A && git commit -qm init && git worktree add -q "$wt" -b feature) \
+    || fail "worktree setup failed" || return 1
+  run_bootstrap "$wt" --name proj --yes || fail "bootstrap exited $?: $(cat "$wt.out")" || return 1
+  assert_contains "$wt.out" "Already a git repository" || return 1
+  assert_not_contains "$wt.out" "Initialized a fresh git repository" || return 1
+  [ -f "$wt/.git" ] || fail "worktree .git file was replaced"
+}
+test_bootstrap_checklist_names_every_file_with_placeholders() {
+  local d="$WORK/checklist/proj" f missing=""
+  fresh_copy "$d"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?" || return 1
+  for f in $(cd "$d" && grep -rl --exclude-dir=.git '{{' . | sed 's|^\./||'); do
+    grep -qF -- "$f" "$d.out" || missing="$missing $f"
+  done
+  [ -z "$missing" ] || fail "checklist does not mention:$missing"
+}
+
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac
