@@ -7,6 +7,7 @@ Thumbs.db
 # --- Secrets / env (keep the *.example templates) ---
 .env
 .env.*
+!.env.example
 !.env.*.example
 
 # --- Logs ---
