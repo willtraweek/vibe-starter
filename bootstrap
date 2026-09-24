@@ -5,7 +5,7 @@
 #   ./bootstrap                         # interactive (prompts for the name)
 #   ./bootstrap --name my-project       # non-interactive name
 #   ./bootstrap --name my-project --yes # no prompts at all
-#   ./bootstrap --force --name my-project # override the template-repo refusal
+#   ./bootstrap --force --name my-project # run anyway where bootstrap refuses (exit 3)
 #
 # It replaces the bootstrap-owned placeholders ({{PROJECT_NAME}}, {{YEAR}}),
 # initializes git if needed, optionally notes gstack, prints a checklist of the
