@@ -11,7 +11,7 @@ deletes `plans/`, so none of this reaches projects created from the template.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | TODO |
+| [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | DONE (11 tests: the plan's 9 + 2 approved review fixes) |
 | [002](002-trustworthy-check-guards.md) | Make `scripts/check.sh` trustworthy: scan what git would commit, fail closed in CI, keep `.env.example` committable | P1 | S | 001 | TODO |
 | [003](003-harden-bootstrap.md) | Harden `bootstrap`: remote-derived name, refuse to run on the template, strict args, worktree-aware git init | P1 | S | 001 | TODO |
 | [004](004-agents-md-only.md) | Fold `CLAUDE.md` into `AGENTS.md` (one instruction file), and keep gstack from quietly recreating it | P1 | M | 001, 002, 003 | TODO |
@@ -46,6 +46,13 @@ The shipping review then corrected the deleted-file copy filter in 001/002, allo
 changelog references in 004, corrected 006's filtered test count, and aligned 007's template CI
 with its Rust toolchain pin. Targeted checks cover these corrections; the full sequential
 rehearsal totals above precede them and are not a new execution of the updated plans.
+
+**Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
+container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
+shellcheck 0.11.0; the image's shellcheck 0.9.0 flags plan 004's harness code. Plans 005–007
+were edited to keep those choices, and 007 now installs a pinned rustup and must check the job
+time. Those edits were not rehearsed. The review also added 2 harness tests, so the baseline
+after 001 is 11 and every later total above is 2 higher.
 
 ## How to run these plans
 

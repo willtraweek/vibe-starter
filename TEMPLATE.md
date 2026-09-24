@@ -12,7 +12,7 @@ my conventions instead of empty. This file is removed by `./bootstrap`.
 3. Fill in the placeholders the checklist prints, choose a stack, and start building.
 
 `./bootstrap` personalizes the bootstrap-owned placeholders, optionally notes gstack, prints a
-first-run checklist, and then deletes itself and this file.
+first-run checklist, and then deletes itself and the template-only paths listed below.
 
 ## What's inside
 
@@ -29,3 +29,23 @@ first-run checklist, and then deletes itself and this file.
 
 The testing doctrine is carried as *philosophy*; the coverage gates are per-stack. Don't
 scaffold a coverage gate until you've chosen a language and test runner.
+
+## Maintaining the template
+
+Changes to `bootstrap` or `scripts/check.sh` must keep the self-test and shellcheck green:
+
+```sh
+./scripts/template-selftest.sh             # every test
+./scripts/template-selftest.sh bootstrap   # only tests whose name contains "bootstrap"
+shellcheck bootstrap scripts/*.sh          # CI lints first, with shellcheck 0.11.0
+```
+
+The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
+`scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
+that need gitleaks are skipped locally when it is missing; CI installs it and treats skips as
+failures. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
+`willtraweek/vibe-starter`.
+
+Template-only paths, deleted by `./bootstrap`: `TEMPLATE.md`, `scripts/template-selftest.sh`,
+`.github/workflows/template-selftest.yml`, `plans/`. A repo created with **Use this template**
+still has them in its initial commit; `npx degit` copies no history.

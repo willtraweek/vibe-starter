@@ -8,7 +8,8 @@
 #
 # It replaces the bootstrap-owned placeholders ({{PROJECT_NAME}}, {{YEAR}}),
 # initializes git if needed, optionally notes gstack, prints a checklist of the
-# placeholders you still need to hand-fill, then deletes itself and TEMPLATE.md.
+# placeholders you still need to hand-fill, then deletes itself and the
+# template-only paths (TEMPLATE.md, the template self-test, plans/).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -99,8 +100,11 @@ Then choose a stack and:
   - delete DESIGN.md and/or MISSION.md if this project doesn't need them
 CHECKLIST
 
-# --- Finalize: mark done, drop template meta, self-delete (last) ------------
+# --- Finalize: mark done, drop template-only paths, self-delete (last) ------
+# Template-only paths exist to maintain vibe-starter itself and don't belong in
+# a project created from it. Keep this list in sync with TEMPLATE.md.
+TEMPLATE_ONLY="TEMPLATE.md scripts/template-selftest.sh .github/workflows/template-selftest.yml plans"
 date +%Y-%m-%d > .bootstrapped
-rm -f TEMPLATE.md
+for p in $TEMPLATE_ONLY; do rm -rf "$p"; done
 rm -f "$ROOT/bootstrap"
 echo "Removed bootstrap. Welcome to $NAME."
