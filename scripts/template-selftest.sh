@@ -617,6 +617,328 @@ test_check_symlinked_hook_refuses_a_worktree_without_check_sh() {
   assert_contains "$wt.out" "not checking a different checkout"
 }
 
+# --- tests: bootstrap hardening (plan 003) ------------------------------------
+test_bootstrap_name_flag_requires_a_value() {
+  local d="$WORK/name-no-value/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a value" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection"
+}
+test_bootstrap_rejects_empty_name() {
+  local d="$WORK/name-empty/proj" rc
+  fresh_copy "$d"
+  run_bootstrap "$d" --name '' --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a non-empty value"
+}
+test_bootstrap_rejects_a_flag_as_the_name() {
+  local d="$WORK/name-flag/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "must start with a letter or digit" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection"
+}
+test_bootstrap_defaults_name_from_origin_remote_not_workspace_dir() {
+  local d="$WORK/conductor/widget/montreal"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/widget.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "widget gitleaks config"' || return 1
+  assert_not_contains "$d/.gitleaks.toml" "montreal"
+}
+test_bootstrap_defaults_name_from_directory_without_remote() {
+  local d="$WORK/no-remote/plainproj"
+  fresh_copy "$d"
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "plainproj gitleaks config"'
+}
+test_bootstrap_refuses_the_template_repo_itself() {
+  local d="$WORK/template-itself/proj" before rc
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin https://github.com/willtraweek/vibe-starter.git) \
+    || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "vibe-starter template repo itself" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+  run_bootstrap "$d" --name forced --yes --force || fail "--force run exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "forced gitleaks config"'
+}
+test_bootstrap_in_a_worktree_skips_git_init() {
+  local main="$WORK/wt/main" wt="$WORK/wt/workspace"
+  fresh_copy "$main"
+  (cd "$main" && git init -q && git add -A && git commit -qm init && git worktree add -q "$wt" -b feature) \
+    || fail "worktree setup failed" || return 1
+  run_bootstrap "$wt" --name proj --yes || fail "bootstrap exited $?: $(cat "$wt.out")" || return 1
+  assert_contains "$wt.out" "Already a git repository" || return 1
+  assert_not_contains "$wt.out" "Initialized a fresh git repository" || return 1
+  [ -f "$wt/.git" ] || fail "worktree .git file was replaced"
+}
+test_bootstrap_checklist_names_every_file_with_placeholders() {
+  local d="$WORK/checklist/proj" f missing=""
+  fresh_copy "$d"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?" || return 1
+  for f in $(cd "$d" && grep -rl --exclude-dir=.git '{{' . | sed 's|^\./||'); do
+    grep -qF -- "$f" "$d.out" || missing="$missing $f"
+  done
+  [ -z "$missing" ] || fail "checklist does not mention:$missing"
+}
+test_bootstrap_nested_copy_ignores_the_enclosing_repo() {
+  # A copy inside another repo is its own project: it must not take that repo's
+  # name, nor be refused because that repo is the template.
+  local outer="$WORK/nested/outer" d="$WORK/nested/outer/packages/newsvc"
+  mkdir -p "$outer"
+  (cd "$outer" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git) \
+    || fail "outer repo setup failed" || return 1
+  fresh_copy "$d"
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "newsvc gitleaks config"' || return 1
+  assert_contains "$d.out" "Initialized a fresh git repository." || return 1
+  assert_contains "$d.out" "Note: this directory is inside another repository" || return 1
+  [ -d "$d/.git" ] || fail "expected a nested repo: $d/.git is not a directory"
+}
+test_bootstrap_refusal_covers_origin_variants_and_hides_the_url() {
+  # Any case or URL shape, even with an explicit --name. The URL can carry a token
+  # (spliced in at run time so credential scanners don't flag this file).
+  local i=0 url d rc tok=not-a-real-token
+  for url in git@github.com:acme-example/Vibe-Starter.git \
+             https://github.com/acme-example/VIBE-STARTER.git \
+             ssh://git@github.com/acme-example/vibe-starter \
+             git@git.example.com:vibe-starter.git \
+             https://github.com/acme-example/vibe-starter/ \
+             https://github.com/acme-example/vibe-starter.GIT// \
+             /srv/git/vibe-starter/.git \
+             /srv/git/vibe-starter.git/.git \
+             /srv/git/vibe-starter/.git/. \
+             /srv/git/vibe-starter/.git/.. \
+             "https://user-example:${tok}@github.com/acme-example/vibe-starter.git"; do
+    i=$((i + 1)); d="$WORK/refuse-variants/$i/proj"
+    fresh_copy "$d"
+    (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
+    run_bootstrap "$d" --name other --yes; rc=$?
+    [ "$rc" -eq 3 ] || fail "origin $url: expected exit 3, got $rc" || return 1
+    assert_not_contains "$d.out" "$tok" || return 1
+  done
+}
+test_bootstrap_forced_run_on_the_template_warns_about_origin() {
+  local d="$WORK/forced-warns/proj" rc
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "git remote set-url origin" || return 1
+  run_bootstrap "$d" --force --name forced --yes; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.out" "origin still points at the vibe-starter template" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "forced gitleaks config"'
+}
+test_bootstrap_name_equals_form() {
+  local d="$WORK/name-equals/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name= --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--name needs a non-empty value" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection" || return 1
+  run_bootstrap "$d" --name=eqform --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "eqform gitleaks config"'
+}
+test_bootstrap_repo_reached_through_a_symlink_skips_git_init() {
+  # Pins the path comparison on Linux too, where /tmp is not a symlink.
+  local real="$WORK/symlinked/real" link="$WORK/symlinked/link"
+  fresh_copy "$real"
+  (cd "$real" && git init -q) || fail "git setup failed" || return 1
+  ln -s "$real" "$link" || fail "symlink setup failed" || return 1
+  run_bootstrap "$link" --name proj --yes || fail "bootstrap exited $?: $(cat "$link.out")" || return 1
+  assert_contains "$link.out" "Already a git repository"
+}
+test_bootstrap_refuses_the_template_from_a_worktree() {
+  # The maintainer's real layout: a Conductor workspace is a linked worktree of
+  # the template, so .git is a file and origin lives in the main repo's config.
+  local main="$WORK/wt-template/main" wt="$WORK/wt-template/montreal" before rc
+  fresh_copy "$main"
+  (cd "$main" && git init -q && git remote add origin https://github.com/acme-example/vibe-starter.git \
+    && git add -A && git commit -qm init && git worktree add -q "$wt" -b feature) \
+    || fail "worktree setup failed" || return 1
+  before="$(tree_fingerprint "$wt")"
+  run_bootstrap "$wt" --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$wt.out" "vibe-starter template repo itself" || return 1
+  [ "$before" = "$(tree_fingerprint "$wt")" ] || fail "files changed despite the refusal"
+}
+test_bootstrap_reports_a_failed_git_init() {
+  # A git that fails every call (here: a stub standing in for "not installed")
+  # must not abort the run: bootstrap says so and finishes without a repo.
+  local d="$WORK/no-git/proj" bin="$WORK/no-git/bin" rc
+  fresh_copy "$d"
+  mkdir -p "$bin" && printf '#!/bin/sh\nexit 127\n' > "$bin/git" && chmod +x "$bin/git" \
+    || fail "git stub setup failed" || return 1
+  (PATH="$bin:$PATH"; run_bootstrap "$d" --name proj --yes); rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.out" "git init failed (is git installed?) - skipped." || return 1
+  assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
+  assert_absent "$d/.git" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "proj gitleaks config"' || return 1
+  assert_exists "$d/.bootstrapped" || return 1
+  assert_absent "$d/bootstrap"
+}
+test_bootstrap_name_must_start_with_a_letter_or_digit() {
+  # Explicit names and an origin-derived default get the same leading-character
+  # rule, and a rejected default is recoverable with --name.
+  local d="$WORK/leading-char/proj" before rc name
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/.dotfiles.git) \
+    || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  for name in .hidden _private .. ' spaced'; do
+    run_bootstrap "$d" --name "$name" --yes; rc=$?
+    [ "$rc" -eq 2 ] || fail "name '$name': expected exit 2, got $rc" || return 1
+    assert_contains "$d.out" "must start with a letter or digit: '$name'" || return 1
+  done
+  run_bootstrap "$d" --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "must start with a letter or digit: '.dotfiles'" || return 1
+  assert_contains "$d.out" "(from the origin remote; pass --name <project>)" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections" || return 1
+  run_bootstrap "$d" --name 9lives --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "9lives gitleaks config"'
+}
+test_bootstrap_name_checks_are_ascii_only() {
+  # Bracket ranges collate per-locale; en_US.UTF-8 on macOS bash 3.2 folds
+  # accented letters into A-Za-z, so both checks must still catch them.
+  local d="$WORK/ascii-only/proj" before cafe eclair loc locales rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  cafe=$(printf 'caf\303\251')
+  eclair=$(printf '\303\251clair')
+  locales="C"
+  case "$(locale -a 2>/dev/null)" in
+    *en_US.UTF-8*|*en_US.utf8*) locales="$locales en_US.UTF-8" ;;
+  esac
+  for loc in $locales; do
+    (LC_ALL="$loc"; export LC_ALL; run_bootstrap "$d" --name "$cafe" --yes); rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "unexpected characters" || return 1
+    (LC_ALL="$loc"; export LC_ALL; run_bootstrap "$d" --name "$eclair" --yes); rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "must start with a letter or digit" || return 1
+  done
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections"
+}
+test_bootstrap_defaults_name_from_directory_in_a_repo_without_origin() {
+  # Its own repo but no origin remote: fall back to the directory name.
+  local d="$WORK/no-origin/localproj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "localproj gitleaks config"' || return 1
+  assert_contains "$d.out" "Already a git repository"
+}
+test_bootstrap_leaves_an_unreadable_git_alone() {
+  # The old `[ -d .git ]` check never re-initialized an existing .git, even one
+  # git can't read (corrupt, or owned by another user). Keep it that way under
+  # --force, which is now required here since an unreadable .git otherwise
+  # refuses outright (see test_bootstrap_refuses_when_git_cannot_read_the_repo).
+  local d="$WORK/unreadable-git/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes --force || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "Found a .git that git can't read" || return 1
+  assert_not_contains "$d.out" "Initialized a fresh git repository" || return 1
+  assert_absent "$d/.git/HEAD"
+}
+test_bootstrap_leaves_a_dangling_git_symlink_alone() {
+  # -e follows symlinks, so a dangling .git link looked absent and git init
+  # created a repository at its target, outside the project. --force is now
+  # required here too (see test_bootstrap_refuses_when_git_cannot_read_the_repo).
+  local d="$WORK/dangling-link/proj" target="$WORK/dangling-link/elsewhere/.git"
+  fresh_copy "$d"
+  mkdir -p "${target%/.git}" && ln -s "$target" "$d/.git" || fail "symlink setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes --force || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "Found a .git that git can't read" || return 1
+  assert_absent "$target"
+}
+test_bootstrap_refuses_when_git_cannot_read_the_repo() {
+  # OWN_REPO is 0 whenever git can't read .git (corrupt, a dangling gitfile,
+  # dubious ownership) -- exactly the gap where the refusal used to fail open
+  # and bootstrap would personalize (and delete plans/ from) someone's repo.
+  local d before rc
+
+  d="$WORK/refuses-unreadable-git/corrupt/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  d="$WORK/refuses-unreadable-git/dangling-gitfile/proj"
+  fresh_copy "$d"
+  printf 'gitdir: %s\n' "$WORK/refuses-unreadable-git/gone" > "$d/.git"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  # Optional third case: dubious ownership, simulated the same way git's own
+  # test suite does (real different-UID setup needs privileges we don't have).
+  d="$WORK/refuses-unreadable-git/dubious-ownership/proj"
+  fresh_copy "$d"
+  (cd "$d" && git init -q) || fail "git setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  GIT_TEST_ASSUME_DIFFERENT_OWNER=1 run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "there is a .git here that git can't read" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the refusal" || return 1
+
+  # Inside another repo, git skips a corrupt .git silently: still refuse, and
+  # say why instead of printing an empty error.
+  d="$WORK/refuses-unreadable-git/nested/outer/proj"
+  mkdir -p "${d%/proj}" && (cd "${d%/proj}" && git init -q) || fail "outer repo setup failed" || return 1
+  fresh_copy "$d"
+  (cd "$d" && git init -q && rm .git/HEAD) || fail "git setup failed" || return 1
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 3 "$rc" || return 1
+  assert_contains "$d.out" "git ignores it: not a valid repository"
+}
+test_bootstrap_origin_shapes_give_the_repo_name() {
+  # The name is the repo after the last / or :, near-misses of the template's
+  # name are not refused, and a token in a URL with no repo path never shows.
+  local i=0 pair url want d tok=not-a-real-token
+  for pair in 'git@git.example.com:widget.git|widget' \
+              'git@github.com:acme-example/vibe-starter-app.git|vibe-starter-app' \
+              'https://github.com/vibe-starter/widget.git|widget' \
+              "https://user-example:${tok}@git.example.com/|git.example.com"; do
+    url="${pair%|*}"; want="${pair#*|}"
+    i=$((i + 1)); d="$WORK/origin-shapes/$i/proj"
+    fresh_copy "$d"
+    (cd "$d" && git init -q && git remote add origin "$url") || fail "git setup failed" || return 1
+    run_bootstrap "$d" --yes || fail "origin $url: bootstrap exited $?: $(cat "$d.out")" || return 1
+    assert_contains "$d/.gitleaks.toml" "title = \"$want gitleaks config\"" || return 1
+    assert_not_contains "$d.out" "$tok" || return 1
+  done
+}
+test_bootstrap_non_tty_without_yes_takes_the_default_silently() {
+  # Plan 003 defect 1's agent path: no --name, no --yes, stdin not a TTY.
+  local d="$WORK/no-yes/montreal"
+  fresh_copy "$d"
+  (cd "$d" && git init -q && git remote add origin git@github.com:acme-example/widget.git) \
+    || fail "git setup failed" || return 1
+  run_bootstrap "$d" || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_not_contains "$d.out" "Project name [" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "widget gitleaks config"'
+}
+
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac

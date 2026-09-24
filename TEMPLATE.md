@@ -14,6 +14,10 @@ my conventions instead of empty. This file is removed by `./bootstrap`.
 `./bootstrap` personalizes the bootstrap-owned placeholders, optionally notes gstack, prints a
 first-run checklist, and then deletes itself and the template-only paths listed below.
 
+The project name defaults to the `origin` remote's repo name, else the directory name. Bad
+arguments exit 2. In the vibe-starter template repo itself, or where git can't read the
+directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run anyway.
+
 ## What's inside
 
 - `CLAUDE.md`, `AGENTS.md` — how Claude and other agents work in the repo (routing, protocol).
