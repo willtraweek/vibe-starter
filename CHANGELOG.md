@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to {{PROJECT_NAME}} are recorded here. Newest first, semver sections.
+All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
+release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
 ## [0.0.4] - 2026-09-24
 
@@ -82,14 +83,9 @@ All notable changes to {{PROJECT_NAME}} are recorded here. Newest first, semver 
   one shared agent instruction file, template maintenance, and optional Python and Rust stacks.
 - A plan index with dependencies, verification evidence, and separate PR execution guidance.
 
-## [Unreleased]
+## [0.0.0] - 2026-06-12
 
 ### Added
-- Initial scaffold from the vibe-starter template.
-
-<!--
-## [0.1.0] - {{YEAR}}-MM-DD
-### Added
-### Changed
-### Fixed
--->
+- Initial template scaffold (#1): doctrine files (`CLAUDE.md`, `AGENTS.md`, `DOCTRINE.md`,
+  `TESTING.md`, `ENGINEERING.md`), working-doc skeletons, config, an inert CI example,
+  `./bootstrap`, and `scripts/check.sh`.
