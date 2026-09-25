@@ -11,6 +11,14 @@ Deviations require explicit approval and a new entry in the Decisions Log.
 > until you have chosen a language and test runner** — wiring a 90% gate before there is code
 > to cover just breeds empty-shell tests. Pick the stack, then instantiate the gates below.
 
+## Commands
+
+The exact commands for this repo; keep them in sync with `CLAUDE.md` → Commands.
+Fill these in as soon as a stack exists so agents and workflow skills can discover them.
+
+- Checks (guards that run before tests): `{{CHECK_CMD}}`
+- Tests: `{{TEST_CMD}}`
+
 ## Why Tiers, Not One Number
 
 Testing is the most-neglected part of vibe-coded projects, so the reflex is to over-correct

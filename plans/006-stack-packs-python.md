@@ -18,7 +18,7 @@
 - **Effort**: L
 - **Risk**: MED. `bootstrap` gains a code path, and a new project gets live CI. The no-stack path is
   pinned by an existing and a new test.
-- **Depends on**: 001–005 (the harness, the guards, the hardened `bootstrap`, `AGENTS.md`/`TESTING.md`
+- **Depends on**: 001–005 (the harness, the guards, the hardened `bootstrap`, `CLAUDE.md`/`TESTING.md`
   → Commands, and `template/`)
 - **Category**: direction
 - **Planned at**: commit `1984ab7` plus plans 001–005, 2026-09-23
@@ -125,10 +125,13 @@ Without `--stack`, nothing changes. Rust follows in plan 007, using the same mec
 - **gitleaks install moves into a composite action.** After this plan, three workflows need it
   (the template's self-test, `ci.yml.example`, the pack's `ci.yml`), so `ENGINEERING.md`'s rule of
   three says extract it. It moves to `.github/actions/install-gitleaks/action.yml`.
-- **No `CLAUDE.md`.** Preserve plan 004's AGENTS.md architecture. Codex-generated gstack
-  workflows may parse AGENTS.md; native Claude workflows may parse CLAUDE.md. TESTING.md's
-  Commands section is the shared test-command surface. Keep host-specific advice qualified,
-  and do not create a shim as part of this plan; CI's coverage gate is independent of the host.
+- **Retain both instruction files.** Preserve revised plan 004's reciprocal required reading:
+  AGENTS.md owns install, trust boundary, privacy and ship gate; CLAUDE.md owns architecture,
+  Commands and skill routing. Codex-generated gstack workflows may parse AGENTS.md; native
+  Claude workflows may parse CLAUDE.md. TESTING.md's Commands section is the shared
+  test-command surface, synchronized with CLAUDE.md. Keep host-specific advice qualified;
+  CI's coverage gate is independent of the host. Packs fill existing placeholders without
+  adding Commands to AGENTS.md, replacing either instruction file, or introducing import shims.
 - **Name preflight.** After normalization and before *any* file mutation, invoke an optional
   pack-local `validate-name` shell script with package name and display name. Python and Rust
   reject reserved identifiers through this interface without requiring their runtimes.
@@ -136,28 +139,31 @@ Without `--stack`, nothing changes. Rust follows in plan 007, using the same mec
 ## Current state
 
 The state after plans 001–005 is checked by behavior, not stale file hashes. Record the
-passing predecessor test count as `baseline`; this revision has 40. Every final count below
-means `baseline + 8` (48 for that predecessor), not a reason to delete a newly added test:
+passing predecessor test count as `baseline`; revised plans 004 and 005 project 90. Every final
+count below means `baseline + 8` (98 for that predecessor), not a reason to delete a newly
+added test. These totals supersede the old rehearsal's 40/48 counts; verify them on execution:
 
 - `bootstrap` retains plan 003's argument/re-entry/worktree contracts and plan 005's skeleton
   swap, validated template-only markers, and original version persisted in
   `template/.bootstrap-version` across failed attempts.
 - `scripts/check.sh` has all predecessor guards. Insert stack guards without replacing it.
-- The self-test harness has 40 tests after revised plan 005. Helpers include `fresh_copy`,
+- The self-test harness has 90 tests after revised plan 005. Helpers include `fresh_copy`,
   `run_bootstrap`, `tree_fingerprint`, `fail`, `skip`, `assert_*`, `$WORK`, `$REPO`, and the
   complete-token `placeholder_inventory` from plan 005. Preserve its digest and delimiter
   validation; extend only its exclusion list for stack-pack assets.
-- The root instructions retain plan 005's maintainer-only blocks, and TESTING.md retains the
-  shared Commands section. Preserve both when applying the pack; host-specific interpretation
-  stays qualified in this plan rather than assuming plan 004's prose was rewritten.
+- The root instructions retain plan 004's reciprocal reading requirements and plan 005's
+  maintainer-only block in AGENTS.md. CLAUDE.md retains Commands and skill routing; TESTING.md
+  retains the shared Commands section and its maintainer-only block. Preserve these when
+  applying the pack; reciprocal reading does not make a skill's text parser follow references.
 
 If any contract differs, inspect the predecessor change before editing. Do not overwrite a
 newer correction with one of this plan's historic prototype excerpts.
 
 Placeholders a pack fills (all exist today): `{{INSTALL_CMD}}` (including
 `{{INSTALL_CMD: e.g. ...}}`), `{{DEV_CMD}}`, `{{BUILD_CMD}}`, `{{CHECK_CMD}}`, `{{TEST_CMD}}` in
-`AGENTS.md`, `README.md`, `TESTING.md`; `{{STACK: ...}}` in `README.md`; `{{SHIP_GATE: ...}}` in
-`AGENTS.md`; `{{COVERAGE_ENFORCEMENT: ...}}` in `TESTING.md`.
+`CLAUDE.md`, `README.md`, `TESTING.md`, plus the install placeholder in `AGENTS.md`;
+`{{STACK: ...}}` in `README.md`; `{{SHIP_GATE: ...}}` in `AGENTS.md`;
+`{{COVERAGE_ENFORCEMENT: ...}}` in `TESTING.md`.
 
 Conventions: bash 3.2 compatible (macOS `/bin/bash`); `#!/usr/bin/env bash` + header comment +
 `# --- Section ---` dividers; errors to stderr; `exit 2` for usage errors.
@@ -166,7 +172,7 @@ Conventions: bash 3.2 compatible (macOS `/bin/bash`); `#!/usr/bin/env bash` + he
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Self-test | `./scripts/template-selftest.sh` | `baseline + 8` passed, 0 failed/skipped (48 with revised plan 005) |
+| Self-test | `./scripts/template-selftest.sh` | `baseline + 8` passed, 0 failed/skipped (98 with revised plan 005) |
 | This plan's tests | `./scripts/template-selftest.sh stack` | 8 tests, all ok |
 | Shell lint | `shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name` | exit 0 |
 | YAML | `ruby -ryaml -e 'ARGV.each(&YAML.method(:load_file))' <files>` | exit 0 |
@@ -195,9 +201,9 @@ into your normal uv cache on first run.
 
 **Out of scope** (do NOT touch):
 
-- `AGENTS.md`, `TESTING.md`, `README.md`: the pack fills their placeholders at bootstrap time;
+- `AGENTS.md`, `CLAUDE.md`, `TESTING.md`, `README.md`: the pack fills their placeholders at bootstrap time;
   the template's copies keep them.
-- Any `CLAUDE.md` (see Design decisions).
+- Pack-owned replacements for either instruction file (see Design decisions).
 - A Rust pack (plan 007) or any other language.
 - `.editorconfig` (plan 007 adds `rs` to the 4-space rule).
 
@@ -291,6 +297,7 @@ test_bootstrap_without_stack_stays_stack_agnostic() {
   assert_absent "$d/pyproject.toml" || return 1
   assert_absent "$d/Cargo.toml" || return 1
   assert_contains "$d/.gitignore" "# Language sections" || return 1
+  assert_contains "$d/CLAUDE.md" "This template is stack-agnostic" || return 1
   assert_contains "$d.out" "Then choose a stack"
 }
 test_stack_pack_mechanism_with_a_fixture_pack() {
@@ -308,9 +315,11 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d/src/demo_thing/hello.txt" "package=demo_thing project=Demo Thing" || return 1
   assert_contains "$d/TESTING.md" "Tests: \`fixture-test --all\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`fixture-test --all\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`fixture-install\`" || return 1
   assert_contains "$d/AGENTS.md" "Install deps: \`fixture-install\`" || return 1
   assert_contains "$d/README.md" "Fixture stack" || return 1
-  assert_not_contains "$d/AGENTS.md" "This template is stack-agnostic" || return 1
+  assert_not_contains "$d/CLAUDE.md" "This template is stack-agnostic" || return 1
   assert_not_contains "$d/.gitignore" "# Language sections" || return 1
   assert_contains "$d/.gitignore" "fixture-out/" || return 1
   assert_exists "$d/.github/workflows/ci.yml" || return 1
@@ -462,7 +471,7 @@ test_stack_python_project_is_green_on_first_run() {
 
 **Verify**: `shellcheck scripts/template-selftest.sh` → exit 0. With uv installed,
 `./scripts/template-selftest.sh` → `baseline + 2` passed, 6 failed, 0 skipped
-(42 passed after the revised plan 005). Expected new failures:
+(92 passed after the revised plan 005). Expected new failures:
 unknown stack, digit-initial stack name, Python keyword name, fixture pack, Python coverage
 checker, and Python first-run gate. Both no-stack tests already pass, including the copy with
 no `template/stacks/` directory. Any predecessor test failure is unexpected. These failures are
@@ -471,8 +480,8 @@ STOP condition to this test-first phase.
 
 ### Step 2: Let `scripts/check.sh` run stack guards
 
-Insert this block directly **above** the `# --- Instruction files: AGENTS.md is the one agents read`
-line:
+Insert this block directly **above** the final `if [ "$status" = "0" ]; then` summary block.
+Revised plan 004 adds no instruction-file guard; preserve every existing predecessor guard:
 
 ```bash
 # --- Stack guards: scripts/check.d/*.sh -------------------------------------
@@ -719,7 +728,7 @@ if [ -n "$STACK" ]; then
         's/\{\{\Q$ENV{KEY}\E(?::[^}]*)?\}\}/$ENV{VAL}/g' "$f"
     done
   done
-  perl -0pi -e 's/^This template is stack-agnostic\. Fill these in once a stack is chosen, then delete this note\.\n//m' AGENTS.md
+  perl -0pi -e 's/^This template is stack-agnostic\. Fill these in once a stack is chosen, then delete this note\.\n//m' CLAUDE.md
   perl -0pi -e 's/\n# =+\n# Language sections.*\z/\n/s' .gitignore
   cat "$pack/gitignore" >> .gitignore
   if [ -f .github/workflows/ci.yml ]; then rm -f .github/workflows/ci.yml.example; fi
@@ -1339,10 +1348,10 @@ Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floo
 
 ### Step 7: Full verification and a manual look
 
-The expected total is the recorded predecessor `baseline + 8` (48 in the verified sequence).
+The expected total is the recorded predecessor `baseline + 8` (98 in the revised planned sequence).
 
 ```sh
-./scripts/template-selftest.sh            # 48 passed, 0 failed, 0 skipped
+./scripts/template-selftest.sh            # 98 passed, 0 failed, 0 skipped
 CI=true ./scripts/template-selftest.sh    # same (fails if anything skipped)
 ./scripts/check.sh                        # exit 0
 ```
@@ -1380,19 +1389,20 @@ though bootstrap's lock hook is best effort.
   - unknown stacks, digit-initial names, and normalized Python keywords are rejected before file changes;
   - the no-stack path stays stack-agnostic, including when template/stacks is absent;
   - a synthetic fixture pack exercises every mechanism step: file copy with `__package__`,
-    placeholder fill including the `{{KEY: description}}` form, `.gitignore` swap, CI activation,
+    placeholder fill in retained CLAUDE.md/AGENTS.md and shared TESTING.md including the
+    `{{KEY: description}}` form, `.gitignore` swap, CI activation,
     the after-bootstrap hook, and provenance;
   - the coverage checker independently enforces global/tier lines and branches; rejects malformed
     schemas, missing members, zero statements, impossible totals, and invalid snapshots; allows
     explicitly branchless/empty cases; and blocks lowering floors or removing established members;
   - a real `--stack python` project passes its own `check.sh` and `coverage.sh`.
-- Final: `48 passed, 0 failed, 0 skipped`, with uv installed.
+- Final: `98 passed, 0 failed, 0 skipped`, with uv installed.
 
 ## Done criteria
 
 ALL must hold:
 
-- [ ] `./scripts/template-selftest.sh` exits 0 with `baseline + 8` passed (48 here), 0 failed/skipped
+- [ ] `./scripts/template-selftest.sh` exits 0 with `baseline + 8` passed (98 here), 0 failed/skipped
 - [ ] `CI=true ./scripts/template-selftest.sh` exits 0
 - [ ] All plan 005 marker/provenance contracts survive the targeted bootstrap diff
 - [ ] The shell-lint and YAML commands from the table exit 0
@@ -1412,7 +1422,8 @@ Stop and report back (do not improvise) if:
   network. Report the tail of `$WORK/stack-python/demo-app.gate.out` (the test prints it). Do not
   loosen the pack's lint rules, the 90% floor, or the tier minimums to get green.
 - `uv lock` fails in CI because PyPI does not have a version the pack's lower bounds require.
-- You feel the need to add a `CLAUDE.md` to the pack.
+- You feel the need to add a pack-owned `AGENTS.md` or `CLAUDE.md` that replaces the retained
+  project instruction files, or to move Commands into AGENTS.md.
 
 ## Maintenance notes
 
@@ -1424,13 +1435,13 @@ Stop and report back (do not improvise) if:
   - When bumping uv in CI, keep `setup-uv`'s pinned SHA and the `version:` input in step. The
     uv version must be one the action's release lists in its known checksums.
   - `requires-python`, `.python-version` and ty's inferred target all move together.
-- **Host-specific gstack integration.** Put shared check/test commands in TESTING.md. For
-  Codex-generated workflows, inspect the installed skill's AGENTS.md parsing before adding
-  settings there. Native Claude workflows may instead require explicit settings in a
-  `CLAUDE.md` shim whose first line is `@AGENTS.md`; that optional, separately requested change
-  must follow plan 004's guard. An import is not a promise that a skill's text parser follows
-  the imported file. Do not claim universal defaults or add a shim in this plan. The required
-  coverage gate remains `./scripts/coverage.sh`, independent of gstack's advisory estimates.
+- **Host-specific gstack integration.** Put shared check/test commands in TESTING.md and keep
+  them synchronized with CLAUDE.md's Commands. For Codex-generated workflows, inspect the
+  installed skill's AGENTS.md parsing before adding settings there. Native Claude workflows
+  may require explicit settings in the retained CLAUDE.md. Reciprocal required reading does
+  not make a skill's text parser follow references. Preserve both instruction files and do not
+  add import shims or an instruction-file guard. The required coverage gate remains
+  `./scripts/coverage.sh`, independent of gstack's advisory estimates.
 - **No stack after bootstrap.** Packs can only be applied at bootstrap, because `template/` is
   deleted afterwards. To add Python to an existing project, copy `template/stacks/python/files/`
   from the template repo by hand and fill the placeholders.

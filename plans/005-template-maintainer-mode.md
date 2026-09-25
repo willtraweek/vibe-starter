@@ -10,15 +10,15 @@
 > **Drift check (run first)**: `git diff --stat 1984ab7..HEAD -- VERSION CHANGELOG.md TODOS.md`
 > A change here is only expected if someone already ran gstack `/ship` on this repo. Step 3
 > handles that case explicitly. Plans 001–004 (dependencies) legitimately changed `bootstrap`,
-> `AGENTS.md`, `TESTING.md`, `TEMPLATE.md` and `scripts/`. Compare those against the post-004
-> excerpts below.
+> `AGENTS.md`, `CLAUDE.md`, `README.md`, `TESTING.md`, `TEMPLATE.md` and `scripts/`. Compare those
+> against the post-004 excerpts below.
 
 ## Status
 
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED. It changes which files a new project receives. It is guarded by 10 new tests, including retry and malformed-input regressions.
-- **Depends on**: 001, 002, 003, 004 (all edit the same files. 004 put `AGENTS.md`/`TESTING.md`
+- **Depends on**: 001, 002, 003, 004 (all edit the same files. 004 put `AGENTS.md`/`CLAUDE.md`/`TESTING.md`
   in the shape this plan extends.)
 - **Category**: tech-debt
 - **Planned at**: commit `1984ab7`, 2026-09-23
@@ -27,7 +27,7 @@
 
 In this repo, the root `VERSION`, `CHANGELOG.md` and `TODOS.md` are **skeletons**: the blank
 copies every new project starts from. The maintainer ships with gstack `/ship`, and
-`AGENTS.md` says never to hand-roll a ship. Facts verified in gstack 1.87.5.0 while planning:
+`CLAUDE.md` says never to hand-roll a ship. Facts verified in gstack 1.87.5.0 while planning:
 
 - `/ship` step 12 **always bumps the root `VERSION`**. A 3-part `0.0.0` stays 3-part and
   becomes `0.0.1`. There is no config key, environment variable or marker file to opt out.
@@ -89,8 +89,10 @@ All notable changes to {{PROJECT_NAME}} are recorded here. Newest first, semver 
 
 After plans 001–004:
 
-- `AGENTS.md` starts with `# Agents working on {{PROJECT_NAME}}`, a blank line, then the
-  `{{PROJECT_TAGLINE: ...}}` line. It has an exact `## Skill routing` line.
+- `AGENTS.md` starts with `# Agents working on {{PROJECT_NAME}}`, followed by its operating
+  protocol. `CLAUDE.md` retains the project tagline, architecture, Commands and exact
+  `## Skill routing` heading. Each file requires reading the other in full once per task;
+  preserve that reciprocal reading requirement and the split ownership from revised plan 004.
 - `TESTING.md` has a `## Commands` section (from plan 004) ending with:
 
   ```markdown
@@ -121,7 +123,7 @@ After plans 001–004:
 
 - `TEMPLATE.md` ends with the `## Maintaining the template` section from plan 001. Line 23
   reads ``- `README.md`, `CHANGELOG.md`, `TODOS.md`, `VERSION`, `docs/`, `.context/` — working scaffold.``
-- `scripts/template-selftest.sh` has 30 tests. Plan 001's
+- `scripts/template-selftest.sh` has 80 tests (74 before revised plan 004, plus its six). Plan 001's
   `test_bootstrap_removes_template_only_paths` contains the line
   `assert_absent "$d/plans" || return 1`. The runner section starts at
   `# --- runner ---`, and `FILTER="${1:-}"` is set near the top.
@@ -134,8 +136,8 @@ groups, each item an `### <Title>` with `**What:**`, `**Why:**`, `**Context:**`,
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Self-test | `./scripts/template-selftest.sh` | `selftest: 40 passed, 0 failed, 0 skipped` (30 + 10 new) |
-| Print the placeholder inventory | `./scripts/template-selftest.sh --print-inventory` | the 13-line list in step 7 |
+| Self-test | `./scripts/template-selftest.sh` | `selftest: 90 passed, 0 failed, 0 skipped` (80 + 10 new) |
+| Print the placeholder inventory | `./scripts/template-selftest.sh --print-inventory` | the 14-line list in step 7 |
 | Guard | `./scripts/check.sh` | exit 0 |
 | Shell lint | `shellcheck bootstrap scripts/check.sh scripts/template-selftest.sh` | exit 0 |
 
@@ -163,7 +165,7 @@ groups, each item an `### <Title>` with `**What:**`, `**Why:**`, `**Context:**`,
 **Out of scope** (do NOT touch):
 
 - The **value** in root `VERSION`. gstack owns it from now on. Don't bump or reset it.
-- `README.md`, `DOCTRINE.md`, `ENGINEERING.md`, `DESIGN.md`, `MISSION.md`, `docs/`. They stay
+- `CLAUDE.md`, `README.md`, `DOCTRINE.md`, `ENGINEERING.md`, `DESIGN.md`, `MISSION.md`, `docs/`. They stay
   skeletons at the root. The complete-token inventory protects placeholders; it does not freeze arbitrary prose.
 - `.gitignore` (don't un-ignore `.gstack/`, and don't add a `.gstack/version-path`).
 - The gstack installation itself.
@@ -239,7 +241,8 @@ test_skeleton_placeholders_are_intact() {
   local expected actual
   expected='.github/workflows/ci.yml.example 4 b54d42db089f26e1efd40c8fe67b923da6ecedea8d23d323c76e4e64d3371c80
 .gitleaks.toml 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
-AGENTS.md 22 251aa7d20b89b5e1b736509ddfce19cdda46939e3e78f3f038910917e77fd6c7
+AGENTS.md 7 24b65e92ead6eaca62bf62f865263db7846d12a25a7f6ece7e519385ebfeb9be
+CLAUDE.md 16 ad5fecd2b2c16cbe94f4ab75a68957d336bdcb852f52df0bb006db3368dfe4cf
 DESIGN.md 7 d7d0105be65334da5869323f56bbc467181a4fd9fae7f38db570ef000a945790
 DOCTRINE.md 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
 ENGINEERING.md 3 5a25f6421a333ad79cb00b36e89f756be496e290a103349eafd3d29322296243
@@ -302,7 +305,7 @@ test_bootstrap_strips_template_only_blocks() {
   [ -z "$hits" ] || fail "template-only markers survived in: $hits" || return 1
   assert_not_contains "$d/AGENTS.md" "You are in the vibe-starter template itself" || return 1
   assert_not_contains "$d/TESTING.md" "template-selftest" || return 1
-  grep -qx '## Skill routing' "$d/AGENTS.md" || fail "AGENTS.md lost its routing heading" || return 1
+  grep -qx '## Skill routing' "$d/CLAUDE.md" || fail "CLAUDE.md lost its routing heading" || return 1
   grep -qx '## Commands' "$d/TESTING.md" || fail "TESTING.md lost its Commands section"
 }
 test_placeholder_inventory_detects_same_count_corruption() {
@@ -365,7 +368,7 @@ SHIM
    ```
 
 **Verify**: `shellcheck scripts/template-selftest.sh` → exit 0. Run the suite and confirm
-the original 30 tests remain green. The new skeleton/provenance tests must fail until the
+the original 80 tests remain green. The new skeleton/provenance tests must fail until the
 implementation steps below; the helpers and preservation checks can already pass. Do not
 weaken tests to make this intentionally red intermediate state green.
 
@@ -510,8 +513,8 @@ Leave `VERSION` exactly as it is.
 
 ### Step 4: Add the two template-only blocks
 
-1. `AGENTS.md`: directly after the title line and its blank line, and before the
-   `{{PROJECT_TAGLINE: ...}}` line, insert:
+1. `AGENTS.md`: directly after the title line and its blank line, before the opening operating
+   protocol and reciprocal reading instructions, insert:
 
    ```markdown
    <!-- template-only:start -->
@@ -543,7 +546,7 @@ Leave `VERSION` exactly as it is.
 
 **Verify**: `./scripts/template-selftest.sh template_only_markers_are_balanced` → ok.
 The bootstrap rejection test is intentionally still red until step 5 adds its preflight.
-`./scripts/template-selftest.sh selftest_command` → ok. `grep -cx '## Skill routing' AGENTS.md`
+`./scripts/template-selftest.sh selftest_command` → ok. `grep -cx '## Skill routing' CLAUDE.md`
 → `1`.
 
 ### Step 5: Teach bootstrap to swap skeletons, strip template-only blocks, and record provenance
@@ -663,7 +666,7 @@ ok. The new project from `test_bootstrap_installs_project_skeletons_and_provenan
 This repo is two things at once: the template's own project, and the skeleton every new
 project starts from. Keep them apart:
 
-- **Skeleton files** are what a new project starts with: `AGENTS.md`, `DOCTRINE.md`,
+- **Skeleton files** are what a new project starts with: `AGENTS.md`, `CLAUDE.md`, `DOCTRINE.md`,
   `TESTING.md`, `ENGINEERING.md`, `README.md`, `DESIGN.md`, `MISSION.md`, `docs/`, the config
   files, `scripts/check.sh`, `.github/workflows/ci.yml.example`, and `template/skeleton/` (the
   project's own `VERSION`, `CHANGELOG.md`, `TODOS.md`). Their `{{...}}` placeholders are
@@ -715,13 +718,17 @@ other is the "Skeleton files" bullet. `grep -n 'Shipping with gstack' TEMPLATE.m
 ### Step 7: Check the placeholder inventory
 
 Run `./scripts/template-selftest.sh --print-inventory`. It must print exactly the list in
-`test_skeleton_placeholders_are_intact` (computed from the revised post-005 scratch build, applied after plans
-001–004; each SHA256 hashes the sorted, complete whitespace-normalized tokens):
+`test_skeleton_placeholders_are_intact`. The original scratch-build inventory assumed the
+superseded single-file plan 004. This revised expected inventory preserves the current
+AGENTS.md and CLAUDE.md tokens separately and adds this plan's template-only block; each SHA256
+hashes the sorted, complete whitespace-normalized tokens. Verify the full result after
+implementing plans 004 and 005; this plan edit is not a new implementation rehearsal.
 
 ```text
 .github/workflows/ci.yml.example 4 b54d42db089f26e1efd40c8fe67b923da6ecedea8d23d323c76e4e64d3371c80
 .gitleaks.toml 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
-AGENTS.md 22 251aa7d20b89b5e1b736509ddfce19cdda46939e3e78f3f038910917e77fd6c7
+AGENTS.md 7 24b65e92ead6eaca62bf62f865263db7846d12a25a7f6ece7e519385ebfeb9be
+CLAUDE.md 16 ad5fecd2b2c16cbe94f4ab75a68957d336bdcb852f52df0bb006db3368dfe4cf
 DESIGN.md 7 d7d0105be65334da5869323f56bbc467181a4fd9fae7f38db570ef000a945790
 DOCTRINE.md 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
 ENGINEERING.md 3 5a25f6421a333ad79cb00b36e89f756be496e290a103349eafd3d29322296243
@@ -734,7 +741,7 @@ template/skeleton/CHANGELOG.md 2 033352f6b40172964595ffde23b7c162618fe6a2ce8c7f3
 template/skeleton/TODOS.md 2 54fdbe3163f63aa797cde77414a02b1fcdf26fabe1afa24f7a8b824bbe7875f6
 ```
 
-**Verify**: `./scripts/template-selftest.sh` → `selftest: 40 passed, 0 failed, 0 skipped`.
+**Verify**: `./scripts/template-selftest.sh` → `selftest: 90 passed, 0 failed, 0 skipped`.
 `./scripts/check.sh` → exit 0.
 
 ## Test plan
@@ -746,15 +753,16 @@ template/skeleton/TODOS.md 2 54fdbe3163f63aa797cde77414a02b1fcdf26fabe1afa24f7a8
   - `TESTING.md` gives `/ship` the self-test command;
   - the skeleton `TODOS.md` passes gstack's structure check;
   - bootstrap installs the skeletons and preserves original provenance across a failure and retry;
-  - bootstrap strips the blocks without touching surrounding content, `## Skill routing` or `## Commands`;
+  - bootstrap strips the blocks without touching reciprocal reading instructions,
+    CLAUDE.md's `## Skill routing` or TESTING.md's `## Commands`;
   - `template/` is removed.
-- Final: `40 passed, 0 failed, 0 skipped`. `CI=true` gives the same.
+- Final: `90 passed, 0 failed, 0 skipped`. `CI=true` gives the same.
 
 ## Done criteria
 
 ALL must hold:
 
-- [ ] `./scripts/template-selftest.sh` exits 0 with `40 passed, 0 failed, 0 skipped`
+- [ ] `./scripts/template-selftest.sh` exits 0 with `90 passed, 0 failed, 0 skipped`
 - [ ] `CI=true ./scripts/template-selftest.sh` exits 0
 - [ ] `./scripts/template-selftest.sh --print-inventory` matches the list in step 7
 - [ ] `cat template/skeleton/VERSION` → `0.0.0`; the root `VERSION` value is unchanged from before this plan
@@ -773,7 +781,7 @@ Stop and report back (do not improvise) if:
   earlier plan's recorded deviation. Report the diff. Do not just paste your output into the
   test.
 - A test from plans 001–004 fails at any point.
-- Making something pass seems to require moving `README.md`, `AGENTS.md`, or any doctrine file
+- Making something pass seems to require moving `README.md`, `AGENTS.md`, `CLAUDE.md`, or any doctrine file
   into `template/`.
 
 ## Maintenance notes
@@ -792,5 +800,5 @@ Stop and report back (do not improvise) if:
 - If gstack changes its TODOS format or adds a version opt-out, revisit
   `test_skeleton_todos_pass_gstack_structure_check` and this plan's rationale.
 - Reviewer focus: the order of the swap, replace and strip steps in `bootstrap`, and a
-  manual read of a freshly bootstrapped project's `AGENTS.md`/`TESTING.md` for leftover blank
+  manual read of a freshly bootstrapped project's `AGENTS.md`/`CLAUDE.md`/`TESTING.md` for leftover blank
   lines around the stripped blocks.

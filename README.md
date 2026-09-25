@@ -30,8 +30,9 @@
 
 ## Docs
 
-- `CLAUDE.md` — how agents work in this repo (routing, conventions, change philosophy).
-- `AGENTS.md` — install + operating protocol for non-Claude agents.
+- `CLAUDE.md` — architecture, commands, conventions, and skill routing; also requires `AGENTS.md`.
+- `AGENTS.md` — install, trust boundary, ship gate, and privacy; also requires `CLAUDE.md`.
+  Every agent reads both files, regardless of its entry point.
 - `DOCTRINE.md` — the cross-project engineering ethos this repo inherits.
 - `TESTING.md` — the testing doctrine (tiers, gates, named invariants).
 - `ENGINEERING.md` — code-organization standards (file-size smells, rule-of-three).

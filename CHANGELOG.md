@@ -2,6 +2,20 @@
 
 All notable changes to {{PROJECT_NAME}} are recorded here. Newest first, semver sections.
 
+## [0.0.4] - 2026-09-24
+
+### Changed
+- Agents entering through either `AGENTS.md` or `CLAUDE.md` must read both files once before
+  task work; each file keeps its existing responsibilities and placeholders.
+- Agent skill routing uses host-supported invocation and current context-save, context-restore
+  and run names; `TESTING.md` exposes check/test commands alongside `CLAUDE.md`.
+- README, template guidance and the bootstrap checklist describe the companion instruction
+  files, and the remaining implementation plans preserve this layout.
+
+### Added
+- Six source/generated-project regression tests for companion reading, skill routing,
+  command discovery and onboarding, bringing the template suite to 80 tests.
+
 ## [0.0.3] - 2026-09-24
 
 ### Added

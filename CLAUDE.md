@@ -8,6 +8,12 @@ This file tells an agent how to work in this repo. Read it before making changes
 narrow down, prefer small surgical edits over sweeping rewrites, and always leave the repo green
 (checks and tests both exit 0).
 
+## Required companion instructions
+
+Before starting task work, read `./AGENTS.md` in full. Both files' instructions apply.
+Read each file once per task; if you already read the companion, do not follow the reference back again.
+Keep shared rules consistent. If the two files conflict, surface the conflict instead of silently choosing one.
+
 ## Architecture
 
 {{ARCHITECTURE: describe the high-level design and the main modules / boundaries. Note any
@@ -21,6 +27,8 @@ this whenever you add or significantly change a core file.}}
 ## Commands
 
 This template is stack-agnostic. Fill these in once a stack is chosen, then delete this note.
+
+Keep the check and test commands in sync with `TESTING.md` → Commands.
 
 - Install / bootstrap: `{{INSTALL_CMD}}`
 - Dev / run locally: `{{DEV_CMD}}`
@@ -99,9 +107,10 @@ it once; it's the "why" behind the standards above.
 
 ## Skill routing
 
-When the user's request matches an available skill, ALWAYS invoke it using the Skill tool as
-your FIRST action. Do NOT answer directly, and do NOT use other tools first. These skills carry
-specialized workflows that produce better results than an ad-hoc answer.
+When the user's request matches an available skill, invoke it before doing the task.
+Use the host's supported skill mechanism; if no Skill tool exists, read and follow that skill's SKILL.md.
+Load the required repository instructions first. These skills carry specialized workflows
+that produce better results than an ad-hoc answer.
 
 **NEVER hand-roll ship operations.** Do not manually run git commit + push + `gh pr create` when
 `/ship` is available. `/ship` handles version bump, CHANGELOG, doc updates, pre-landing review,
@@ -126,11 +135,11 @@ let it own the commits.
 | Ship: bump version, changelog, test, PR | `ship` |
 | Land and deploy | `land-and-deploy` |
 | Update docs after shipping | `document-release` |
-| Save progress / checkpoint / "where was I" / resume | `checkpoint` |
+| Save progress / checkpoint | `context-save` |
+| "Where was I" / resume saved work | `context-restore` |
 | Code-health dashboard / quality check | `health` |
 | Weekly engineering retro | `retro` |
-| Verify a change actually works by running the app | `verify` |
-| Run / launch / screenshot the app | `run` |
+| Run / launch / screenshot the app, or verify a change works in it | `run` |
 
 {{PROJECT_SKILLS: add any project-specific skills here, and prune rows above that don't apply to
 this project.}}

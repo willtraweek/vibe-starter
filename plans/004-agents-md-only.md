@@ -1,657 +1,337 @@
-# Plan 004: Fold `CLAUDE.md` into `AGENTS.md` so the template ships one instruction file, and keep gstack from quietly recreating `CLAUDE.md`
+# Plan 004: Keep `AGENTS.md` and `CLAUDE.md`, and require agents entering through either to read both
 
-> **Executor instructions**: Follow this plan step by step. Run every
-> verification command and confirm the expected result before moving to the
-> next step. If anything in the "STOP conditions" section occurs, stop and
-> report — do not improvise. When done, update the status row for this plan
-> in `plans/README.md` — unless a reviewer dispatched you and told you they
-> maintain the index.
+> **Executor instructions**: Follow this plan step by step, run its verification, and honor
+> the STOP conditions. Update `plans/README.md` when implementation is complete.
 >
-> **Drift check (run first)**: `git diff --stat 1984ab7..HEAD -- CLAUDE.md AGENTS.md README.md TEMPLATE.md TESTING.md`
-> Plans 001–003 (dependencies) legitimately changed `TEMPLATE.md` (a new section at the end),
-> `bootstrap`, `scripts/check.sh` and `scripts/template-selftest.sh`. Any change to `CLAUDE.md`,
-> `AGENTS.md`, `README.md` or `TESTING.md` since `1984ab7` is a STOP condition.
+> **Revision, 2026-09-24:** The maintainer chose to retain both instruction files with
+> reciprocal required reading. This replaces the original consolidation, deletion, shim and
+> instruction-file guard design. The historical filename is retained to preserve links.
+> Implemented and verified on 2026-09-24; see the execution evidence below.
 
 ## Status
 
+- **State**: DONE (six new tests; complete suite: 80 passed, 0 failed, 0 skipped)
 - **Priority**: P1 (requested by the maintainer)
-- **Effort**: M
-- **Risk**: MED. It changes which file every agent reads first. It is mitigated by tests and a
-  guard.
-- **Depends on**: 001 (harness), 002 (`check_fixture`/`run_check` test helpers and the current
-  `scripts/check.sh` layout), 003 (checklist lines in `bootstrap`)
+- **Effort**: S
+- **Risk**: LOW. Preserve both entry points and their existing responsibilities.
+- **Depends on**: 001–003 (landed harness and bootstrap behavior)
 - **Category**: dx
-- **Planned at**: commit `1984ab7`, 2026-09-23
+- **Originally planned at**: `1984ab7`, 2026-09-23
+- **Revised against**: `ba7ca85`, 2026-09-24; predecessor suite: 74 tests.
 
-## Why this matters
+## Execution evidence — 2026-09-24
 
-The maintainer wants one instruction file. Today the template ships two that overlap:
-`CLAUDE.md` (136 lines: architecture, commands, standards, skill routing) and `AGENTS.md`
-(43 lines: install, trust boundary, protocol). Non-Claude agents are told to read both.
-`AGENTS.md` is the cross-agent standard. Codex, OpenClaw, Hermes and gstack's own `codex` host
-treat it as *the* instructions file, and Claude Code reads it natively since v2.1.277.
+- Baseline checks passed; normal and CI-mode self-tests each passed 74/74 with zero skips.
+- Before instruction edits, the six new tests produced the expected one pass and five
+  failures. After implementation, all six and the existing checklist test passed.
+- `git diff --check`, shellcheck 0.11.0, and `./scripts/check.sh` passed. Gitleaks found no
+  leaks; optional editorconfig-checker was unavailable, so formatting was not checked by it.
+- Full normal and `CI=true` suites each passed **80 tests, 0 failed, 0 skipped**. No hosted
+  GitHub Actions run was performed for this implementation.
+- All six AGENTS and 16 CLAUDE complete placeholder tokens are unchanged from `ba7ca85`;
+  diff review confirmed preservation of the remaining substantive rules.
+- Fresh generated-project smoke sessions passed with Codex CLI 0.155.1 (`gpt-6-astra`) and
+  Claude Code 2.1.281 (`claude-opus-5-5[1m]`). Traces show one explicit read of each companion
+  file, in AGENTS-first and CLAUDE-first order respectively. Both identified rule ownership
+  and stopped following the reciprocal reference after reading both. Fixture contents stayed
+  unchanged, and neither ran project checks.
+- The first Claude smoke used `claude-fable-5-1` and preloaded both files through an existing
+  user setting. The second invocation excluded user settings to verify CLAUDE-first reading;
+  no global configuration was changed. These are observed smoke results, not a guarantee
+  that every host or model will follow the instructions.
+- Logs, host traces, and the placeholder baseline are saved locally in `.context/plan-004/`.
 
-Two ecosystem facts shape how this must be done. Both were verified against the tools' docs and
-source while planning:
+## Decision and intended behavior
 
-1. **Claude Code only reads `AGENTS.md` when no `CLAUDE.md` exists.** Its default setting reads
-   `AGENTS.md` only when there is no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in
-   the working directory or above. A `CLAUDE.md` that reappears silently hides `AGENTS.md`.
-   The exception is a `CLAUDE.md` that imports it with an `@AGENTS.md` line. (The maintainer's
-   own `~/.claude/settings.json` sets `instructionFiles: claude-md-and-agents-md`, which loads
-   both. Other machines and collaborators use the default.)
-2. **gstack (the maintainer's workflow suite) defaults to `CLAUDE.md`** and recreates it:
-   - Every gstack skill's preamble offers to *create and commit* a `CLAUDE.md` with routing
-     rules. It skips the offer only if `CLAUDE.md` or `AGENTS.md` contains the exact,
-     case-sensitive text `## Skill routing`.
-   - `/ship` (step 4) looks for the test command only in `CLAUDE.md` and `TESTING.md`. If it
-     has to ask, it saves the answer into `CLAUDE.md`, creating it.
-   - `/setup-deploy`, `/health`, `/design-consultation` and `/setup-gbrain` write their settings
-     into `CLAUDE.md` and create it if it is missing.
+Both files remain substantive, tracked files in the template and generated projects:
 
-So "delete `CLAUDE.md`" alone would be undone by the next gstack run, and on default Claude Code
-settings that undo would silently drop every instruction in `AGENTS.md`. This plan merges the
-content, keeps the exact routing heading gstack looks for, and puts the test command where
-`/ship` reads it (`TESTING.md`). It also adds a guard to `scripts/check.sh`: the only
-`CLAUDE.md` allowed is a gstack-settings shim whose first line is `@AGENTS.md`. That keeps
-`AGENTS.md` loaded and authoritative without breaking gstack features that can only persist
-settings in `CLAUDE.md`.
-
-## Preconditions (operator, not executor)
-
-These live outside the repo. The executor must **not** change them. **Both were done and
-verified on 2026-09-23**: the terminal CLI reports `2.1.281`, and the stale symlink is gone. They
-stay listed because every *other* machine that works in these repos needs the same. Report
-`claude --version` in your summary anyway.
-
-- **Claude Code version on every machine that works in these repos must be ≥ v2.1.281.** It
-  reads `AGENTS.md` natively from v2.1.277, and from v2.1.281 also in Bedrock and
-  telemetry-disabled sessions. At planning time the maintainer's terminal `claude --version`
-  was `2.1.261`. That version would load **no** project instructions once `CLAUDE.md` is gone.
-  The Conductor-embedded agent already reads `AGENTS.md`. Fix: `claude update`.
-- **Stale gstack skill on the maintainer's machine:** `~/.claude/skills/checkpoint/SKILL.md` is a
-  symlink to an old gstack v0.17 checkout (`~/gstack/checkpoint/SKILL.md`). That old skill only
-  looks for `## Skill routing` in `CLAUDE.md`, so it will create and commit a `CLAUDE.md` even
-  when `AGENTS.md` has the heading. Current gstack (1.87.5.0) replaced it with
-  `/context-save` and `/context-restore`. This plan re-routes to those. The operator should also
-  delete the stale symlink.
-
-## Current state
-
-- `CLAUDE.md` (136 lines). Sections: title + `Project: {{PROJECT_NAME}}` + tagline + intro (1–9),
-  Architecture (11–14), Key files (16–19), Commands (21–31), Engineering standards (33–44),
-  Testing (46–57), Change philosophy (59–69), Working in this repo (71–88), Design (90–93),
-  Doctrine (95–98), Skill routing (100–136, with a table of 20 skill rows and a
-  `{{PROJECT_SKILLS}}` placeholder).
-- `AGENTS.md` (43 lines). Sections: title (1), intro (3–5), Install (7–11),
-  Read this order (13–18), Trust boundary (20–24), How to work here (26–33),
-  Before shipping (35–38), Privacy (40–43).
-
-Lines that change meaning:
-
-```markdown
-AGENTS.md:3   This is your install + operating protocol. Claude Code reads `./CLAUDE.md` automatically.
-AGENTS.md:16  2. `./CLAUDE.md` — architecture reference, key files, trust boundaries, conventions.
-CLAUDE.md:102 When the user's request matches an available skill, ALWAYS invoke it using the Skill tool as
-CLAUDE.md:129 | Save progress / checkpoint / "where was I" / resume | `checkpoint` |
-CLAUDE.md:132 | Verify a change actually works by running the app | `verify` |
-CLAUDE.md:133 | Run / launch / screenshot the app | `run` |
-```
-
-(`checkpoint` is a stale skill, see Preconditions. `verify` is not installed on the maintainer's
-machine; `run` covers "confirm a change works in the real app". AGENTS.md:16 is also wrong
-today: trust boundaries live in AGENTS.md, not CLAUDE.md.)
-
-Other references to `CLAUDE.md` (the whole list, from `git grep -n CLAUDE`):
-
-```text
-README.md:33    - `CLAUDE.md` — how agents work in this repo (routing, conventions, change philosophy).
-README.md:34    - `AGENTS.md` — install + operating protocol for non-Claude agents.
-TEMPLATE.md:19  - `CLAUDE.md`, `AGENTS.md` — how Claude and other agents work in the repo (routing, protocol).
-bootstrap       (checklist heredoc)   CLAUDE.md   - tagline, architecture, key files, command placeholders
-```
-
-In `bootstrap`, after plan 003, the checklist lines this plan changes are:
-
-```text
-  CLAUDE.md   - tagline, architecture, key files, command placeholders
-  AGENTS.md   - install command, trust boundary, ship gate
-  TESTING.md  - tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
-```
-
-`TESTING.md` lines 9–12 are the blockquote you'll insert after:
-
-```markdown
-> **Stack-agnostic note.** This template carries the testing *philosophy*. The concrete
-> enforcement (coverage tooling, CI config) is per-stack. **Do not scaffold a coverage gate
-> until you have chosen a language and test runner** — wiring a 90% gate before there is code
-> to cover just breeds empty-shell tests. Pick the stack, then instantiate the gates below.
-```
-
-`scripts/check.sh` after plan 002 ends with:
-
-```bash
-if [ "$status" = "0" ]; then
-  [ "$ran_any" = "1" ] && echo "OK: checks passed." || echo "OK: no checks configured yet."
-fi
-exit "$status"
-```
-
-Harness helpers available (from plans 001/002): `fresh_copy`, `run_bootstrap`, `check_fixture`,
-`run_check <dir> VAR=value...` (runs `scripts/check.sh` with editorconfig-checker hidden),
-`fail`, `assert_exit`, `assert_contains`, `assert_not_contains`, `assert_absent`, `$REPO`,
-`$WORK`.
-
-Conventions: keep existing wording wherever the content isn't changing. This plan is a merge,
-not a rewrite. Markdown continuation lines are indented **2 spaces**, not 3. The repo's
-`.editorconfig` sets `indent_size = 2` for `*.md`, and editorconfig-checker flags 3.
-
-## Commands you will need
-
-| Purpose | Command | Expected on success |
+| Entry point | Required companion | Existing responsibilities retained |
 |---|---|---|
-| Self-test | `./scripts/template-selftest.sh` | `selftest: 30 passed, 0 failed, 0 skipped` (24 from plans 001–003 + 6 here) |
-| This plan's tests | `./scripts/template-selftest.sh claude` / `... gstack_routing` | all ok |
-| Guard on the real repo | `./scripts/check.sh` | exit 0; prints `- instruction files: checking AGENTS.md stays the one agents read...` |
-| Shell lint | `shellcheck bootstrap scripts/check.sh scripts/template-selftest.sh` | exit 0 |
+| `AGENTS.md` | Read `./CLAUDE.md` in full | Install, read order, trust boundary, ship gate, privacy |
+| `CLAUDE.md` | Read `./AGENTS.md` in full | Architecture, key files, commands, standards, skill routing |
 
-## Suggested executor toolkit
+An agent entering through either file must read both before starting task work. A file already
+read for the task does not need to be reread merely because its companion points back to it.
+These are explicit instructions, not a claim that every host automatically loads both
+filenames. Codex's documented discovery loads `AGENTS.md`; the companion is reached by
+following its instruction. See the [OpenAI discovery documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
-- gstack `/review` on the finished diff. It already handles `AGENTS.md`.
-- **Do NOT run** gstack `/health`, `/setup-deploy`, `/design-consultation`, `/setup-gbrain`,
-  `/checkpoint`, or `/document-generate` while working on this plan. Each can write a
-  `CLAUDE.md`. If gstack's preamble offers to "add routing rules to CLAUDE.md", answer **no**.
-  After step 2 it should stop offering.
-- Do not run gstack `/ship` unless asked (see the shipping caveat in `plans/README.md`).
+At the revised baseline, `AGENTS.md` already listed `CLAUDE.md` in its read order. The missing direction was
+`CLAUDE.md` back to `AGENTS.md`, where privacy and trust-boundary guidance live. Make both
+links conspicuous and mandatory. Keep shared rules consistent; neither file silently overrides
+a contradictory instruction in the other.
+
+Use plain-language references. Do not add reciprocal `@` imports, a symlink, a settings-only
+shim, or a rule forbidding `CLAUDE.md`. This design does not depend on Claude Code natively
+loading `AGENTS.md` or require changing global host settings. Retaining `CLAUDE.md` also leaves
+a normal home for workflow settings that tools persist there.
 
 ## Scope
 
-**In scope** (the only files you should modify):
+Implementation changes:
 
-- `AGENTS.md` (rewrite as below)
-- `CLAUDE.md` (delete with `git rm`)
-- `TESTING.md` (insert one `## Commands` section, nothing else)
-- `README.md` (lines 33–34 only)
-- `TEMPLATE.md` (line 19 only)
-- `bootstrap` (the three checklist lines above only)
-- `scripts/check.sh` (add one guard block)
-- `scripts/template-selftest.sh` (append tests above the runner)
-- `plans/README.md` (your status row)
+- `AGENTS.md`: strengthen companion reading and correct the description of `CLAUDE.md`.
+- `CLAUDE.md`: add reciprocal reading, retain its routing heading, update stale skill rows,
+  and make skill invocation wording usable by different hosts.
+- `TESTING.md`: retain the original plan's shared Commands section, pointing to `CLAUDE.md`.
+- `README.md`, `TEMPLATE.md`, `bootstrap`: describe both files; preserve both checklist rows.
+- `scripts/template-selftest.sh`: six regression tests for the two-file contract.
+- `plans/README.md`: record implementation status and verification evidence after execution.
 
-**Out of scope** (do NOT touch):
+Out of scope: merging/deleting either file; duplicating their full contents; changing
+`scripts/check.sh`; blocking `.claude/CLAUDE.md` or `CLAUDE.local.md`; changing global settings,
+installed skills, tool versions, or unrelated doctrine. Plans 005–007 retain their own scope;
+their dependent references were aligned during this revision.
 
-- The doctrine text in `TESTING.md`, `ENGINEERING.md`, `DOCTRINE.md`: no rewording, and no
-  Decisions Log rows. The new `## Commands` section is the only `TESTING.md` change.
-- Adding or removing skills in the routing table beyond the three row changes specified.
-- The maintainer's machine: `~/.claude/...`, the stale `checkpoint` symlink, the Claude Code
-  version. These are operator actions (see Preconditions).
-- `.gitignore` (leave `CLAUDE.local.md` un-ignored; the guard handles it).
-- Adding a `CLAUDE.md` shim to the template. The template ships **no** `CLAUDE.md`.
+## Preconditions and baseline
 
-## Git workflow
+1. Inspect `git status --short`. Preserve unrelated work. Do not rename the current branch.
+2. Review drift with:
 
-- Work on the branch you were given (Conductor: `willtraweek/<topic>`). If you must create one:
-  `willtraweek/plan-004-agents-md-only`.
-- Commit per step, plain imperative messages (e.g.
-  `Merge CLAUDE.md into AGENTS.md as the single instruction file`).
-- Do NOT push or open a PR unless the operator told you to.
+   ```sh
+   git diff ba7ca85 -- AGENTS.md CLAUDE.md TESTING.md README.md TEMPLATE.md bootstrap scripts/template-selftest.sh
+   ```
 
-## Steps
+   At this baseline, both instruction files are still the original template files,
+   `TESTING.md` has no Commands heading, and the harness includes approved 001–003 fixes.
+   Retain later additive tests and record their baseline; do not revert them to match a count.
+   Stop if intended edits would overwrite newer instructions.
+3. Run `./scripts/check.sh`, then `./scripts/template-selftest.sh` and
+   `CI=true ./scripts/template-selftest.sh`. Each must exit 0. Expected at `ba7ca85`:
+   `selftest: 74 passed, 0 failed, 0 skipped`. Resolve missing test prerequisites before
+   claiming a fully passing baseline; do not weaken guards or hide failures.
+4. Record each instruction file's placeholder inventory using step 5's comparison. Every
+   placeholder must survive in its existing file, including its complete contents.
 
-### Step 1: Add the failing tests
+No Claude Code upgrade or native `AGENTS.md` setting change is a prerequisite. Record actual
+hosts/models when performing the manual read-through below, rather than inferring success
+from their version numbers.
 
-Insert this block into `scripts/template-selftest.sh` immediately **above** `# --- runner ---`:
+## Implementation
 
-```bash
-# --- tests: AGENTS.md is the only instruction file (plan 004) -----------------
-test_template_ships_no_claude_md() {
-  local d="$WORK/no-claude/proj"
-  fresh_copy "$d"
-  assert_absent "$d/CLAUDE.md" || return 1
-  assert_absent "$d/.claude/CLAUDE.md"
-}
-test_agents_md_keeps_gstack_routing_heading() {
-  # gstack's skill preamble greps CLAUDE.md and AGENTS.md for this exact heading;
-  # when it is missing, gstack offers to create a CLAUDE.md with its own routing.
-  grep -qx '## Skill routing' "$REPO/AGENTS.md" || fail "AGENTS.md lacks an exact '## Skill routing' line"
-}
-test_new_project_mentions_claude_md_only_where_intended() {
-  local d="$WORK/claude-refs/proj" hits
-  fresh_copy "$d"
-  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?" || return 1
-  assert_not_contains "$d.out" "CLAUDE.md" || return 1
-  # Until plan 005 separates skeletons, /ship history can name the removed file.
-  hits="$(cd "$d" && grep -rl --exclude-dir=.git 'CLAUDE' . | sed 's|^\./||' \
-    | grep -vxE 'AGENTS\.md|TESTING\.md|CHANGELOG\.md|scripts/check\.sh' || true)"
-  [ -z "$hits" ] || fail "unexpected CLAUDE.md references in: $(echo "$hits" | tr '\n' ' ')"
-}
-test_check_rejects_claude_md_without_agents_import() {
-  local d="$WORK/check-claude/proj" rc
-  check_fixture "$d" || fail "fixture setup failed" || return 1
-  printf '# Project instructions\n' > "$d/CLAUDE.md"
-  run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks CI=; rc=$?
-  assert_exit 1 "$rc" || return 1
-  assert_contains "$d.out" "Claude Code would stop reading AGENTS.md"
-}
-test_check_accepts_claude_md_that_imports_agents_md() {
-  local d="$WORK/check-claude-shim/proj"
-  check_fixture "$d" || fail "fixture setup failed" || return 1
-  printf '@AGENTS.md\n\n## Deploy Configuration (configured by /setup-deploy)\n- Platform: example\n' > "$d/CLAUDE.md"
-  run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks CI= \
-    || fail "check.sh rejected a CLAUDE.md that imports AGENTS.md: $(tail -5 "$d.out")"
-}
-test_check_rejects_dot_claude_claude_md() {
-  local d="$WORK/check-dot-claude/proj" rc
-  check_fixture "$d" || fail "fixture setup failed" || return 1
-  mkdir -p "$d/.claude" && printf '@../AGENTS.md\n' > "$d/.claude/CLAUDE.md"
-  run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks CI=; rc=$?
-  assert_exit 1 "$rc" || return 1
-  assert_contains "$d.out" ".claude/CLAUDE.md exists"
-}
-```
+### Step 1: Add six tests for the retained two-file contract
 
-**Verify**: `./scripts/template-selftest.sh` → `selftest: 25 passed, 5 failed, 0 skipped`. The 5
-failures are all of the above except `test_check_accepts_claude_md_that_imports_agents_md`,
-which passes already. It guards against making the check too strict. (This was checked against
-the post-003 files while planning.)
+Add six functions with the `test_instruction_pair_` prefix before the harness runner. Use
+existing `fresh_copy`, `run_bootstrap`, assertion and `fail` helpers with independent fixtures.
+Bootstrap generated fixtures with `--name demo --yes`; check exit status before assertions.
+Keep all predecessor tests and their expectations.
 
-### Step 2: Replace `AGENTS.md` with the merged file
+| Test suffix | Required assertions |
+|---|---|
+| `ships_both_files` | Source and generated projects contain both substantive files: AGENTS retains Install, Trust boundary, Before shipping, Privacy; CLAUDE retains Architecture, Commands, Skill routing. |
+| `agents_requires_claude` | Source/generated AGENTS contain step 2's Required companion instructions heading, exact required-read and read-once sentences; no standalone `@CLAUDE.md` or `@./CLAUDE.md` import line. |
+| `claude_requires_agents` | Source/generated CLAUDE contain the corresponding heading and sentences; no standalone `@AGENTS.md` or `@./AGENTS.md` import line. |
+| `preserves_skill_routing` | Source/generated CLAUDE have exactly one `## Skill routing` heading; table invokes `context-save`, `context-restore`, and `run`, with no `checkpoint` or `verify` invocation row; step 3's host-neutral invocation sentence is present. |
+| `documents_test_commands` | Source/generated TESTING have exactly one Commands heading before Why Tiers, both command placeholders from step 3, and its CLAUDE pointer; CLAUDE points to TESTING for matching commands. |
+| `documents_both_entry_points` | Source README/TEMPLATE contain step 4's descriptions; generated README describes both files; bootstrap output includes both checklist rows and the read-both instruction. README/TEMPLATE descriptions make no claim that CLAUDE is absent. |
 
-Overwrite `AGENTS.md` with exactly this content. It keeps every placeholder from both old files.
-The one exception is the duplicate `{{PROJECT_NAME}}` from `CLAUDE.md:3`; the title already
-carries the name. Every continuation line is indented 2 spaces.
+Inspect `TEMPLATE.md` in the source only: bootstrap deletes it from generated projects. Match
+whole lines for import checks and use literal strings for prose containing backticks. These
+tests validate the published instructions, not whether an LLM will always obey them.
+
+**Verify before implementation:** `./scripts/template-selftest.sh instruction_pair` discovers
+six tests: `ships_both_files` passes; the other five fail for the intended missing requirements.
+Diagnose any different failure set before proceeding.
+
+### Step 2: Require companion reading in both files
+
+Insert this section after the existing introductory paragraph in `AGENTS.md`, before Install:
 
 ```markdown
-# Agents working on {{PROJECT_NAME}}
+## Required companion instructions
 
-{{PROJECT_TAGLINE: one or two sentences on what this project is and who it's for.}}
+Before starting task work, read `./CLAUDE.md` in full. Both files' instructions apply.
+Read each file once per task; if you already read the companion, do not follow the reference back again.
+Keep shared rules consistent. If the two files conflict, surface the conflict instead of silently choosing one.
+```
 
-This is the one instruction file for every coding agent in this repo: Claude Code, Codex,
-Cursor, and the rest. Claude Code reads it natively because the repo has no `CLAUDE.md` (see
-"One instruction file" below). Read it before making changes. Start broad, narrow down, prefer
-small surgical edits over sweeping rewrites, and always leave the repo green (checks and tests
-both exit 0).
+Insert the same section after `CLAUDE.md`'s introductory paragraph, before Architecture,
+changing only its required-read sentence:
 
-## Install
+```markdown
+Before starting task work, read `./AGENTS.md` in full. Both files' instructions apply.
+```
 
-1. Clone: `{{CLONE_CMD: git clone <repo-url> && cd <dir>}}`
-2. Install deps: `{{INSTALL_CMD: e.g. bun install / uv sync / cargo build}}`
-3. Configure: `{{CONFIG_STEPS: env vars, API keys, local state — or "none"}}`
+Replace `AGENTS.md`'s existing introductory paragraph with:
 
-## Commands
+```markdown
+This is the install and operating protocol for every coding agent in this repo.
+AGENTS.md and CLAUDE.md are companion instruction files; read both regardless of where your host starts.
+```
 
-This template is stack-agnostic. Fill these in once a stack is chosen, then delete this note.
-Mirror the check and test commands in `TESTING.md` → Commands, which is where gstack's `/ship`
-looks for them.
+Keep its Read this order list, correcting the CLAUDE description to:
 
-- Install / bootstrap: `{{INSTALL_CMD}}`
-- Dev / run locally: `{{DEV_CMD}}`
-- Build: `{{BUILD_CMD}}`
-- Lint / typecheck / static checks: `{{CHECK_CMD}}`
-- Tests: `{{TEST_CMD}}`
+```markdown
+2. `./CLAUDE.md` — architecture, key files, commands, conventions, skill routing.
+```
 
-{{OTHER_COMMANDS: any project-specific commands worth knowing — codegen, migrations, deploy, etc.}}
+Trust boundaries remain in AGENTS. Add `./docs/architecture.md` as step 5, described as the
+detailed map to read before changing anything load-bearing. Preserve all existing sections,
+placeholders, and substantive rules in both files.
 
-## Read this order
+**Verify:** the two companion-reading tests and `ships_both_files` pass. Read both files in
+each entry order to confirm the read-once instruction terminates the loop.
 
-1. `./AGENTS.md` (this file) — install, commands, architecture, conventions, skill routing.
-2. `./DOCTRINE.md` — the cross-project engineering ethos this repo inherits.
-3. `./TESTING.md` and `./ENGINEERING.md` — how we test and how we organize code.
-4. `./docs/architecture.md` — the detailed map; read it before changing anything load-bearing.
+### Step 3: Retain the independent routing and command-discovery fixes
 
-## Architecture
+Keep `## Skill routing` in `CLAUDE.md`, with that exact spelling and capitalization. Replace
+the paragraph requiring every host to use a Skill tool with:
 
-{{ARCHITECTURE: describe the high-level design and the main modules / boundaries. Note any
-contracts or invariants an agent must preserve.}}
-
-## Key files
-
-{{KEY_FILES: list the load-bearing files and what each is responsible for, one per line. Update
-this whenever you add or significantly change a core file.}}
-
-## Trust boundary (critical)
-
-`{{TRUST_BOUNDARY: if this system has trusted (local CLI) vs untrusted (agent / remote)
-callers, describe the distinction and which operations tighten under the untrusted path. If
-there is no such boundary yet, say so — and add one before exposing anything to remote agents.}}`
-
-## Engineering standards
-
-Defer to `ENGINEERING.md` for the full doctrine. The short version:
-
-- **File-size smells** — when a file gets large, that's a signal to look for a seam, not a
-  mandate to split. Split on cohesion, not line count.
-- **Rule of three** — don't abstract on the second occurrence. Wait for the third before
-  extracting a shared helper.
-- **Cohesion over fragmentation** — keep things that change together in the same place. Prefer
-  one well-named module over five tiny ones that must be read in concert.
-
-See `DOCTRINE.md` for the cross-project engineering ethos shared across all of my projects.
-
-## Testing
-
-Defer to `TESTING.md` for the testing doctrine (what to test, what not to, how the tiers are
-structured, how to run the integration tiers).
-
-The non-negotiables that apply to any stack:
-
-- Run the checks (`{{CHECK_CMD}}`) and the tests (`{{TEST_CMD}}`) before considering a change
-  done. Both must exit 0.
-- Every behavior change needs test coverage. A bug fix without a regression test is incomplete.
-- Do not skip the slower / integration / end-to-end tiers just because they need setup (a
-  database, API keys, a container). Stand the dependency up, run them, tear it down.
-
-## Change philosophy
-
-- **Small changes.** Make the smallest change that fully solves the task. Don't gold-plate;
-  don't leave it half-done either.
-- **No unrequested refactors.** If you spot something worth cleaning up that's outside the task,
-  note it — don't fold it into this change.
-- **Preserve contracts.** Don't break public APIs, exported signatures, on-disk formats, config
-  keys, or CLI surfaces unless that IS the task. When a contract must change, call it out
-  explicitly.
-- **Match the surrounding code.** Follow the conventions already in the file over your own
-  preferences.
-
-## Working in this repo (before / after checklist)
-
-**Before you start:**
-
-1. Read this file, plus `{{RELEVANT_DOCS: the docs that matter for the area you're touching —
-  e.g. ENGINEERING.md, TESTING.md, a design doc}}`.
-2. Understand the existing contracts and invariants in the area you're changing (see
-  Architecture / Key files above).
-3. Make sure you're on a branch, not the default branch.
-
-**After you finish:**
-
-1. Run the checks: `{{CHECK_CMD}}` → must exit 0.
-2. Run the tests: `{{TEST_CMD}}` → must exit 0.
-3. Update docs that drifted (this file's Key files section, plus any guide that describes what
-  you changed).
-4. Only commit / push / open a PR when asked — and prefer `/ship` over hand-rolling git
-  operations (see Skill routing).
-
-## Before shipping
-
-`{{SHIP_GATE: the one command that runs the full local gate — checks + tests, e.g.
-./scripts/check.sh && <test cmd>. Ship via the /ship skill, not by hand.}}`
-
-## Design
-
-If this project has a UI, see `DESIGN.md` for the design system (aesthetic, typography, color,
-spacing, motion) and the visual bar to hold the work to. Align with its tokens — no hardcoded
-colors, fonts, or spacing.
-
-## Doctrine
-
-`DOCTRINE.md` holds the cross-project engineering ethos that applies to all of my projects. Read
-it once; it's the "why" behind the standards above.
-
-## Privacy
-
-Never commit real names of people, companies, or funds, real user data, or secrets into public
-artifacts. Use generic placeholders (`alice-example`, `acme-example`, `fund-a`).
-
-## One instruction file (no CLAUDE.md)
-
-All agent instructions live here, on purpose. Keep it that way:
-
-- **Claude Code** (v2.1.277 or later) reads `AGENTS.md` natively, but only while there is no
-  `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md` in this directory or above it. Adding
-  one makes Claude Code silently skip this file, unless your Claude Code setting
-  `instructionFiles` is `claude-md-and-agents-md`.
-- **gstack** skills still write some of their settings into `CLAUDE.md` and create it if it is
-  missing: `/setup-deploy` (deploy configuration), `/health` (health stack),
-  `/design-consultation` (design-system pointer), `/setup-gbrain` and `/sync-gbrain` (gbrain
-  guidance), and `/ship` or `/qa` when they had to ask for the test command. Decline when you
-  can. When a setting must persist for gstack to read it, let the skill write `CLAUDE.md`, then
-  make `@AGENTS.md` its first line (the import keeps this file loaded) and keep nothing in it
-  but that gstack section. `scripts/check.sh` fails on any other `CLAUDE.md`.
-- Keep the `## Skill routing` heading below exactly as written. gstack checks for it and, if
-  it is missing, offers to create a `CLAUDE.md` with routing rules of its own.
-- gstack's `/ship` reads the test command from `TESTING.md` → Commands, not from this file.
-
-## Skill routing
-
-When the user's request matches an available skill, ALWAYS invoke it as your FIRST action (in
-Claude Code, via the Skill tool; in other agents, invoke the skill by name, e.g. `/ship`). Do
-NOT answer directly, and do NOT use other tools first. These skills carry specialized workflows
+```markdown
+When the user's request matches an available skill, invoke it before doing the task.
+Use the host's supported skill mechanism; if no Skill tool exists, read and follow that skill's SKILL.md.
+Load the required repository instructions first. These skills carry specialized workflows
 that produce better results than an ad-hoc answer.
+```
 
-**NEVER hand-roll ship operations.** Do not manually run git commit + push + `gh pr create` when
-`/ship` is available. `/ship` handles version bump, CHANGELOG, doc updates, pre-landing review,
-test-coverage audit, and adversarial review — a manual PR skips all of that. If the user says
-"commit and ship", "push and ship", or any phrasing that ends in shipping, invoke `/ship` and
-let it own the commits.
+This allows companion reading before skill work and avoids requiring an unavailable tool.
+Preserve the shipping policy and unrelated routing rows. Replace checkpoint/resume with:
 
-| When the user wants to… | Invoke |
-|---|---|
-| Float a product idea, "is this worth building", brainstorm scope | `office-hours` |
-| Turn vague intent into a precise, executable spec | `spec` |
-| Review a plan's architecture / engineering approach | `plan-eng-review` |
-| Review a plan as a founder / CEO would | `plan-ceo-review` |
-| Review a plan for design / UX | `plan-design-review` |
-| Review a plan for developer experience | `plan-devex-review` |
-| Debug a bug, error, 500, "why is this broken" | `investigate` |
-| QA the app and fix what's found | `qa` |
-| QA the app, report only (no fixes) | `qa-only` |
-| Review a diff / PR before landing | `review` |
-| Visual audit, design polish, find AI-slop / spacing / hierarchy issues | `design-review` |
-| Stand up a design system / brand | `design-consultation` |
-| Ship: bump version, changelog, test, PR | `ship` |
-| Land and deploy | `land-and-deploy` |
-| Update docs after shipping | `document-release` |
+```markdown
 | Save progress / checkpoint | `context-save` |
 | "Where was I" / resume saved work | `context-restore` |
-| Code-health dashboard / quality check | `health` |
-| Weekly engineering retro | `retro` |
-| Run / launch / screenshot the app, or verify a change works in it | `run` |
-
-{{PROJECT_SKILLS: add any project-specific skills here, and prune rows above that don't apply to
-this project.}}
 ```
 
-What moved where (for your report and the reviewer):
+Replace the separate `verify` and `run` rows with:
 
-| Old location | New location in AGENTS.md |
-|---|---|
-| CLAUDE.md:1–3 (title, `Project:` line) | dropped; the title `# Agents working on {{PROJECT_NAME}}` carries the name |
-| CLAUDE.md:5 tagline; CLAUDE.md:7–9 intro | line 3; intro paragraph (reworded: one file for all agents) |
-| CLAUDE.md Architecture, Key files, Commands, Engineering standards, Testing, Change philosophy, Working in this repo, Design, Doctrine | same headings, same text; Commands gains a sentence pointing at `TESTING.md`; list continuations re-indented to 2 spaces |
-| CLAUDE.md Skill routing | same heading; first sentence made host-neutral; `checkpoint` → `context-save` + `context-restore`; `verify` + `run` rows merged into one `run` row |
-| AGENTS.md Install, Trust boundary, Before shipping, Privacy | unchanged |
-| AGENTS.md Read this order | CLAUDE.md step removed; `docs/architecture.md` added |
-| AGENTS.md How to work here | merged: first two bullets were already covered by Change philosophy and Testing; the DESIGN.md-tokens bullet moved into Design |
-| (new) | `## One instruction file (no CLAUDE.md)` |
+```markdown
+| Run / launch / screenshot the app, or verify a change works in it | `run` |
+```
 
-**Verify**:
+Routing applies when the skill is available, as the introduction states. Do not install
+missing skills or claim that every host exposes every listed skill.
 
-- `grep -cx '## Skill routing' AGENTS.md` → `1`
-- `grep -nE '^( {2})* [^ ]' AGENTS.md` → no output (no odd indentation)
-- Placeholder parity. The only difference must be one fewer `{{PROJECT_NAME`:
+In `CLAUDE.md` → Commands, after the stack-agnostic note, add:
 
-  ```sh
-  diff <( (git show 1984ab7:CLAUDE.md; git show 1984ab7:AGENTS.md) | grep -o '{{[A-Z_]*' | sort ) \
-       <(grep -o '{{[A-Z_]*' AGENTS.md | sort) | grep '^[<>]'
-  ```
+```markdown
+Keep the check and test commands in sync with `TESTING.md` → Commands.
+```
 
-  → exactly one line of output: `< {{PROJECT_NAME`
-- No routing row invokes the stale skills. This must print `0`:
-
-  ```sh
-  grep -cE '\| `(checkpoint|verify)` \|' AGENTS.md
-  ```
-
-### Step 3: Delete `CLAUDE.md`
-
-`git rm CLAUDE.md`
-
-**Verify**: `test ! -e CLAUDE.md && echo gone` → `gone`.
-`./scripts/template-selftest.sh claude` → `test_template_ships_no_claude_md` ok.
-
-### Step 4: Put the check and test commands where gstack's `/ship` reads them
-
-In `TESTING.md`, directly after the stack-agnostic blockquote (the 4 lines quoted in Current
-state, ending `...Pick the stack, then instantiate the gates below.`), insert a blank line and
-this section:
+In `TESTING.md`, after the stack-agnostic blockquote and before Why Tiers, add:
 
 ```markdown
 ## Commands
 
-The exact commands for this repo; keep them in sync with `AGENTS.md` → Commands. gstack's
-`/ship` looks for the test command here (and in a `CLAUDE.md`, which this repo does not have)
-before deciding whether to set up a test framework of its own. Fill these in as soon as a stack
-exists so it never has to.
+The exact commands for this repo; keep them in sync with `CLAUDE.md` → Commands.
+Fill these in as soon as a stack exists so agents and workflow skills can discover them.
 
 - Checks (guards that run before tests): `{{CHECK_CMD}}`
 - Tests: `{{TEST_CMD}}`
 ```
 
-It must end up between the blockquote and `## Why Tiers, Not One Number`, separated by blank
-lines.
+Keep the tiered testing doctrine unchanged. This retains the shared Commands location used
+by later plans without moving any command placeholders out of `CLAUDE.md`.
 
-Why this matters beyond `CLAUDE.md`: when `/ship` finds no documented test command in a project
-that has a stack, it sets up a framework itself. It appends gstack's own "100% test coverage is
-the key..." philosophy to `TESTING.md` (which contradicts this doctrine's tiered, "blind 100% is
-wasteful" stance), adds a `.github/workflows/test.yml`, and writes `CLAUDE.md`. A filled-in
-command here prevents all three.
+**Verify:** `preserves_skill_routing` and `documents_test_commands` pass.
 
-**Verify**: `grep -n '^## Commands' TESTING.md` → one line, before `## Why Tiers, Not One Number`
-(compare with `grep -n '^## Why Tiers' TESTING.md`).
+### Step 4: Align template descriptions and bootstrap output
 
-### Step 5: Update the remaining references
+Replace the two instruction-file bullets in `README.md` with:
 
-1. `README.md` lines 33–34: replace the two lines
-
-   ```markdown
-   - `CLAUDE.md` — how agents work in this repo (routing, conventions, change philosophy).
-   - `AGENTS.md` — install + operating protocol for non-Claude agents.
-   ```
-
-   with
-
-   ```markdown
-   - `AGENTS.md` — the one instruction file for every coding agent (Claude Code reads it natively):
-     install, commands, conventions, skill routing.
-   ```
-
-   (The second line is indented 2 spaces.)
-
-2. `TEMPLATE.md` line 19: replace
-   `` - `CLAUDE.md`, `AGENTS.md` — how Claude and other agents work in the repo (routing, protocol).``
-   with these two lines (second indented 2 spaces):
-
-   ```markdown
-   - `AGENTS.md` — the one instruction file for Claude Code, Codex, and other agents (routing,
-     protocol). There is deliberately no `CLAUDE.md`.
-   ```
-
-3. `bootstrap` checklist: replace the three lines quoted in Current state with these two:
-
-   ```text
-     AGENTS.md   - tagline, install, commands, architecture, key files, trust boundary, ship gate
-     TESTING.md  - check/test commands (gstack /ship reads them here), tiers, NAMED_INVARIANTS
-   ```
-
-**Verify**: `git grep -n 'CLAUDE' -- . ':!plans'` → matches only in `AGENTS.md`, `TESTING.md`,
-`TEMPLATE.md` (the "deliberately no" line), `scripts/check.sh` (after step 6) and
-`scripts/template-selftest.sh` (tests), plus historical entries in `CHANGELOG.md`.
-`./scripts/template-selftest.sh checklist` → ok.
-
-### Step 6: Add the instruction-file guard to `scripts/check.sh`
-
-Insert this block immediately **above** the final `if [ "$status" = "0" ]; then` block:
-
-```bash
-# --- Instruction files: AGENTS.md is the one agents read -----------------
-# Claude Code skips AGENTS.md whenever a CLAUDE.md exists (default settings)
-# unless that CLAUDE.md imports it. gstack skills may create CLAUDE.md to
-# persist their own settings: allowed only with "@AGENTS.md" as the first line.
-ran_any=1
-echo "- instruction files: checking AGENTS.md stays the one agents read..."
-if [ -f .claude/CLAUDE.md ]; then
-  echo "- .claude/CLAUDE.md exists: move its instructions into AGENTS.md and delete it." >&2
-  status=1
-fi
-if [ -f CLAUDE.md ] && [ "$(head -n 1 CLAUDE.md)" != "@AGENTS.md" ]; then
-  echo "- CLAUDE.md exists without '@AGENTS.md' as its first line, so Claude Code would stop reading AGENTS.md." >&2
-  echo "  Move its instructions into AGENTS.md; keep only gstack-managed settings there, under an '@AGENTS.md' first line." >&2
-  status=1
-fi
-if [ -f CLAUDE.local.md ]; then
-  echo "- note: CLAUDE.local.md exists; with Claude Code's default settings it hides AGENTS.md from you."
-fi
+```markdown
+- `CLAUDE.md` — architecture, commands, conventions, and skill routing; also requires `AGENTS.md`.
+- `AGENTS.md` — install, trust boundary, ship gate, and privacy; also requires `CLAUDE.md`.
+  Every agent reads both files, regardless of its entry point.
 ```
 
-This guard needs no external tool, so it always runs.
+Replace the instruction-file bullet in `TEMPLATE.md` with:
 
-**Verify**: `./scripts/check.sh` → exit 0 and prints the `- instruction files:` line.
-`shellcheck scripts/check.sh` → exit 0. `./scripts/template-selftest.sh` →
-`selftest: 30 passed, 0 failed, 0 skipped`.
+```markdown
+- `CLAUDE.md`, `AGENTS.md` — companion instructions for every coding agent. Each requires reading
+  the other once; keep both files and preserve their division of responsibilities.
+```
 
-## Test plan
+Keep both instruction-file checklist rows in `bootstrap`. Use:
 
-- 6 new tests (step 1). They cover: no CLAUDE.md shipped; the exact gstack routing heading; no
-  stale CLAUDE.md references in a new project or in bootstrap's output; the guard rejects a
-  plain CLAUDE.md and `.claude/CLAUDE.md` and accepts an `@AGENTS.md` shim.
-- Plan 001's happy-path test keeps asserting `AGENTS.md` carries the project name and
-  `{{TRUST_BOUNDARY`. It must still pass. Plan 003's checklist test must still pass with the new
-  checklist lines.
-- Final: `30 passed, 0 failed, 0 skipped`.
+```text
+  CLAUDE.md   - tagline, architecture, key files, commands, skill routing; read with AGENTS.md
+  AGENTS.md   - install command, trust boundary, ship gate, privacy; read with CLAUDE.md
+  TESTING.md  - check/test commands, tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
+```
+
+Preserve all other rows and bootstrap behavior. Add this standalone instruction before the
+existing `Then choose a stack and:` line:
+
+```text
+Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.
+```
+
+**Verify:** `documents_both_entry_points` and the existing checklist test pass. The complete
+`instruction_pair` selection now reports six passes with no failures or skips.
+
+### Step 5: Verify content preservation and the complete gate
+
+Compare per-file placeholder-name inventories with the revised baseline. Run in Bash:
+
+```bash
+mkdir -p .context/plan-004
+for instruction_file in AGENTS.md CLAUDE.md; do
+  git show "ba7ca85:$instruction_file" | grep -o '{{[A-Z_]*' | LC_ALL=C sort > ".context/plan-004/$instruction_file.before"
+  grep -o '{{[A-Z_]*' "$instruction_file" | LC_ALL=C sort > ".context/plan-004/$instruction_file.after"
+  diff -u ".context/plan-004/$instruction_file.before" ".context/plan-004/$instruction_file.after" || exit 1
+done
+```
+
+Expected: no differences. Inspect the full diff too: names alone do not prove that complete
+placeholder contents and substantive instructions survived. TESTING's two new command
+placeholders are intentional and outside this comparison. If approved later work changed
+placeholders, use its recorded baseline and explain the difference; do not discard it.
+
+Run checks, then tests:
+
+```sh
+git diff --check
+shellcheck bootstrap scripts/check.sh scripts/template-selftest.sh
+./scripts/check.sh
+./scripts/template-selftest.sh
+CI=true ./scripts/template-selftest.sh
+```
+
+All must exit 0. Expected at the recorded baseline: **80 passed, 0 failed, 0 skipped** (74
+predecessor tests plus six here). Report any locally skipped optional formatting tool; do not
+call it a formatting pass. Preserve additional tests if the predecessor suite grows.
+
+Manually exercise fresh agent sessions from both available entry points with this read-only
+prompt: "Read the repository instructions and list which files you read, where privacy and
+trust-boundary rules live, where commands and skill routing live, and how you handle the
+companion-file reference. Do not edit files or run project checks."
+
+Expected: both files are read, ownership matches the table above, and references do not cause
+repeated reads. Where tool traces are available, verify file reads as well as the answer.
+Report the tested host/model and any unavailable host as a limitation. This is a manual smoke
+check, not a deterministic guarantee or CI test.
 
 ## Done criteria
 
-ALL must hold:
-
-- [ ] `./scripts/template-selftest.sh` exits 0 with `30 passed, 0 failed, 0 skipped`
-- [ ] `CI=true ./scripts/template-selftest.sh` exits 0
-- [ ] `test ! -e CLAUDE.md`
-- [ ] `grep -cx '## Skill routing' AGENTS.md` → `1`
-- [ ] Placeholder-parity command from step 2 prints exactly one line: `< {{PROJECT_NAME`
-- [ ] `./scripts/check.sh` exits 0 on the real repo
-- [ ] `shellcheck bootstrap scripts/check.sh scripts/template-selftest.sh` exits 0
-- [ ] `git status --porcelain` shows changes only to in-scope files
-- [ ] Your report includes the output of `claude --version` (if the CLI exists in your
-      environment), for the operator precondition
-- [ ] `plans/README.md` status row updated
+- [x] Both substantive files survive in source and generated projects.
+- [x] Both explicitly require the companion and include the read-once rule.
+- [x] CLAUDE retains exactly one Skill routing section with the approved row updates.
+- [x] TESTING Commands and CLAUDE Commands point to one another with matching placeholders.
+- [x] Descriptions and bootstrap output require reading both files.
+- [x] Per-file placeholder inventories and substantive-content review pass.
+- [x] All six new tests and all predecessor tests pass; CI mode has zero skips.
+- [x] Shell lint, existing guards, and `git diff --check` exit 0.
+- [x] Manual host smoke-check evidence or an explicit availability limitation is reported.
+- [x] No instruction-file deletion, single-file guard, shim, symlink, or global setting change.
+- [x] `plans/README.md` records implementation status and actual verification totals.
 
 ## STOP conditions
 
-Stop and report back (do not improvise) if:
+Stop and report if the baseline fails, a predecessor test regresses, the initial six-test
+failure set differs for an unexplained reason, either file loses a placeholder or substantive
+rule, or companion references create contradictory guidance. Do not overwrite newer routing
+edits or silently broaden into global tool configuration. Inspect and report unexpected skill
+edits outside the implementation scope.
 
-- The step-1 failure set is not the 5 tests listed, or any plan-001–003 test fails at any point.
-- The placeholder-parity diff shows anything other than `< {{PROJECT_NAME`. You dropped or
-  invented a placeholder.
-- A gstack skill (or its preamble) creates or modifies `CLAUDE.md` while you work. Report which
-  skill and what it wrote. Don't commit that file.
-- The maintainer's routing table in `CLAUDE.md` has changed since `1984ab7`. The table in step 2
-  would silently overwrite their edits.
-- You're tempted to keep a `CLAUDE.md` "for safety". The shim is an operator choice for
-  environments that can't read `AGENTS.md` (see Maintenance notes), not part of this plan.
+## Maintenance and downstream plans
 
-## Maintenance notes
-
-- **Strict alternative.** To forbid `CLAUDE.md` outright, change the guard's condition to a
-  plain `[ -f CLAUDE.md ]` and delete `test_check_accepts_claude_md_that_imports_agents_md`.
-  The cost: gstack features that persist settings only in `CLAUDE.md` would then have nowhere
-  to put them, and would re-ask on every run. That covers `/land-and-deploy` deploy config,
-  `/health` tool list, and `/ship` coverage thresholds (`## Test Coverage`, which falls back to
-  gstack's 60/80 defaults rather than this doctrine's 90%).
-- **Environments that can't read AGENTS.md** (Claude Code older than v2.1.277, the `agents-md`
-  plugin disabled, or the first session after upgrading from ≤ v2.1.276): a one-line
-  `CLAUDE.md` containing `@AGENTS.md` is Anthropic's documented workaround. It passes the guard.
-- **gstack limitations that remain** (upstream issues worth filing on gstack, not fixable here):
-  - routing injection always targets `CLAUDE.md`;
-  - `/ship` step 4 and `/land-and-deploy`'s readiness gate read the test command from
-    `CLAUDE.md`/`TESTING.md` only; `/land-and-deploy` falls back to `bun test` if it finds
-    nothing, so check what it proposes;
-  - `/health`, `/setup-deploy`, `/design-consultation` and `/setup-gbrain` write `CLAUDE.md`
-    even when `AGENTS.md` exists.
-- The `## Skill routing` match is a plain `grep` on the text, so a later edit that renames the
-  heading (even to `## Skill Routing`) re-arms gstack's offer to create `CLAUDE.md`.
-  `test_agents_md_keeps_gstack_routing_heading` guards this.
-- Plan 005 adds a template-only block to `AGENTS.md` and `TESTING.md`. It must keep the routing
-  heading and the `## Commands` section intact.
-- Reviewer focus: read the new `AGENTS.md` top to bottom as a first-time agent would, check the
-  "what moved where" table, and confirm the guard's messages tell a human exactly what to do.
+- Keep the ownership table accurate. Add rules to their natural home and rely on companion
+  reading; avoid copying whole sections into both files.
+- Plan 005 adds template-only blocks to AGENTS and TESTING. An agent entering through CLAUDE
+  reaches the AGENTS block through its required companion instruction.
+- Plans 006–007 personalize command placeholders in retained CLAUDE and shared TESTING,
+  along with existing placeholders elsewhere. No settings-only shim is needed.
+- Workflow settings can remain in the file their host uses. Preserve both companion sections
+  and the exact CLAUDE Skill routing heading.
+- If a host does not follow the reference, investigate with a focused read-only reproduction;
+  do not silently reintroduce the superseded deletion plan.

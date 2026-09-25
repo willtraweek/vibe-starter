@@ -1,8 +1,13 @@
 # Agents working on {{PROJECT_NAME}}
 
-This is your install + operating protocol. Claude Code reads `./CLAUDE.md` automatically.
-Everyone else (Codex, Cursor, OpenClaw, Aider, Continue, or an LLM fetching via URL): start
-here.
+This is the install and operating protocol for every coding agent in this repo.
+AGENTS.md and CLAUDE.md are companion instruction files; read both regardless of where your host starts.
+
+## Required companion instructions
+
+Before starting task work, read `./CLAUDE.md` in full. Both files' instructions apply.
+Read each file once per task; if you already read the companion, do not follow the reference back again.
+Keep shared rules consistent. If the two files conflict, surface the conflict instead of silently choosing one.
 
 ## Install
 
@@ -13,9 +18,10 @@ here.
 ## Read this order
 
 1. `./AGENTS.md` (this file) — install + operating protocol.
-2. `./CLAUDE.md` — architecture reference, key files, trust boundaries, conventions.
+2. `./CLAUDE.md` — architecture, key files, commands, conventions, skill routing.
 3. `./DOCTRINE.md` — the cross-project engineering ethos this repo inherits.
 4. `./TESTING.md` and `./ENGINEERING.md` — how we test and how we organize code.
+5. `./docs/architecture.md` — the detailed map to read before changing anything load-bearing.
 
 ## Trust boundary (critical)
 

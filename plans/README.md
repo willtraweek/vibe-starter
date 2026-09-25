@@ -14,18 +14,44 @@ deletes `plans/`, so none of this reaches projects created from the template.
 | [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | DONE (11 tests: the plan's 9 + 2 approved review fixes) |
 | [002](002-trustworthy-check-guards.md) | Make `scripts/check.sh` trustworthy: scan what git would commit, fail closed in CI, keep `.env.example` committable | P1 | S | 001 | DONE (40 tests: the plan's 7 + 33 from review and /ship; landed after 003, so the suite is 34 + 40 = 74) |
 | [003](003-harden-bootstrap.md) | Harden `bootstrap`: remote-derived name, refuse to run on the template, strict args, worktree-aware git init | P1 | S | 001 | DONE (23 tests: the plan's 8 + 15 from review and /ship; landed before 002, so the suite is 11 + 23 = 34) |
-| [004](004-agents-md-only.md) | Fold `CLAUDE.md` into `AGENTS.md` (one instruction file), and keep gstack from quietly recreating it | P1 | M | 001, 002, 003 | TODO |
+| [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | TODO |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | TODO |
 | [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
-Expected self-test totals after each plan (with predecessors unchanged): 001 → 9, 002 → 16,
-003 → 24, 004 → 30, revised 005 → 40, revised 006 → 48, revised 007 → 54. Python tests need
-uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully provisioned CI must
-have zero failures and zero skips. If an earlier approved correction adds tests, retain them
-and use the recorded predecessor baseline plus this plan's added tests.
+Current suite after 001–004: **80 tests**. Projected totals for the remaining revised
+plans: 005 → **90**, 006 → **98**, 007 → **104**. These later totals are execution targets,
+not results of a new sequential rehearsal. Python tests need uv; the Rust coverage test skips
+locally without cargo-llvm-cov. Fully provisioned CI must have zero failures and zero skips.
+Retain later approved tests and use the live predecessor baseline plus each plan's additions.
+
+**Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
+files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps
+commands and skill routing; `AGENTS.md` keeps install, trust boundary, ship gate and privacy.
+The single-file merge, deletion, shim and instruction-file guard are superseded. Plans 005–007
+now preserve both files and their responsibilities. The initial revision changed planning
+documents only; implementation of 004 is recorded below, while 005–007 remain TODO.
+Plan 004's historical filename is retained to preserve links.
+
+Revision validation: `git diff --check` and `./scripts/check.sh` passed (secret scan clean;
+optional editorconfig-checker unavailable). The existing suite passed **74/74**, with zero
+failures or skips. This was the baseline after the planning-document edits, before implementation.
+
+**Plan 004 implementation, 2026-09-24.** Both instruction files now require reading the
+companion once. Commands remain in CLAUDE with matching TESTING discovery, skill routing uses
+the approved names and host-neutral wording, and template/bootstrap descriptions require both
+files. All existing placeholder contents and substantive rules were preserved. Six new tests
+cover source and generated projects; normal and CI-mode suites each passed **80/80**, with
+zero failures or skips. `git diff --check`, shellcheck 0.11.0, and the secret-scan guard passed;
+optional editorconfig-checker was unavailable. Fresh generated-project smoke checks passed on
+Codex CLI 0.155.1 (`gpt-6-astra`) and Claude Code 2.1.281 (`claude-opus-5-5[1m]`), with traces
+confirming both companion reads and no loop or fixture changes. Claude's existing dual-file
+preload setting was excluded for the second invocation; global settings were not changed.
+No hosted CI run was performed. Full execution evidence is in plan 004.
+
+The rehearsal counts below describe earlier plan versions and are historical evidence only.
 
 **Revision and verification, 2026-09-23.** Plans 005–007 were revised after adversarial review
 and are intended to execute in order after 001–004. The revisions preserve predecessor
@@ -49,10 +75,11 @@ rehearsal totals above precede them and are not a new execution of the updated p
 
 **Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
 container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
-shellcheck 0.11.0; the image's shellcheck 0.9.0 flags plan 004's harness code. Plans 005–007
+shellcheck 0.11.0; the image's shellcheck 0.9.0 flagged the original plan 004's harness code. Plans 005–007
 were edited to keep those choices, and 007 now installs a pinned rustup and must check the job
-time. Those edits were not rehearsed. The review also added 2 harness tests, so the baseline
-after 001 is 11 and every later total above is 2 higher.
+time. Those edits were not rehearsed. That review added 2 harness tests, bringing the baseline
+after 001 to 11 and increasing the historical rehearsal totals by 2. The current projections
+above already account for all landed additions; do not add another 2 to them.
 
 ## How to run these plans
 
@@ -77,13 +104,15 @@ after 001 is 11 and every later total above is 2 higher.
 
 - **001 first.** It creates `scripts/template-selftest.sh`, the verification gate every other
   plan's done-criteria run against.
-- **002 → 004.** Plan 004's tests reuse 002's `check_fixture`/`run_check` helpers and extend 002's
-  `scripts/check.sh`.
+- **002 → 004.** Preserve 002's guard behavior and regression tests. Revised 004 does not
+  change `scripts/check.sh` or add instruction-file guards.
 - **003 → 004.** Both edit the checklist in `bootstrap`; 004 rewrites the lines 003 leaves in
   place.
-- **004 → 005.** 005 adds template-only blocks to the `AGENTS.md`/`TESTING.md` that 004 creates.
+- **004 → 005.** 005 adds template-only blocks to retained `AGENTS.md` and shared `TESTING.md`;
+  agents entering through `CLAUDE.md` read the companion block too.
 - **005 → 006.** Packs live under `template/`, which 005 introduces and `bootstrap` deletes. 006's
-  `commands` fill the `TESTING.md` → Commands placeholders that 004 adds.
+  `commands` fill retained `CLAUDE.md` command placeholders and the shared `TESTING.md` →
+  Commands placeholders that 004 adds.
 - **006 → 007.** 007 reuses 006's mechanism, test helpers and `install-gitleaks` action unchanged.
 - The order is linear, 001 → 007 (see "How to run these plans").
 
@@ -102,13 +131,14 @@ after 001 is 11 and every later total above is 2 higher.
 
 ## Operator actions (outside the repo; executors must not do these)
 
-Items 1 and 2 are **done** (verified 2026-09-23: `claude --version` → 2.1.281; the stale
-`~/.claude/skills/checkpoint` symlink is gone). Repeat them on any other machine you work from.
+Items 1 and 2 were **done** as of the 2026-09-23 verification (`claude --version` → 2.1.281;
+the stale `~/.claude/skills/checkpoint` symlink was gone). These are historical observations,
+not a fresh inspection of this machine.
 
-1. **Upgrade the terminal Claude Code CLI.** `claude --version` reported `2.1.261`. Native
-   `AGENTS.md` loading needs ≥ v2.1.277, and v2.1.281 for Bedrock or telemetry-off sessions.
-   After plan 004, an older CLI loads *no* project instructions in these repos. The
-   Conductor-embedded agent already reads `AGENTS.md`. Fix: `claude update`.
+1. **CLI upgrade is no longer a plan 004 prerequisite.** The original upgrade addressed
+   native `AGENTS.md` discovery after deleting `CLAUDE.md`. Revised 004 retains both files
+   and uses explicit companion reading; it does not require native dual-file loading or a
+   global settings change. Verify actual reading on the hosts used during implementation.
 2. **Remove the stale gstack skill** `~/.claude/skills/checkpoint` (a symlink into an old gstack
    v0.17 checkout at `~/gstack/`). It ignores `AGENTS.md` and creates and commits `CLAUDE.md`
    with routing rules. Current gstack (1.87.5.0) replaced it with `/context-save` and
@@ -136,14 +166,14 @@ by host and keep the shared test command in `TESTING.md`.
 | 5 | gstack `/ship` on the template writes into skeleton `VERSION`/`CHANGELOG.md`/`TODOS.md`, with no opt-out | High | 005 |
 | 6 | Default project name = Conductor workspace codename (e.g. `montreal`) under `--yes`/agent runs | Med | 003 |
 | 7 | `bootstrap` will personalize the template repo itself | Med | 003 |
-| 8 | editorconfig-checker likely fails on 3-space markdown list indents (not executed; tool not installed) | Med | partly 004 (new `AGENTS.md` uses 2-space indents); rest tracked in root `TODOS.md` by 005 |
+| 8 | editorconfig-checker likely fails on 3-space markdown list indents (not executed; tool not installed) | Med | tracked in root `TODOS.md` by 005; revised 004 preserves existing content |
 | 9 | `bootstrap` edge cases: silent `--name` failure, `--name --yes` → project named `--yes`, worktree `.git` misdetection, checklist omits `docs/architecture.md` | Low | 003 |
 | 10 | Routing table points at `verify` (not installed); `AGENTS.md` says trust boundaries live in `CLAUDE.md` | Low | 004 |
-| G1 | GStack defaults to `CLAUDE.md`. In an `AGENTS.md`-only repo its skills recreate `CLAUDE.md`, and on default Claude Code settings that hides `AGENTS.md`:<br>• routing injection, unless `AGENTS.md` has the exact `## Skill routing` heading;<br>• `/ship` step 4's test-command persistence;<br>• `/setup-deploy`, `/health`, `/design-consultation`, `/setup-gbrain`. | High | 004 |
+| G1 | The original single-file design risked workflow tools recreating `CLAUDE.md` and changing which instructions hosts discover. Retaining both files still needs required companion reading in both directions. | High | revised 004 keeps both files and the CLAUDE routing heading |
 | G2 | Skeleton `TODOS.md` fails gstack's TODOS structure check, so every new project's first `/ship` asks to "reorganize" | Med | 005 |
 | G3 | With no documented test command, `/ship` sets up its own framework in new projects:<br>• appends a "100% coverage" philosophy to `TESTING.md` (contradicts the tiered doctrine);<br>• adds `.github/workflows/test.yml`;<br>• writes `CLAUDE.md`. | Med | 004 (`TESTING.md` → Commands) |
 | G4 | Routing table sends "checkpoint/resume" to a stale gstack v0.17 skill on this machine | Med | 004 + operator action 2 |
-| G5 | gstack reads coverage thresholds, health stack and deploy config only from `CLAUDE.md`; `AGENTS.md`-only projects get defaults (coverage 60/80 vs the doctrine's 90) | Low | documented in 004 and 006; optional shim; upstream |
+| G5 | Native Claude workflow skills persist coverage, health and deploy settings in `CLAUDE.md`; generated Codex skills may use `AGENTS.md`. Preserve the file each host uses and keep shared values consistent. | Low | revised 004 retains both; 006 documents host-specific settings without a shim |
 | G6 | gstack bumps only the root `VERSION`, never `pyproject.toml`/`Cargo.toml`, and `.gstack/version-path` pointed at a TOML file would overwrite it. Several of your repos show the resulting drift. | Med | 006 (hatchling reads `VERSION`), 007 (`include_str!` reads `VERSION`) |
 | G7 | `/ship` step 7 re-runs individual tests and reverts "failing" ones; a coverage floor wired into every `pytest` run would make a passing single test "fail" | Med | 006 (the floor lives in `scripts/coverage.sh`, not in plain `pytest`) |
 | D2 | Opt-in stack packs: you asked for Python (Astral: uv, ruff, ty) and Rust defaults | — | 006, 007 |
@@ -177,9 +207,9 @@ by host and keep the shared test command in `TESTING.md`.
 - Moving *all* skeleton docs into `template/skeleton/`: considered for 005 and deferred. A
   golden inventory of complete placeholder tokens protects them in place; it does not freeze
   arbitrary prose.
-- A strict "no `CLAUDE.md` ever" guard: considered for 004. Not the default, because gstack
-  features that persist settings only in `CLAUDE.md` would lose them. The switch is one line
-  (004 maintenance notes).
+- A strict "no `CLAUDE.md` ever" guard and the single-file merge: superseded by the maintainer's
+  2026-09-24 choice to retain both files with reciprocal required reading. No shim or
+  instruction-file guard belongs in revised 004.
 - shellcheck: both scripts are clean today.
 - `uv_build` as the Python backend: it can't read a dynamic version, so `VERSION` couldn't be the
   single source. Chose hatchling. (uv, ruff and ty are still the toolchain.)
