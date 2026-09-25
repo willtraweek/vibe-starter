@@ -53,7 +53,8 @@ Without `--stack`, the project stays stack-agnostic, exactly as before. A pack i
 - `gitignore`: replaces the commented "Language sections" block of `.gitignore`.
 - `validate-name` (optional): runs before any file is written, as
   `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects unusable names with a nonzero exit
-  (Python: keywords, and standard-library or tool module names that would shadow the package).
+  (Python: keywords, names the standard library, uv or the pack's tools already use, and names
+  over 60 characters).
 - `after-bootstrap` (optional): runs once at the end, for example to write the lockfile.
 
 A pack's `files/.github/workflows/ci.yml` replaces `ci.yml.example`, activating the new project's
@@ -116,7 +117,8 @@ changes.
 
 - `{{PROJECT_NAME}}` and `{{YEAR}}` are bootstrap-owned: `./bootstrap` replaces them (and
   `{{PACKAGE_NAME}}` in stack-pack files). Stack-pack files under `template/stacks/` are not in
-  the golden inventory; each pack's end-to-end test checks a new project has none left.
+  the golden inventory: a self-test checks they carry only those three tokens, and each pack's
+  end-to-end test checks a new project has none of the pack's command placeholders left.
 - Everything else is filled in by hand in the new project. The bootstrap checklist must name
   every file that still has one (`test_bootstrap_checklist_names_every_file_with_placeholders`).
 - After an intentional placeholder change, review the token diff, then print the inventory with
