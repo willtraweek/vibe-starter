@@ -1494,6 +1494,10 @@ SHIM
   assert_absent "$d/.bootstrapped" || return 1
   [ "$(cat "$d/template/.bootstrap-version")" = "2.3.4" ] || fail "original version was not saved" || return 1
   run_bootstrap "$d" --name proj --yes || fail "retry failed: $(cat "$d.out")" || return 1
+  # The retry must finish the swap, not just record the saved version.
+  [ "$(cat "$d/VERSION")" = "0.0.0" ] || fail "retry left the template VERSION" || return 1
+  assert_contains "$d/CHANGELOG.md" "All notable changes to proj" || return 1
+  assert_contains "$d/TODOS.md" "The working backlog for proj" || return 1
   assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4' || return 1
   assert_absent "$d/template"
 }
@@ -1576,6 +1580,53 @@ test_bootstrap_leaves_indented_marker_examples_alone() {
   printf '%s\n' "$want" > "$d/example.md"
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   [ "$(cat "$d/example.md")" = "$want" ] || fail "an indented marker example was changed"
+}
+
+test_bootstrap_provenance_line_is_the_documented_contract() {
+  # One line, '<YYYY-MM-DD> from vibe-starter <version>' (plan 005 maintenance notes).
+  local d="$WORK/provenance/proj" tver
+  tver="$(head -n 1 "$REPO/VERSION" | sed 's/\./\\./g')"
+  fresh_copy "$d" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(wc -l < "$d/.bootstrapped" | tr -d ' ')" = "1" ] || fail ".bootstrapped is not one line" || return 1
+  grep -Eqx "[0-9]{4}-[0-9]{2}-[0-9]{2} from vibe-starter $tver" "$d/.bootstrapped" \
+    || fail ".bootstrapped is not '<YYYY-MM-DD> from vibe-starter <version>': $(cat "$d/.bootstrapped")"
+}
+test_bootstrap_strip_keeps_blank_line_layout() {
+  # The real blocks sit between blank lines; two in one file must both go, bytes exact.
+  local d="$WORK/strip-layout/proj"
+  fresh_copy "$d" || return 1
+  printf 'A\n\n<!-- template-only:start -->\none\n<!-- template-only:end -->\n\nB\n\n<!-- template-only:start -->\ntwo\n<!-- template-only:end -->\n\nC\n' > "$d/layout.md"
+  printf 'A\n\nB\n\nC\n' > "$d.want"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  cmp -s "$d.want" "$d/layout.md" || fail "strip changed the layout: $(od -c "$d/layout.md" | head -3)"
+}
+test_bootstrap_fails_closed_when_find_fails() {
+  # The markdown list is piped, so pipefail stops bootstrap when find can't read
+  # a directory. The stub lists everything, then fails like a Permission denied.
+  local d="$WORK/find-fails/proj" bin="$WORK/find-fails/bin" before rc
+  fresh_copy "$d" || return 1
+  mkdir -p "$bin" || return 1
+  printf '#!/bin/sh\n"%s" "$@"\necho "find: ./secret: Permission denied" >&2\nexit 1\n' \
+    "$(command -v find)" > "$bin/find" && chmod +x "$bin/find" || fail "find stub setup failed" || return 1
+  before="$(tree_fingerprint "$d")"
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "bootstrap ignored a find failure" || return 1
+  assert_contains "$d.out" "Permission denied" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed although markdown was not fully listed"
+}
+test_bootstrap_refuses_missing_skeletons_before_changes() {
+  local f d before rc
+  for f in VERSION CHANGELOG.md TODOS.md; do
+    d="$WORK/missing-skeleton-$f/proj"
+    fresh_copy "$d" || return 1
+    rm "$d/template/skeleton/$f"
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name proj --yes; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.out" "Missing skeleton: $f" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed before the missing $f was reported" || return 1
+  done
 }
 
 # --- runner -------------------------------------------------------------------
