@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs once at the end of ./bootstrap --stack python, from the project root.
+# Lock dependencies now so CI's `uv sync --locked` passes on the first push.
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found: install it (https://docs.astral.sh/uv/), then run 'uv lock' and commit uv.lock."
+elif uv lock --quiet; then
+  echo "Locked dependencies (uv.lock) - commit it."
+else
+  echo "uv lock failed (offline?): run 'uv lock' and commit uv.lock before your first push."
+fi
