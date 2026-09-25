@@ -20,7 +20,8 @@ directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run 
 
 ## What's inside
 
-- `CLAUDE.md`, `AGENTS.md` — how Claude and other agents work in the repo (routing, protocol).
+- `CLAUDE.md`, `AGENTS.md` — companion instructions for every coding agent. Each requires reading
+  the other once; keep both files and preserve their division of responsibilities.
 - `DOCTRINE.md` — the cross-project ethos (completeness, primitives-complete, CLI-as-contract,
   deterministic/gray-space, estimate framing).
 - `TESTING.md`, `ENGINEERING.md` — the testing doctrine and code-organization standards.

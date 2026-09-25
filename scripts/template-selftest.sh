@@ -1229,6 +1229,97 @@ test_bootstrap_non_tty_without_yes_takes_the_default_silently() {
   assert_contains "$d/.gitleaks.toml" 'title = "widget gitleaks config"'
 }
 
+# --- tests: companion instruction files (plan 004) -----------------------------
+test_instruction_pair_ships_both_files() {
+  local d="$WORK/instruction-pair-files/demo" dir heading
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for dir in "$REPO" "$d"; do
+    [ -f "$dir/AGENTS.md" ] && [ ! -L "$dir/AGENTS.md" ] \
+      || fail "$dir/AGENTS.md must be a substantive regular file" || return 1
+    [ -f "$dir/CLAUDE.md" ] && [ ! -L "$dir/CLAUDE.md" ] \
+      || fail "$dir/CLAUDE.md must be a substantive regular file" || return 1
+    for heading in '## Install' '## Trust boundary (critical)' '## Before shipping' '## Privacy'; do
+      grep -qxF -- "$heading" "$dir/AGENTS.md" || fail "AGENTS.md lost $heading" || return 1
+    done
+    for heading in '## Architecture' '## Commands' '## Skill routing'; do
+      grep -qxF -- "$heading" "$dir/CLAUDE.md" || fail "CLAUDE.md lost $heading" || return 1
+    done
+  done
+}
+test_instruction_pair_agents_requires_claude() {
+  local d="$WORK/instruction-pair-agents/demo" f
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for f in "$REPO/AGENTS.md" "$d/AGENTS.md"; do
+    grep -qxF '## Required companion instructions' "$f" || fail "AGENTS.md lacks companion instructions" || return 1
+    assert_contains "$f" "Before starting task work, read \`./CLAUDE.md\` in full. Both files' instructions apply." || return 1
+    assert_contains "$f" 'Read each file once per task; if you already read the companion, do not follow the reference back again.' || return 1
+    ! grep -Eq '^[[:space:]]*@(\./)?CLAUDE\.md[[:space:]]*$' "$f" \
+      || fail "AGENTS.md uses an import instead of companion reading" || return 1
+  done
+}
+test_instruction_pair_claude_requires_agents() {
+  local d="$WORK/instruction-pair-claude/demo" f
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for f in "$REPO/CLAUDE.md" "$d/CLAUDE.md"; do
+    grep -qxF '## Required companion instructions' "$f" || fail "CLAUDE.md lacks companion instructions" || return 1
+    assert_contains "$f" "Before starting task work, read \`./AGENTS.md\` in full. Both files' instructions apply." || return 1
+    assert_contains "$f" 'Read each file once per task; if you already read the companion, do not follow the reference back again.' || return 1
+    ! grep -Eq '^[[:space:]]*@(\./)?AGENTS\.md[[:space:]]*$' "$f" \
+      || fail "CLAUDE.md uses an import instead of companion reading" || return 1
+  done
+}
+test_instruction_pair_preserves_skill_routing() {
+  local d="$WORK/instruction-pair-routing/demo" f skill
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for f in "$REPO/CLAUDE.md" "$d/CLAUDE.md"; do
+    [ "$(grep -cx '## Skill routing' "$f")" = "1" ] || fail "CLAUDE.md must have one Skill routing heading" || return 1
+    for skill in context-save context-restore run; do
+      grep -Eq "^\|.*\| \`$skill\` \|$" "$f" || fail "CLAUDE.md does not route to $skill" || return 1
+    done
+    ! grep -Eq "^\|.*\| \`(checkpoint|verify)\` \|$" "$f" || fail "CLAUDE.md invokes a stale skill" || return 1
+    assert_contains "$f" "When the user's request matches an available skill, invoke it before doing the task." || return 1
+    assert_contains "$f" "Use the host's supported skill mechanism; if no Skill tool exists, read and follow that skill's SKILL.md." || return 1
+    assert_contains "$f" 'Load the required repository instructions first.' || return 1
+  done
+}
+test_instruction_pair_documents_test_commands() {
+  local d="$WORK/instruction-pair-commands/demo" dir
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for dir in "$REPO" "$d"; do
+    [ "$(grep -cx '## Commands' "$dir/TESTING.md")" = "1" ] || fail "TESTING.md must have one Commands heading" || return 1
+    awk '/^## Commands$/ {commands=NR} /^## Why Tiers, Not One Number$/ {tiers=NR}
+         END {exit !(commands && tiers && commands < tiers)}' "$dir/TESTING.md" \
+      || fail "TESTING.md Commands must precede Why Tiers" || return 1
+    assert_contains "$dir/TESTING.md" "- Checks (guards that run before tests): \`{{CHECK_CMD}}\`" || return 1
+    assert_contains "$dir/TESTING.md" "- Tests: \`{{TEST_CMD}}\`" || return 1
+    assert_contains "$dir/TESTING.md" "The exact commands for this repo; keep them in sync with \`CLAUDE.md\` → Commands." || return 1
+    assert_contains "$dir/CLAUDE.md" "Keep the check and test commands in sync with \`TESTING.md\` → Commands." || return 1
+  done
+}
+test_instruction_pair_documents_both_entry_points() {
+  local d="$WORK/instruction-pair-entry-points/demo" f
+  fresh_copy "$d" || fail "fixture copy failed" || return 1
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for f in "$REPO/README.md" "$d/README.md"; do
+    assert_contains "$f" "- \`CLAUDE.md\` — architecture, commands, conventions, and skill routing; also requires \`AGENTS.md\`." || return 1
+    assert_contains "$f" "- \`AGENTS.md\` — install, trust boundary, ship gate, and privacy; also requires \`CLAUDE.md\`." || return 1
+    assert_contains "$f" 'Every agent reads both files, regardless of its entry point.' || return 1
+    assert_not_contains "$f" "There is deliberately no \`CLAUDE.md\`." || return 1
+  done
+  # TEMPLATE.md is deliberately deleted from generated projects.
+  assert_contains "$REPO/TEMPLATE.md" "- \`CLAUDE.md\`, \`AGENTS.md\` — companion instructions for every coding agent. Each requires reading" || return 1
+  assert_contains "$REPO/TEMPLATE.md" 'the other once; keep both files and preserve their division of responsibilities.' || return 1
+  assert_not_contains "$REPO/TEMPLATE.md" "There is deliberately no \`CLAUDE.md\`." || return 1
+  assert_contains "$d.out" 'CLAUDE.md   - tagline, architecture, key files, commands, skill routing; read with AGENTS.md' || return 1
+  assert_contains "$d.out" 'AGENTS.md   - install command, trust boundary, ship gate, privacy; read with CLAUDE.md' || return 1
+  assert_contains "$d.out" 'Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.'
+}
+
 # --- runner -------------------------------------------------------------------
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac

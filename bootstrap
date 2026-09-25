@@ -193,12 +193,13 @@ fi
 cat <<'CHECKLIST'
 
 Bootstrap done. Hand-fill the placeholders that remain (grep the repo for '{{' ):
-  CLAUDE.md   - tagline, architecture, key files, command placeholders
-  AGENTS.md   - install command, trust boundary, ship gate
-  TESTING.md  - tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
+  CLAUDE.md   - tagline, architecture, key files, commands, skill routing; read with AGENTS.md
+  AGENTS.md   - install command, trust boundary, ship gate, privacy; read with CLAUDE.md
+  TESTING.md  - check/test commands, tier modules, API surfaces, NAMED_INVARIANTS, critical journeys
   README.md   - what / why / stack
   TODOS.md    - the first real task
   docs/architecture.md - modules, contracts & invariants
+Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.
 Then choose a stack and:
   - add the build/test files (package.json / pyproject.toml / Cargo.toml ...)
   - uncomment your language section in .gitignore

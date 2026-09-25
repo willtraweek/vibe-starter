@@ -126,6 +126,8 @@ After revised plans 001–006, verify these contracts before editing:
 - `bootstrap` accepts `--stack <name>` for packs with `files/`, invokes optional `validate-name`
   before writes, and leaves the no-stack path working even when `template/stacks/` is absent.
   No bootstrap change is needed in this plan.
+- Both instruction files survive bootstrap with plan 004's reciprocal required reading.
+  Commands and skill routing remain in CLAUDE.md; TESTING.md mirrors its check/test commands.
 - `scripts/template-selftest.sh` has `stack_env`, captures `REAL_CARGO_HOME`/`REAL_RUSTUP_HOME`,
   and excludes `template/stacks/*` from ordinary project placeholder inventory.
 - Record `grep -c '^test_[A-Za-z0-9_]*()' scripts/template-selftest.sh` before Step 1. This plan
@@ -228,6 +230,7 @@ test_stack_rust_project_is_green_on_first_run() {
   assert_absent "$d/.github/workflows/ci.yml.example" || return 1
   assert_contains "$d/.bootstrapped" "with the rust stack pack" || return 1
   assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`cargo test --locked\`" || return 1
   assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
   (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
     && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
@@ -1021,11 +1024,12 @@ Stop and report back (do not improvise) if:
   union; cargo-llvm-cov#512). Cover each function fully from one test binary.
 - **gstack.**
   - `/ship` step 4 sees `tests/` and reads `cargo test --locked` from `TESTING.md` → Commands,
-    so no bootstrap and no `CLAUDE.md`.
+    synchronized with the retained `CLAUDE.md` → Commands, so it need not bootstrap a test framework.
   - `/health` detects only `cargo test` (no clippy or fmt).
-  - The optional `CLAUDE.md` shim from plan 006's maintenance notes works here too. Use
-    `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` in its
-    `## Health Stack`.
+  - Where the installed `/health` skill requires explicit settings, use the existing
+    `CLAUDE.md` as described in plan 006's maintenance notes. Its optional `## Health Stack`
+    can list `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check`.
+    Preserve reciprocal required reading; no shim or instruction-file guard is needed.
 - Reviewer focus:
   - `coverage_tiers.sh`: the jq, the physical-path strip, and fail-closed on a zero count.
   - The pinned SHAs in both workflows.
