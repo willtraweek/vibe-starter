@@ -2082,6 +2082,39 @@ coverage_tiers = false
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "cannot read pyproject.toml at emptied"
 }
+test_stack_python_ratchet_accepts_retired_members() {
+  # Renaming, moving or deleting a tier member is a reviewed migration: the old path
+  # goes into the tier's `retired`. Any other removal still fails the ratchet, and
+  # the schema rejects retired entries that are malformed, repeated or still included.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-retired/demo" rc bad
+  python_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init && git mv src/demo/cli.py src/demo/command.py) \
+    || fail "git setup failed" || return 1
+  perl -pi -e 's|^include = \["src/demo/cli\.py"\]$|include = ["src/demo/command.py"]\nretired = ["src/demo/cli.py"]|' \
+    "$d/pyproject.toml" || return 1
+  assert_contains "$d/pyproject.toml" 'retired = ["src/demo/cli.py"]' || return 1
+  py_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.tiers.out"; return 1; }
+  cp "$d/pyproject.toml" "$d.pyproject" || return 1
+  perl -ni -e 'print unless /^retired = /' "$d/pyproject.toml" || return 1
+  py_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "existing members removed since HEAD" || return 1
+  assert_contains "$d.tiers.out" "list its old path in the tier's retired" || return 1
+  while IFS= read -r bad; do
+    cp "$d.pyproject" "$d/pyproject.toml" || return 1
+    BAD="$bad" perl -pi -e 's|^retired = .*$|$ENV{BAD}|' "$d/pyproject.toml" || return 1
+    assert_contains "$d/pyproject.toml" "$bad" || return 1
+    py_tiers "$d" --validate; rc=$?
+    assert_exit 1 "$rc" || { echo "    accepted: $bad"; return 1; }
+  done <<'CASES'
+retired = "src/demo/cli.py"
+retired = ["tests/test_cli.py"]
+retired = ["src/demo/command.py"]
+retired = ["src/demo/cli.py", "src/demo/cli.py"]
+CASES
+}
 test_stack_pack_retry_keeps_the_first_runs_stack() {
   # A retry must finish the pack the first attempt started. Without --stack it
   # reuses that choice (the prompt's default, none, would leave a half-applied

@@ -2,7 +2,8 @@
 
 Config lives in [tool.coverage_tiers.*]. Empty tiers require allow_empty=true.
 Branchless code has no branch percentage; measured lines still meet the floor.
---ratchet REF forbids lowering floors/targets or removing existing tier members.
+--ratchet REF forbids lowering floors/targets or removing existing tier members;
+renaming, moving or deleting one means listing its old path in the tier's `retired`.
 """
 
 import argparse
@@ -46,7 +47,7 @@ def validate(tiers: Any, *, check_files: bool = True) -> list[str]:
         if not isinstance(tier, dict):
             errors.append(f"{key}: tier must be a table")
             continue
-        allowed = {"title", "minimum", "target", "include", "allow_empty"}
+        allowed = {"title", "minimum", "target", "include", "allow_empty", "retired"}
         if set(tier) - allowed:
             errors.append(f"{key}: unknown tier keys: {sorted(set(tier) - allowed)}")
         minimum, target = tier.get("minimum"), tier.get("target")
@@ -59,6 +60,18 @@ def validate(tiers: Any, *, check_files: bool = True) -> list[str]:
         if type(tier.get("allow_empty", False)) is not bool:
             errors.append(f"{key}: allow_empty must be boolean")
         members = tier.get("include")
+        retired = tier.get("retired", [])
+        if not isinstance(retired, list):
+            errors.append(f"{key}: retired must be an array")
+            retired = []
+        seen: set[str] = set()
+        for path in retired:
+            if not valid_path(path):
+                errors.append(f"{key}: retired must name canonical src/*.py files: {path!r}")
+            elif path in seen or (isinstance(members, list) and path in members):
+                errors.append(f"{key}: {path} is listed twice across include and retired")
+            else:
+                seen.add(path)
         if not isinstance(members, list):
             errors.append(f"{key}: include must be an explicit array")
             continue
@@ -211,9 +224,13 @@ def ratchet(tiers: dict[str, Any], ref: str) -> list[str]:
         for field in ("minimum", "target"):
             if new[field] < old[field]:
                 errors.append(f"{key}: {field} lowered from {old[field]} to {new[field]}")
-        removed = set(old["include"]) - set(new["include"])
+        # A reviewed migration lists the old path in `retired`; any other removal fails.
+        removed = set(old["include"]) - set(new["include"]) - set(new.get("retired", []))
         if removed:
-            errors.append(f"{key}: existing members removed since {ref}: {sorted(removed)}")
+            errors.append(
+                f"{key}: existing members removed since {ref}: {sorted(removed)} "
+                "(to rename, move or delete one, list its old path in the tier's retired)"
+            )
     return errors
 
 

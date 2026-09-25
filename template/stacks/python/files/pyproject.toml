@@ -57,7 +57,10 @@ include_namespace_packages = true
 exclude_also = ["if TYPE_CHECKING:", "@overload"]
 
 # Per-tier gates (TESTING.md), enforced by scripts/coverage_tiers.py. `minimum` is
-# enforced and only ever rises; `target` is the doctrine's aim.
+# enforced and only ever rises; `target` is the doctrine's aim. CI's ratchet rejects
+# dropping a member from `include`: to rename, move or delete one, add its old path
+# to that tier's `retired = [...]` (a reviewed migration; note why in TESTING.md's
+# Decisions Log).
 [tool.coverage_tiers.pure_logic]
 title = "Pure logic & utilities"
 target = 100.0
