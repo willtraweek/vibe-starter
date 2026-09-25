@@ -1353,7 +1353,7 @@ placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skel
 }
 template_markers_valid() {  # same rules as validate_template_markers in bootstrap
   awk '
-    /^(   |  | )?<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
+    /^(   |  | )?<!--[ \t]*template-only/ && !/^<!-- template-only:(start|end) -->$/ {
       print FILENAME ":" FNR ": template-only marker must be alone on its line, at column 0" > "/dev/stderr"
       bad=1; next
     }
@@ -1529,7 +1529,7 @@ test_bootstrap_rejects_an_invalid_version_before_changes() {
 }
 test_template_owned_files_may_quote_a_placeholder() {
   # A /ship changelog entry can quote a token; that is not a skeleton leak.
-  local d="$WORK/owned-quote/tpl" expected
+  local d="$WORK/owned-quote/tpl" expected f
   fresh_copy "$d" || return 1
   (cd "$d" && git init -q) || fail "git init failed" || return 1
   expected="$(placeholder_inventory)" || return 1
@@ -1537,9 +1537,12 @@ test_template_owned_files_may_quote_a_placeholder() {
   printf -- '- Explain how to fill {{FIRST_TASK}} in the starter backlog.\n' >> "$d/TODOS.md"
   [ "$(REPO="$d" placeholder_inventory)" = "$expected" ] || fail "template-owned files joined the skeleton inventory" || return 1
   REPO="$d" test_template_owned_files_are_not_skeletons || fail "a quoted token counted as a skeleton" || return 1
-  # A real skeleton leak still fails.
-  cp "$d/template/skeleton/CHANGELOG.md" "$d/CHANGELOG.md"
-  ! REPO="$d" test_template_owned_files_are_not_skeletons >/dev/null || fail "skeleton CHANGELOG.md at the root went unnoticed"
+  # A real skeleton leak still fails, file by file.
+  for f in CHANGELOG.md TODOS.md; do
+    cp "$d/$f" "$d/$f.orig" && cp "$d/template/skeleton/$f" "$d/$f" || return 1
+    ! REPO="$d" test_template_owned_files_are_not_skeletons >/dev/null || fail "skeleton $f at the root went unnoticed" || return 1
+    mv "$d/$f.orig" "$d/$f" || return 1
+  done
 }
 test_placeholder_tokens_reject_extra_braces() {
   # {{{X}}} extracts the same {{X}} token, so the delimiter check must catch it.
@@ -1556,13 +1559,15 @@ test_placeholder_tokens_reject_extra_braces() {
 test_bootstrap_rejects_near_miss_markers_before_changes() {
   # The strip only matches exact marker lines, so a near miss must fail first.
   local kind d before rc
-  for kind in indented trailing-space crlf; do
+  for kind in indented trailing-space crlf trailing-text no-inner-space; do
     d="$WORK/near-miss-$kind/proj"
     fresh_copy "$d" || return 1
     case "$kind" in
       indented) printf '  <!-- template-only:start -->\nPRIVATE\n  <!-- template-only:end -->\n' > "$d/canary.md" ;;
       trailing-space) printf '<!-- template-only:start --> \nPRIVATE\n<!-- template-only:end --> \n' > "$d/canary.md" ;;
       crlf) printf '<!-- template-only:start -->\r\nPRIVATE\r\n<!-- template-only:end -->\r\n' > "$d/canary.md" ;;
+      trailing-text) printf '<!-- template-only:start --> (maintainer)\nPRIVATE\n<!-- template-only:end --> (maintainer)\n' > "$d/canary.md" ;;
+      no-inner-space) printf '<!--template-only:start-->\nPRIVATE\n<!--template-only:end-->\n' > "$d/canary.md" ;;
     esac
     before="$(tree_fingerprint "$d")"
     run_bootstrap "$d" --name proj --yes; rc=$?
@@ -1645,6 +1650,122 @@ test_bootstrap_checklist_says_to_commit_before_shipping() {
   fresh_copy "$d" || return 1
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d.out" "Commit this to your default branch before you branch or run gstack /ship"
+}
+
+# --- tests: plan 005 paths found by the /ship coverage audit -------------------
+test_bootstrap_leaves_markdown_in_pruned_dirs_alone() {
+  # Vendored and scratch markdown is neither validated nor stripped: a malformed
+  # marker there must not block bootstrap, and a block there must survive. The
+  # root plans/ is pruned too (bootstrap deletes it anyway).
+  local d="$WORK/pruned-dirs/proj" dirs dir
+  dirs=".git .context node_modules packages/app/node_modules .venv target dist"
+  fresh_copy "$d" || return 1
+  (cd "$d" && git init -q) || fail "git init failed" || return 1
+  printf 'KEEP\n<!-- template-only:start -->\nVENDORED\n<!-- template-only:end -->\n' > "$d.block"
+  for dir in $dirs plans; do
+    mkdir -p "$d/$dir" || return 1
+    printf '<!-- template-only:start -->\nunclosed\n' > "$d/$dir/unclosed.md"
+    cp "$d.block" "$d/$dir/block.md" || return 1
+  done
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for dir in $dirs; do
+    cmp -s "$d.block" "$d/$dir/block.md" || fail "$dir/block.md was changed" || return 1
+  done
+}
+test_bootstrap_fails_closed_when_the_strip_listing_fails() {
+  # The strip pass is piped too. A find that fails only on its second call (the
+  # strip) must stop bootstrap before .bootstrapped, and a plain rerun finishes.
+  local d="$WORK/strip-find-fails/proj" bin="$WORK/strip-find-fails/bin" tver rc
+  tver="$(head -n 1 "$REPO/VERSION")"
+  fresh_copy "$d" || return 1
+  printf 'KEEP\n<!-- template-only:start -->\nPRIVATE\n<!-- template-only:end -->\n' > "$d/canary.md"
+  mkdir -p "$bin" || return 1
+  printf '#!/bin/sh\nif [ -e "%s" ]; then echo "find: .: Permission denied" >&2; exit 1; fi\n: > "%s"\nexec "%s" "$@"\n' \
+    "$bin/listed" "$bin/listed" "$(command -v find)" > "$bin/find" && chmod +x "$bin/find" \
+    || fail "find stub setup failed" || return 1
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "bootstrap ignored a find failure in the strip pass" || return 1
+  assert_exists "$bin/listed" || return 1
+  assert_contains "$d.out" "Permission denied" || return 1
+  assert_contains "$d/canary.md" "PRIVATE" || return 1
+  assert_absent "$d/.bootstrapped" || return 1
+  assert_exists "$d/bootstrap" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "rerun failed: $(cat "$d.out")" || return 1
+  [ "$(cat "$d/canary.md")" = "KEEP" ] || fail "the rerun did not strip the block" || return 1
+  assert_contains "$d/.bootstrapped" "from vibe-starter $tver"
+}
+test_bootstrap_checks_every_version_source() {
+  # gstack's four-part VERSION is valid; two or five parts are not. A saved retry
+  # version is checked too, and a missing VERSION fails before any change.
+  local d="$WORK/version-sources" v rc before
+  for v in 1.2 1.2.3.4.5; do
+    fresh_copy "$d/$v" || return 1
+    printf '%s\n' "$v" > "$d/$v/VERSION"
+    before="$(tree_fingerprint "$d/$v")"
+    run_bootstrap "$d/$v" --name proj --yes; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d/$v.out" "Invalid template version in VERSION: '$v'" || return 1
+    [ "$before" = "$(tree_fingerprint "$d/$v")" ] || fail "VERSION $v changed files before rejection" || return 1
+  done
+  fresh_copy "$d/saved" || return 1
+  printf 'garbage\n' > "$d/saved/template/.bootstrap-version"
+  before="$(tree_fingerprint "$d/saved")"
+  run_bootstrap "$d/saved" --name proj --yes; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d/saved.out" "Invalid template version in template/.bootstrap-version: 'garbage'" || return 1
+  [ "$before" = "$(tree_fingerprint "$d/saved")" ] || fail "a bad saved version changed files" || return 1
+  fresh_copy "$d/missing" || return 1
+  rm "$d/missing/VERSION"
+  before="$(tree_fingerprint "$d/missing")"
+  run_bootstrap "$d/missing" --name proj --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "bootstrap ran without a template VERSION" || return 1
+  [ "$before" = "$(tree_fingerprint "$d/missing")" ] || fail "a missing VERSION changed files" || return 1
+  fresh_copy "$d/four" || return 1
+  printf '1.2.3.4\n' > "$d/four/VERSION"
+  run_bootstrap "$d/four" --name proj --yes || fail "four-part VERSION rejected: $(cat "$d/four.out")" || return 1
+  assert_contains "$d/four/.bootstrapped" 'from vibe-starter 1.2.3.4'
+}
+
+test_bootstrap_fails_when_a_block_is_not_removed() {
+  # perl -i only warns (exit 0) when it can't rewrite a file, e.g. in an
+  # unwritable directory. The stub does the same for the strip.
+  local d="$WORK/strip-skipped/proj" bin="$WORK/strip-skipped/bin" real rc
+  fresh_copy "$d" || return 1
+  mkdir -p "$bin" || return 1
+  real="$(command -v perl)"
+  cat > "$bin/perl" <<STUB || return 1
+#!/bin/sh
+[ "\$1" = "-0pi" ] && exit 0
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/perl" || fail "perl stub setup failed" || return 1
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "bootstrap finished with a template-only block in place" || return 1
+  assert_contains "$d.out" "template-only block not removed" || return 1
+  assert_absent "$d/.bootstrapped"
+}
+test_bootstrap_retries_a_failed_cleanup() {
+  # .bootstrapped is written only after the template-only paths are gone, and
+  # template/ (the retry state) goes last, so a failed removal can be retried.
+  local d="$WORK/cleanup-retry/proj" bin="$WORK/cleanup-retry/bin" real rc
+  fresh_copy "$d" || return 1
+  printf '2.3.4\n' > "$d/VERSION"
+  mkdir -p "$bin" || return 1
+  real="$(command -v rm)"
+  cat > "$bin/rm" <<STUB || return 1
+#!/bin/sh
+[ "\$2" = "plans" ] && exit 1
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/rm" || fail "rm stub setup failed" || return 1
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "a failed cleanup went unnoticed" || return 1
+  assert_absent "$d/.bootstrapped" || return 1
+  assert_exists "$d/template/.bootstrap-version" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "retry failed: $(cat "$d.out")" || return 1
+  assert_absent "$d/plans" || return 1
+  assert_absent "$d/template" || return 1
+  assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4'
 }
 
 # --- runner -------------------------------------------------------------------
