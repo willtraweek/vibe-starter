@@ -1863,6 +1863,7 @@ Calendar|taken by the Python standard library
 json|taken by the Python standard library
 pytest|taken by the Python standard library
 ruff|taken by the Python standard library
+colorama|taken by the Python standard library
 Acme Example Inventory Reconciliation Service Version Two Ok1|too long for the python stack pack
 NAMES
 }
