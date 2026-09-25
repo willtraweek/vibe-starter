@@ -7,6 +7,7 @@
 # Nothing in the real checkout is modified.
 #
 # Usage: scripts/template-selftest.sh [substring]   # only tests whose name contains it
+#        scripts/template-selftest.sh --print-inventory   # the golden placeholder inventory
 #
 # Portability: must run on macOS /bin/bash 3.2 and on Linux bash 5. No mapfile,
 # no associative arrays, no ${var,,}, no `local -n`.
@@ -1325,10 +1326,11 @@ test_instruction_pair_documents_both_entry_points() {
 placeholder_tokens() {  # complete tokens, whitespace-normalized and sorted; bad delimiters fail
   perl -0777 -ne '
     my @tokens;
-    while (/\{\{([^{}]*)\}\}/g) {
+    # A brace touching a token ({{{X}}}) makes it no token, so the check below fails.
+    while (/(?<!\{)\{\{([^{}]*)\}\}(?!\})/g) {
       my $t = $1; $t =~ s/\s+/ /g; push @tokens, "{{$t}}";
     }
-    s/\{\{([^{}]*)\}\}//g;
+    s/(?<!\{)\{\{([^{}]*)\}\}(?!\})//g;
     die "malformed placeholder delimiters in $ARGV\n" if /\{\{|\}\}/;
     print "$_\n" for sort @tokens;
   ' "$1"
@@ -1338,6 +1340,8 @@ placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skel
   while IFS= read -r -d '' f; do
     case "$f" in
       bootstrap|TEMPLATE.md|plans/*|scripts/template-selftest.sh) continue ;;
+      .github/workflows/template-selftest.yml) continue ;;
+      CHANGELOG.md|TODOS.md|VERSION) continue ;;  # template-owned: /ship writes them
     esac
     [ -f "$REPO/$f" ] || continue
     tokens="$(placeholder_tokens "$REPO/$f")" || return 1
@@ -1347,8 +1351,12 @@ placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skel
     printf '%s %s %s\n' "$f" "$n" "$digest"
   done < <(cd "$REPO" && git ls-files -z --cached --others --exclude-standard | LC_ALL=C sort -zu)
 }
-template_markers_valid() {
+template_markers_valid() {  # same rules as validate_template_markers in bootstrap
   awk '
+    /^[ \t]*<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
+      print FILENAME ":" FNR ": template-only marker must be alone on its line, at column 0" > "/dev/stderr"
+      bad=1; next
+    }
     /^<!-- template-only:start -->$/ {
       if (inside) { print FILENAME ": nested template-only start" > "/dev/stderr"; bad=1 }
       inside=1; next
@@ -1387,8 +1395,10 @@ template/skeleton/TODOS.md 2 54fdbe3163f63aa797cde77414a02b1fcdf26fabe1afa24f7a8
 $(diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual"))"
 }
 test_template_owned_files_are_not_skeletons() {
-  assert_not_contains "$REPO/CHANGELOG.md" '{{' || return 1
-  assert_not_contains "$REPO/TODOS.md" '{{' || return 1
+  # A release entry may quote a {{TOKEN}}; the skeletons' own lines may not appear.
+  assert_not_contains "$REPO/CHANGELOG.md" 'All notable changes to {{PROJECT_NAME}}' || return 1
+  assert_not_contains "$REPO/TODOS.md" 'The working backlog for {{PROJECT_NAME}}' || return 1
+  assert_not_contains "$REPO/TODOS.md" '{{FIRST_TASK' || return 1
   assert_exists "$REPO/template/skeleton/VERSION" || return 1
   [ "$(cat "$REPO/template/skeleton/VERSION")" = "0.0.0" ] || fail "skeleton VERSION is not 0.0.0"
 }
@@ -1487,6 +1497,76 @@ SHIM
   run_bootstrap "$d" --name proj --yes || fail "retry failed: $(cat "$d.out")" || return 1
   assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4' || return 1
   assert_absent "$d/template"
+}
+
+
+# --- tests: plan 005 review fixes ----------------------------------------------
+test_bootstrap_strips_blocks_in_a_nested_plans_dir() {
+  # Only the root plans/ is template-only; a docs/plans/ ships to the project.
+  local d="$WORK/nested-plans/proj"
+  fresh_copy "$d" || return 1
+  mkdir -p "$d/docs/plans"
+  printf 'KEEP\n<!-- template-only:start -->\nMAINTAINER PRIVATE\n<!-- template-only:end -->\n' > "$d/docs/plans/design.md"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(cat "$d/docs/plans/design.md")" = "KEEP" ] || fail "block in docs/plans/ was not stripped"
+}
+test_bootstrap_rejects_an_invalid_version_before_changes() {
+  local d="$WORK/bad-version/proj" before rc
+  fresh_copy "$d" || return 1
+  printf 'v1.2.3\n' > "$d/VERSION"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "Invalid template version in VERSION: 'v1.2.3'" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed before the rejection" || return 1
+  # The bad value was not saved, so fixing VERSION is enough to retry.
+  printf '1.2.3\n' > "$d/VERSION"
+  run_bootstrap "$d" --name proj --yes || fail "retry failed: $(cat "$d.out")" || return 1
+  assert_contains "$d/.bootstrapped" 'from vibe-starter 1.2.3'
+}
+test_template_owned_files_may_quote_a_placeholder() {
+  # A /ship changelog entry can quote a token; that is not a skeleton leak.
+  local d="$WORK/owned-quote/tpl" expected
+  fresh_copy "$d" || return 1
+  (cd "$d" && git init -q) || fail "git init failed" || return 1
+  expected="$(placeholder_inventory)" || return 1
+  printf -- '- Stack packs fill {{TEST_CMD}}.\n' >> "$d/CHANGELOG.md"
+  printf -- '- Fill {{CHECK_CMD}} next.\n' >> "$d/TODOS.md"
+  [ "$(REPO="$d" placeholder_inventory)" = "$expected" ] || fail "template-owned files joined the skeleton inventory" || return 1
+  REPO="$d" test_template_owned_files_are_not_skeletons || fail "a quoted token counted as a skeleton" || return 1
+  # A real skeleton leak still fails.
+  cp "$d/template/skeleton/CHANGELOG.md" "$d/CHANGELOG.md"
+  ! REPO="$d" test_template_owned_files_are_not_skeletons >/dev/null || fail "skeleton CHANGELOG.md at the root went unnoticed"
+}
+test_placeholder_tokens_reject_extra_braces() {
+  # {{{X}}} extracts the same {{X}} token, so the delimiter check must catch it.
+  local f="$WORK/braces.md" rc
+  printf '{{{CHECK_CMD}}}\n' > "$f"
+  placeholder_tokens "$f" > "$f.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "triple braces accepted" || return 1
+  printf '{{CHECK_CMD}}}\n' > "$f"
+  placeholder_tokens "$f" > "$f.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "an extra closing brace accepted" || return 1
+  printf '{{CHECK_CMD}}{{TEST_CMD}}\n' > "$f"
+  [ "$(placeholder_tokens "$f")" = "$(printf '{{CHECK_CMD}}\n{{TEST_CMD}}')" ] || fail "adjacent tokens rejected"
+}
+test_bootstrap_rejects_near_miss_markers_before_changes() {
+  # The strip only matches exact marker lines, so a near miss must fail first.
+  local kind d before rc
+  for kind in indented trailing-space crlf; do
+    d="$WORK/near-miss-$kind/proj"
+    fresh_copy "$d" || return 1
+    case "$kind" in
+      indented) printf '  <!-- template-only:start -->\nPRIVATE\n  <!-- template-only:end -->\n' > "$d/canary.md" ;;
+      trailing-space) printf '<!-- template-only:start --> \nPRIVATE\n<!-- template-only:end --> \n' > "$d/canary.md" ;;
+      crlf) printf '<!-- template-only:start -->\r\nPRIVATE\r\n<!-- template-only:end -->\r\n' > "$d/canary.md" ;;
+    esac
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name proj --yes; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.out" "must be alone on its line" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "$kind markers changed files before rejection" || return 1
+  done
 }
 
 # --- runner -------------------------------------------------------------------

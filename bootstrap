@@ -15,9 +15,11 @@
 # template/skeleton/ and strips <!-- template-only --> markdown blocks.
 #
 # The default name is the repo name of the `origin` remote, else the directory
-# name. Exit codes: 0 done (or already bootstrapped), 2 usage or name error, 3
-# refused because this is the vibe-starter template repo itself, or git can't
-# read this directory's .git.
+# name. Exit codes: 0 done (or already bootstrapped), 1 failed (a malformed
+# template-only marker, a missing skeleton or an invalid template version is
+# caught before any change; after a later failure, fix it and rerun with the
+# same arguments), 2 usage or name error, 3 refused because this is the
+# vibe-starter template repo itself, or git can't read this directory's .git.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -147,8 +149,15 @@ YEAR="$(date +%Y)"
 echo "Personalizing template -> name='$NAME', year='$YEAR'"
 
 # --- Validate template-only markers before any writes -----------------------
+# Same rules as template_markers_valid in scripts/template-selftest.sh. A
+# marker the strip below would miss (indented, trailing space, CRLF) is an
+# error here, so a block can't silently ship.
 validate_template_markers() {
   awk '
+    /^[ \t]*<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
+      print FILENAME ":" FNR ": template-only marker must be alone on its line, at column 0" > "/dev/stderr"
+      bad=1; next
+    }
     /^<!-- template-only:start -->$/ {
       if (inside) { print FILENAME ": nested template-only start" > "/dev/stderr"; bad=1 }
       inside=1; next
@@ -163,11 +172,17 @@ validate_template_markers() {
     }
   ' "$1"
 }
-while IFS= read -r -d '' f; do
+# The markdown both the validate and the strip pass cover; they must see the
+# same files. Only the root plans/ is template-only. Piped (not < <(...)) so
+# pipefail stops bootstrap when find can't read a directory.
+markdown_files() {
+  find . \( -path ./plans -o -type d \( -name .git -o -name .context \
+    -o -name node_modules -o -name .venv -o -name target -o -name dist \) \) -prune \
+    -o -type f -name '*.md' -print0
+}
+markdown_files | while IFS= read -r -d '' f; do
   validate_template_markers "$f" || exit 1
-done < <(find . -type d \( -name .git -o -name .context -o -name plans \
-  -o -name node_modules -o -name .venv -o -name target -o -name dist \) -prune \
-  -o -type f -name '*.md' -print0)
+done
 
 # --- Swap in the project skeletons, retaining the template version on retry --
 # Save provenance outside root VERSION: the first copy replaces VERSION with 0.0.0.
@@ -175,15 +190,20 @@ done < <(find . -type d \( -name .git -o -name .context -o -name plans \
 for f in VERSION CHANGELOG.md TODOS.md; do
   [ -f "template/skeleton/$f" ] || { echo "Missing skeleton: $f" >&2; exit 1; }
 done
-if [ ! -f template/.bootstrap-version ]; then
-  TEMPLATE_VERSION="$(head -n 1 VERSION)"
+if [ -f template/.bootstrap-version ]; then
+  VERSION_FROM=template/.bootstrap-version
+else
+  VERSION_FROM=VERSION
+fi
+TEMPLATE_VERSION="$(head -n 1 "$VERSION_FROM")"
+# Checked before it is saved, so a bad VERSION can't stick across retries.
+if ! printf '%s\n' "$TEMPLATE_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){2,3}$'; then
+  echo "Invalid template version in $VERSION_FROM: '$TEMPLATE_VERSION'" >&2
+  exit 1
+fi
+if [ "$VERSION_FROM" = VERSION ]; then
   printf '%s\n' "$TEMPLATE_VERSION" > template/.bootstrap-version.tmp
   mv template/.bootstrap-version.tmp template/.bootstrap-version
-fi
-TEMPLATE_VERSION="$(cat template/.bootstrap-version)"
-if ! printf '%s\n' "$TEMPLATE_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){2,3}$'; then
-  echo "Invalid saved template version: template/.bootstrap-version" >&2
-  exit 1
 fi
 for f in VERSION CHANGELOG.md TODOS.md; do
   cp "template/skeleton/$f" "$f"
@@ -210,11 +230,9 @@ if [ -n "$files" ]; then
 fi
 
 # --- Strip the validated template-only blocks -------------------------------
-while IFS= read -r -d '' f; do
+markdown_files | while IFS= read -r -d '' f; do
   perl -0pi -e 's/^<!-- template-only:start -->\n.*?^<!-- template-only:end -->(?:\n|\z)\n?//gms' "$f"
-done < <(find . -type d \( -name .git -o -name .context -o -name plans \
-  -o -name node_modules -o -name .venv -o -name target -o -name dist \) -prune \
-  -o -type f -name '*.md' -print0)
+done
 echo "Removed template-only blocks."
 
 # --- git init (only if this directory is not already a repository root) ------

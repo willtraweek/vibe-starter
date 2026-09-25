@@ -16,7 +16,10 @@ first-run checklist, and then deletes itself and the template-only paths listed 
 
 The project name defaults to the `origin` remote's repo name, else the directory name. Bad
 arguments exit 2. In the vibe-starter template repo itself, or where git can't read the
-directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run anyway.
+directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run anyway. A
+malformed template-only marker, a missing `template/skeleton/` file or an invalid template
+version stops it with exit 1 before it changes anything; after a later failure, fix the cause
+and rerun with the same arguments.
 
 ## What's inside
 
