@@ -6,5 +6,5 @@ if ! command -v uv >/dev/null 2>&1; then
 elif uv lock --quiet; then
   echo "Locked dependencies (uv.lock) - commit it."
 else
-  echo "uv lock failed (offline?): run 'uv lock' and commit uv.lock before your first push."
+  echo "uv lock failed (see above; offline?): run 'uv lock' and commit uv.lock before your first push."
 fi

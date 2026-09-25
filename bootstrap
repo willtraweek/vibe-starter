@@ -291,10 +291,8 @@ if [ -n "$STACK" ]; then
     done
   done < "$pack/commands"
   perl -0pi -e 's/^This template is stack-agnostic\. Fill these in once a stack is chosen, then delete this note\.\n\n?//m' CLAUDE.md
-  if grep -q '^# Language sections' .gitignore; then
-    perl -0pi -e 's/\n# =+\n# Language sections.*\z/\n/s' .gitignore
-    cat "$pack/gitignore" >> .gitignore
-  fi
+  PACK_GITIGNORE="$(cat "$pack/gitignore")" perl -0pi -e \
+    's/\r?\n# =+\r?\n# Language sections.*\z/\n\n$ENV{PACK_GITIGNORE}\n/s' .gitignore
   if [ -f .github/workflows/ci.yml ]; then rm -f .github/workflows/ci.yml.example; fi
   echo "Installed the $STACK stack pack."
 fi

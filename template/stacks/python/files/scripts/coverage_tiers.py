@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if not errors:
                 errors = check(tiers, measured)
-    except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError, RecursionError) as exc:
         errors = [f"cannot load valid configuration/report: {exc}"]
     for error in errors:
         print(f"coverage-tiers: FAIL {error}", file=sys.stderr)

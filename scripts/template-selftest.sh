@@ -1888,7 +1888,7 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   printf 'package={{PACKAGE_NAME}} project={{PROJECT_NAME}}\n' > "$p/files/src/__package__/hello.txt"
   printf 'nested\n' > "$p/files/a/__package__/__package__/x.txt"
   printf 'name: ci\n' > "$p/files/.github/workflows/ci.yml"
-  printf '# comment line\nTEST_CMD=fixture-test --all\nINSTALL_CMD=fixture-install\nSTACK=Fixture stack\n' > "$p/commands"
+  printf '# comment line\nTEST_CMD=fixture-test --all\nINSTALL_CMD=fixture-install\nSTACK=Fixture stack\nSHIP_GATE=fixture-gate && fixture-test\n' > "$p/commands"
   printf '# --- Fixture ---\nfixture-out/\n' > "$p/gitignore"
   printf '#!/bin/sh\ntouch after-bootstrap-ran\n' > "$p/after-bootstrap"
   run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
@@ -1898,6 +1898,7 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   assert_contains "$d/CLAUDE.md" "Tests: \`fixture-test --all\`" || return 1
   assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`fixture-install\`" || return 1
   assert_contains "$d/AGENTS.md" "Install deps: \`fixture-install\`" || return 1
+  assert_contains "$d/AGENTS.md" "\`fixture-gate && fixture-test\`" || return 1  # a multi-line placeholder
   assert_contains "$d/README.md" "Fixture stack" || return 1
   assert_not_contains "$d/CLAUDE.md" "This template is stack-agnostic" || return 1
   assert_not_contains "$d/.gitignore" "# Language sections" || return 1
@@ -1908,19 +1909,31 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   assert_contains "$d/.bootstrapped" "with the fixture stack pack" || return 1
   assert_contains "$d.out" "Stack pack: fixture."
 }
+test_check_runs_stack_guards_and_fails_when_one_fails() {
+  # Stack packs put their guards (lint, types, lockfile) in scripts/check.d; if a
+  # failing one didn't fail check.sh, CI's "Checks" step would pass regardless.
+  local d="$WORK/check-guards/proj" rc
+  fresh_copy "$d" || return 1
+  mkdir -p "$d/scripts/check.d" || return 1
+  printf 'echo "guard a ran from:"\npwd -P\n' > "$d/scripts/check.d/a.sh"
+  run_check "$d" GITLEAKS_BIN=/nonexistent CI=false; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.out" "- a: running scripts/check.d/a.sh..." || return 1
+  assert_contains "$d.out" "guard a ran from:" || return 1
+  assert_contains "$d.out" "$(cd "$d" && pwd -P)" || return 1  # from the project root
+  assert_contains "$d.out" "OK: checks passed." || return 1
+  printf 'exit 1\n' > "$d/scripts/check.d/b.sh"
+  run_check "$d" GITLEAKS_BIN=/nonexistent CI=false; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "- b: running scripts/check.d/b.sh..." || return 1
+  assert_not_contains "$d.out" "OK: checks passed."
+}
 test_stack_pack_retry_matches_a_clean_run() {
   # A failed bootstrap is retried with the same arguments (plan 005). Reapplying
-  # the pack must converge on a clean run's tree: no second .gitignore block, and
-  # CLAUDE.md keeps one blank line where the stack-agnostic note was.
-  local root="$WORK/stack-retry" bin="$WORK/stack-retry/bin" real d rc
-  for d in "$root/clean/demo" "$root/retried/demo"; do
-    fresh_copy "$d" || return 1
-    mkdir -p "$d/template/stacks/fixture/files/src/__package__" || return 1
-    printf 'package={{PACKAGE_NAME}}\n' > "$d/template/stacks/fixture/files/src/__package__/hello.txt"
-    printf 'TEST_CMD=fixture-test\n' > "$d/template/stacks/fixture/commands"
-    printf '# --- Fixture ---\nfixture-out/\n' > "$d/template/stacks/fixture/gitignore"
-  done
-  run_bootstrap "$root/clean/demo" --name demo --stack fixture --yes || fail "clean run exited $?" || return 1
+  # the pack must converge on a clean run's tree: no second .gitignore block (with
+  # LF or CRLF line endings), and CLAUDE.md keeps one blank line where the
+  # stack-agnostic note was.
+  local root="$WORK/stack-retry" bin="$WORK/stack-retry/bin" real d rc eol
   mkdir -p "$bin" || return 1
   real="$(command -v rm)"
   cat > "$bin/rm" <<STUB || return 1
@@ -1929,12 +1942,24 @@ test_stack_pack_retry_matches_a_clean_run() {
 exec "$real" "\$@"
 STUB
   chmod +x "$bin/rm" || fail "rm stub setup failed" || return 1
-  d="$root/retried/demo"
-  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
-  [ "$rc" -ne 0 ] || fail "the stubbed cleanup did not fail" || return 1
-  run_bootstrap "$d" --name demo --stack fixture --yes || fail "retry failed: $(cat "$d.out")" || return 1
-  [ "$(grep -c '^# --- Fixture ---$' "$d/.gitignore")" = 1 ] || fail "the pack's .gitignore block was applied twice" || return 1
-  [ "$(tree_fingerprint "$root/clean/demo")" = "$(tree_fingerprint "$d")" ] || fail "the retried tree differs from a clean run" || return 1
+  for eol in lf crlf; do
+    for d in "$root/$eol/clean/demo" "$root/$eol/retried/demo"; do
+      fresh_copy "$d" || return 1
+      mkdir -p "$d/template/stacks/fixture/files/src/__package__" || return 1
+      printf 'package={{PACKAGE_NAME}}\n' > "$d/template/stacks/fixture/files/src/__package__/hello.txt"
+      printf 'TEST_CMD=fixture-test\n' > "$d/template/stacks/fixture/commands"
+      printf '# --- Fixture ---\nfixture-out/\n' > "$d/template/stacks/fixture/gitignore"
+      [ "$eol" = lf ] || perl -pi -e 's/\n/\r\n/' "$d/.gitignore"
+    done
+    run_bootstrap "$root/$eol/clean/demo" --name demo --stack fixture --yes || fail "clean $eol run exited $?" || return 1
+    d="$root/$eol/retried/demo"
+    PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
+    [ "$rc" -ne 0 ] || fail "the stubbed cleanup did not fail" || return 1
+    run_bootstrap "$d" --name demo --stack fixture --yes || fail "$eol retry failed: $(cat "$d.out")" || return 1
+    [ "$(grep -c '^# --- Fixture ---$' "$d/.gitignore")" = 1 ] || fail "$eol: the pack's .gitignore block is not there exactly once" || return 1
+    assert_not_contains "$d/.gitignore" "# Language sections" || return 1
+    [ "$(tree_fingerprint "$root/$eol/clean/demo")" = "$(tree_fingerprint "$d")" ] || fail "$eol: the retried tree differs from a clean run" || return 1
+  done
   perl -0ne 'exit(/^## Commands\n\nKeep the check/m ? 0 : 1)' "$d/CLAUDE.md" \
     || fail "CLAUDE.md's Commands section lost its layout: $(grep -A3 '^## Commands' "$d/CLAUDE.md")"
 }
@@ -1995,7 +2020,7 @@ def report(cli=None, extra=None):
                         for key in module.COUNTERS})
 
 def run(data, expected, text="", mode="--check"):
-    (root / "coverage.json").write_text(json.dumps(data))
+    (root / "coverage.json").write_text(data if isinstance(data, str) else json.dumps(data))
     result = subprocess.run([sys.executable, "scripts/coverage_tiers.py", mode],
                             cwd=root, text=True, capture_output=True)
     assert result.returncode == expected, result.stdout + result.stderr
@@ -2025,6 +2050,7 @@ for mutation in (
     run(data, 1, mode="--report")  # Invalid inputs cannot produce a success snapshot.
 run(report(cli=summary(0, 0)), 1, "no measurable statements")
 run(report(cli=summary(10**309, 10**309)), 1, "coverage-tiers: FAIL")  # No traceback.
+run("[" * 100000 + "]" * 100000, 1, "coverage-tiers: FAIL")  # Nesting too deep to decode.
 result = subprocess.run([sys.executable, "scripts/coverage_tiers.py", "--ratchet", ""],
                         cwd=root, capture_output=True, text=True)
 assert result.returncode == 2 and "needs a git ref" in result.stderr, result
@@ -2088,7 +2114,7 @@ test_stack_python_coverage_counts_untested_namespace_modules() {
 }
 test_stack_python_project_is_green_on_first_run() {
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
-  local d="$WORK/stack-python/demo-app"
+  local d="$WORK/stack-python/demo-app" key
   fresh_copy "$d"
   (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name "Demo App" --stack python --yes </dev/null >"$d.out" 2>&1) \
     || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
@@ -2102,6 +2128,9 @@ test_stack_python_project_is_green_on_first_run() {
   assert_contains "$d/TESTING.md" "Tests: \`uv run pytest\`" || return 1
   assert_tree_lacks "$d" '{{TEST_CMD' || return 1
   assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
+  for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/python/commands") PROJECT_NAME YEAR; do
+    assert_tree_lacks "$d" "{{$key" || return 1
+  done
   (cd "$d" && git add -A && git commit -qm init \
     && stack_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
     && stack_env ./scripts/coverage.sh) >"$d.gate.out" 2>&1 \
