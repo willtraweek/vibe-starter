@@ -15,7 +15,7 @@ deletes `plans/`, so none of this reaches projects created from the template.
 | [002](002-trustworthy-check-guards.md) | Make `scripts/check.sh` trustworthy: scan what git would commit, fail closed in CI, keep `.env.example` committable | P1 | S | 001 | DONE (40 tests: the plan's 7 + 33 from review and /ship; landed after 003, so the suite is 34 + 40 = 74) |
 | [003](003-harden-bootstrap.md) | Harden `bootstrap`: remote-derived name, refuse to run on the template, strict args, worktree-aware git init | P1 | S | 001 | DONE (23 tests: the plan's 8 + 15 from review and /ship; landed before 002, so the suite is 11 + 23 = 34) |
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
-| [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (20 tests: the plan's 10 + 10 from review; suite: 100 passed, 0 failed, 0 skipped) |
+| [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (22 tests: the plan's 10 + 12 from review; suite: 102 passed, 0 failed, 0 skipped) |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | TODO |
 | [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
 

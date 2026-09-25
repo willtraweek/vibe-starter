@@ -1629,6 +1629,24 @@ test_bootstrap_refuses_missing_skeletons_before_changes() {
   done
 }
 
+test_bootstrapped_project_has_no_template_references() {
+  # The token inventory can't see added prose: /document-release, /sync-gbrain or an
+  # agent syncing Commands could point skeleton docs at template-only files.
+  local d="$WORK/no-template-refs/proj" s
+  fresh_copy "$d" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  for s in TEMPLATE.md template/skeleton template-selftest bootstrap-version 'configured by /'; do
+    assert_tree_lacks "$d" "$s" || return 1
+  done
+}
+test_bootstrap_checklist_says_to_commit_before_shipping() {
+  # /ship calls any VERSION that differs from the base branch already bumped.
+  local d="$WORK/commit-first/proj"
+  fresh_copy "$d" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "Commit this to your default branch before you branch or run gstack /ship"
+}
+
 # --- runner -------------------------------------------------------------------
 if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do

@@ -273,6 +273,8 @@ Bootstrap done. Hand-fill the placeholders that remain (grep the repo for '{{' )
   TODOS.md    - the first real task
   docs/architecture.md - modules, contracts & invariants
 Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.
+Commit this to your default branch before you branch or run gstack /ship:
+/ship compares VERSION with the base branch, which still has the template's.
 Then choose a stack and:
   - add the build/test files (package.json / pyproject.toml / Cargo.toml ...)
   - uncomment your language section in .gitignore

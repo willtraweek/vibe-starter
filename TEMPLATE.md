@@ -8,7 +8,9 @@ my conventions instead of empty. This file is removed by `./bootstrap`.
 1. Create a repo from this template:
    - GitHub: **Use this template**, or `gh repo create <name> --template willtraweek/vibe-starter`
    - or a no-history copy: `npx degit willtraweek/vibe-starter <name>`
-2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`)
+2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`), then commit the result to
+   the default branch before you branch or run gstack `/ship`: `/ship` compares `VERSION` with
+   the base branch, which holds the template's version until then.
 3. Fill in the placeholders the checklist prints, choose a stack, and start building.
 
 `./bootstrap` personalizes the bootstrap-owned placeholders, optionally notes gstack, prints a
