@@ -52,7 +52,8 @@ Without `--stack`, the project stays stack-agnostic, exactly as before. A pack i
   enforcement).
 - `gitignore`: replaces the commented "Language sections" block of `.gitignore`.
 - `validate-name` (optional): runs before any file is written, as
-  `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects reserved identifiers with a nonzero exit.
+  `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects unusable names with a nonzero exit
+  (Python: keywords, and standard-library or tool module names that would shadow the package).
 - `after-bootstrap` (optional): runs once at the end, for example to write the lockfile.
 
 A pack's `files/.github/workflows/ci.yml` replaces `ci.yml.example`, activating the new project's

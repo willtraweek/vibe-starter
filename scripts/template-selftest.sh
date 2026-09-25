@@ -1842,6 +1842,21 @@ test_stack_python_rejects_keywords_before_mutation() {
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "keyword rejection changed files" || return 1
   done
 }
+test_stack_python_rejects_shadowed_module_names_before_mutation() {
+  # The editable src/ path comes after the standard library and the pack's tools on
+  # sys.path, so a package named like one of them is shadowed: the new project's
+  # imports, CLI and tests would break before its first commit.
+  local d name before rc
+  for name in Calendar json pytest ruff; do
+    d="$WORK/stack-shadowed-$name/proj"
+    fresh_copy "$d"
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name "$name" --stack python --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "taken by the Python standard library" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "rejecting '$name' changed files" || return 1
+  done
+}
 test_bootstrap_without_stack_stays_stack_agnostic() {
   local d="$WORK/no-stack/proj"
   fresh_copy "$d"
