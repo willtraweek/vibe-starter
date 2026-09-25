@@ -47,4 +47,23 @@ Must stay opt-in to keep the spine stack-agnostic.
 **Priority:** P3
 **Depends on:** None
 
+### Stack pack follow-ups from the v0.1.0 review
+
+**What:** Decide on the findings the v0.1.0 ship review left open: pin the Python pack's build
+backend (`hatchling>=1.27` is resolved fresh on every cold `uv sync`); make the gitleaks action
+fail clearly on non-x64 runners; strip `TESTING.md`'s "stack-agnostic note" when a pack is
+applied; align the filled `README.md` command block; share one helper for the self-test's
+python-pack bootstraps.
+
+**Why:** Each is small, but together they are the rough edges a new `--stack python` project
+still shows.
+
+**Context:** Listed in the v0.1.0 PR. The pack's dev tools use `>=` bounds on purpose: a new ruff
+or ty release that breaks a fresh project turns the template's required CI red, which is the
+warning we want.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
