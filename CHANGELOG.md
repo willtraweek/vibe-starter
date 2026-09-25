@@ -3,6 +3,38 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.0.5] - 2026-09-25
+
+### Added
+- New projects start from their own blank `VERSION` (0.0.0), `CHANGELOG.md` and `TODOS.md`, kept in
+  `template/skeleton/`, so gstack `/ship` can version and log the template itself without that
+  history reaching every project made from it.
+- `.bootstrapped` records which template version a project came from:
+  `<date> from vibe-starter <version>`.
+- Markdown between `<!-- template-only:start -->` and `<!-- template-only:end -->` lines is removed
+  by `./bootstrap`. `AGENTS.md` uses it to tell agents they are in the template itself, and
+  `TESTING.md` uses it to give `/ship` the template's test and check commands.
+- The bootstrap checklist tells a new project to commit the result to its default branch before
+  branching or running `/ship`, which compares `VERSION` with the base branch.
+
+### Changed
+- The root `VERSION`, `CHANGELOG.md` and `TODOS.md` belong to the template now. The template's
+  `TODOS.md` and the new-project skeleton follow gstack's TODOS format, so `/ship` no longer asks
+  to reorganize them.
+- `TEMPLATE.md` explains skeleton, template-owned and template-only files, how to ship the
+  template with gstack, and bootstrap's new exit 1.
+
+### Fixed
+- `./bootstrap` checks template-only markers before it changes anything: an unmatched, nested,
+  unclosed, indented, trailing-space or CRLF marker stops it with exit 1 instead of shipping
+  maintainer notes. A bad `VERSION` or a missing skeleton is also caught first, and a run that
+  fails later, including during the final cleanup, can be retried with the same arguments.
+- `./bootstrap` stops before marking the project done if a template-only block could not be
+  removed, and it leaves nested checkouts (worktrees, submodules) alone.
+- Template maintenance: 28 new self-tests (108 in total), including a golden inventory of every
+  skeleton placeholder that fails if a doc tool fills one in or drops it, and the plan index
+  marks plan 005 done.
+
 ## [0.0.4] - 2026-09-24
 
 ### Changed
