@@ -1882,6 +1882,36 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   assert_contains "$d/.bootstrapped" "with the fixture stack pack" || return 1
   assert_contains "$d.out" "Stack pack: fixture."
 }
+test_stack_pack_retry_matches_a_clean_run() {
+  # A failed bootstrap is retried with the same arguments (plan 005). Reapplying
+  # the pack must converge on a clean run's tree: no second .gitignore block, and
+  # CLAUDE.md keeps one blank line where the stack-agnostic note was.
+  local root="$WORK/stack-retry" bin="$WORK/stack-retry/bin" real d rc
+  for d in "$root/clean/demo" "$root/retried/demo"; do
+    fresh_copy "$d" || return 1
+    mkdir -p "$d/template/stacks/fixture/files/src/__package__" || return 1
+    printf 'package={{PACKAGE_NAME}}\n' > "$d/template/stacks/fixture/files/src/__package__/hello.txt"
+    printf 'TEST_CMD=fixture-test\n' > "$d/template/stacks/fixture/commands"
+    printf '# --- Fixture ---\nfixture-out/\n' > "$d/template/stacks/fixture/gitignore"
+  done
+  run_bootstrap "$root/clean/demo" --name demo --stack fixture --yes || fail "clean run exited $?" || return 1
+  mkdir -p "$bin" || return 1
+  real="$(command -v rm)"
+  cat > "$bin/rm" <<STUB || return 1
+#!/bin/sh
+[ "\$2" = "plans" ] && exit 1
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/rm" || fail "rm stub setup failed" || return 1
+  d="$root/retried/demo"
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "the stubbed cleanup did not fail" || return 1
+  run_bootstrap "$d" --name demo --stack fixture --yes || fail "retry failed: $(cat "$d.out")" || return 1
+  [ "$(grep -c '^# --- Fixture ---$' "$d/.gitignore")" = 1 ] || fail "the pack's .gitignore block was applied twice" || return 1
+  [ "$(tree_fingerprint "$root/clean/demo")" = "$(tree_fingerprint "$d")" ] || fail "the retried tree differs from a clean run" || return 1
+  perl -0ne 'exit(/^## Commands\n\nKeep the check/m ? 0 : 1)' "$d/CLAUDE.md" \
+    || fail "CLAUDE.md's Commands section lost its layout: $(grep -A3 '^## Commands' "$d/CLAUDE.md")"
+}
 test_stack_python_coverage_tiers_fail_closed() {
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
   local d="$WORK/stack-tiers/demo" rc
