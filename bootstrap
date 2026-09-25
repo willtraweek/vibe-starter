@@ -175,8 +175,9 @@ validate_template_markers() {
 }
 # The markdown both the validate and the strip pass cover; they must see the
 # same files. Only the root plans/ is template-only, and a nested checkout
-# (a worktree or submodule, whose .git may be a file) is another repo. Piped
-# (not < <(...)) so pipefail stops bootstrap when find can't read a directory.
+# (a worktree or submodule, whose .git may be a file) is another repo: skip it
+# (the placeholder pass below does not, yet). Piped (not < <(...)) so pipefail
+# stops bootstrap when find can't read a directory.
 markdown_files() {
   find . \( -path ./plans -o -type d \( -name .git -o -name .context \
     -o -name node_modules -o -name .venv -o -name target -o -name dist \) \

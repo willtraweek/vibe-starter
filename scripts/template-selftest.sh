@@ -1768,9 +1768,10 @@ STUB
   assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4'
 }
 
-test_bootstrap_leaves_nested_checkouts_alone() {
+test_bootstrap_marker_passes_skip_nested_checkouts() {
   # A worktree or submodule inside the project is another repo, often a full
-  # copy of the template (.claude/worktrees/*): bootstrap must not touch it.
+  # copy of the template (.claude/worktrees/*): the marker check and strip
+  # must not touch it.
   local d="$WORK/nested-checkout/proj" n want
   fresh_copy "$d" || return 1
   n="$d/.claude/worktrees/x"
@@ -1780,7 +1781,7 @@ test_bootstrap_leaves_nested_checkouts_alone() {
   printf '%s\n' "$want" > "$n/AGENTS.md"
   printf '   <!-- template-only:start -->\n' > "$n/plans/example.md"
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
-  [ "$(cat "$n/AGENTS.md")" = "$want" ] || fail "bootstrap changed a nested checkout"
+  [ "$(cat "$n/AGENTS.md")" = "$want" ] || fail "the strip changed a nested checkout"
 }
 
 # --- runner -------------------------------------------------------------------
