@@ -52,6 +52,8 @@ source_pkgs = ["{{PACKAGE_NAME}}"]
 [tool.coverage.report]
 fail_under = 0  # Independent line and branch floors are enforced by coverage_tiers.py.
 show_missing = true
+# Count never-imported modules under src/ even in directories without __init__.py.
+include_namespace_packages = true
 exclude_also = ["if TYPE_CHECKING:", "@overload"]
 
 # Per-tier gates (TESTING.md), enforced by scripts/coverage_tiers.py. `minimum` is

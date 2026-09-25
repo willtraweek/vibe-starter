@@ -1685,21 +1685,23 @@ test_bootstrap_leaves_markdown_in_pruned_dirs_alone() {
   done
 }
 test_bootstrap_fails_closed_when_the_strip_listing_fails() {
-  # The strip pass is piped too. A find that fails only on its second call (the
-  # strip) must stop bootstrap before .bootstrapped, and a plain rerun finishes.
+  # The strip pass is piped too. A find that fails only on its second markdown
+  # listing (the strip; other finds pass through) must stop bootstrap before
+  # .bootstrapped, and a plain rerun finishes.
   local d="$WORK/strip-find-fails/proj" bin="$WORK/strip-find-fails/bin" tver rc
   tver="$(head -n 1 "$REPO/VERSION")"
   fresh_copy "$d" || return 1
   printf 'KEEP\n<!-- template-only:start -->\nPRIVATE\n<!-- template-only:end -->\n' > "$d/canary.md"
   mkdir -p "$bin" || return 1
-  printf '#!/bin/sh\nif [ -e "%s" ]; then echo "find: .: Permission denied" >&2; exit 1; fi\n: > "%s"\nexec "%s" "$@"\n' \
-    "$bin/listed" "$bin/listed" "$(command -v find)" > "$bin/find" && chmod +x "$bin/find" \
+  printf '#!/bin/sh\ncase " $* " in *" *.md "*) ;; *) exec "%s" "$@" ;; esac\nif [ -e "%s" ]; then echo "find: .: Permission denied" >&2; exit 1; fi\n: > "%s"\nexec "%s" "$@"\n' \
+    "$(command -v find)" "$bin/listed" "$bin/listed" "$(command -v find)" > "$bin/find" && chmod +x "$bin/find" \
     || fail "find stub setup failed" || return 1
   PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
   [ "$rc" -ne 0 ] || fail "bootstrap ignored a find failure in the strip pass" || return 1
   assert_exists "$bin/listed" || return 1
   assert_contains "$d.out" "Permission denied" || return 1
   assert_contains "$d/canary.md" "PRIVATE" || return 1
+  assert_contains "$d/.gitleaks.toml" 'title = "proj gitleaks config"' || return 1  # failed after personalizing
   assert_absent "$d/.bootstrapped" || return 1
   assert_exists "$d/bootstrap" || return 1
   run_bootstrap "$d" --name proj --yes || fail "rerun failed: $(cat "$d.out")" || return 1
@@ -1842,20 +1844,27 @@ test_stack_python_rejects_keywords_before_mutation() {
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "keyword rejection changed files" || return 1
   done
 }
-test_stack_python_rejects_shadowed_module_names_before_mutation() {
+test_stack_python_rejects_unusable_names_before_mutation() {
   # The editable src/ path comes after the standard library and the pack's tools on
-  # sys.path, so a package named like one of them is shadowed: the new project's
-  # imports, CLI and tests would break before its first commit.
-  local d name before rc
-  for name in Calendar json pytest ruff; do
-    d="$WORK/stack-shadowed-$name/proj"
+  # sys.path, so a package named like one of them is shadowed, and names over 60
+  # characters break ruff's 100 columns: either way the new project's first gate fails.
+  local d name want before rc n=0
+  while IFS='|' read -r name want; do
+    n=$((n + 1))
+    d="$WORK/stack-unusable-$n/proj"
     fresh_copy "$d"
     before="$(tree_fingerprint "$d")"
     run_bootstrap "$d" --name "$name" --stack python --yes; rc=$?
     assert_exit 2 "$rc" || return 1
-    assert_contains "$d.out" "taken by the Python standard library" || return 1
+    assert_contains "$d.out" "$want" || return 1
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "rejecting '$name' changed files" || return 1
-  done
+  done <<'NAMES'
+Calendar|taken by the Python standard library
+json|taken by the Python standard library
+pytest|taken by the Python standard library
+ruff|taken by the Python standard library
+Acme Example Inventory Reconciliation Service Version Two Ok1|too long for the python stack pack
+NAMES
 }
 test_bootstrap_without_stack_stays_stack_agnostic() {
   local d="$WORK/no-stack/proj"
@@ -1875,14 +1884,16 @@ test_stack_pack_mechanism_with_a_fixture_pack() {
   local d="$WORK/stack-fixture/demo" p
   fresh_copy "$d"
   p="$d/template/stacks/fixture"
-  mkdir -p "$p/files/src/__package__" "$p/files/.github/workflows"
+  mkdir -p "$p/files/src/__package__" "$p/files/.github/workflows" "$p/files/a/__package__/__package__"
   printf 'package={{PACKAGE_NAME}} project={{PROJECT_NAME}}\n' > "$p/files/src/__package__/hello.txt"
+  printf 'nested\n' > "$p/files/a/__package__/__package__/x.txt"
   printf 'name: ci\n' > "$p/files/.github/workflows/ci.yml"
   printf '# comment line\nTEST_CMD=fixture-test --all\nINSTALL_CMD=fixture-install\nSTACK=Fixture stack\n' > "$p/commands"
   printf '# --- Fixture ---\nfixture-out/\n' > "$p/gitignore"
   printf '#!/bin/sh\ntouch after-bootstrap-ran\n' > "$p/after-bootstrap"
   run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d/src/demo_thing/hello.txt" "package=demo_thing project=Demo Thing" || return 1
+  assert_exists "$d/a/demo_thing/demo_thing/x.txt" || return 1
   assert_contains "$d/TESTING.md" "Tests: \`fixture-test --all\`" || return 1
   assert_contains "$d/CLAUDE.md" "Tests: \`fixture-test --all\`" || return 1
   assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`fixture-install\`" || return 1
@@ -2013,6 +2024,10 @@ for mutation in (
     run(data, 1)
     run(data, 1, mode="--report")  # Invalid inputs cannot produce a success snapshot.
 run(report(cli=summary(0, 0)), 1, "no measurable statements")
+run(report(cli=summary(10**309, 10**309)), 1, "coverage-tiers: FAIL")  # No traceback.
+result = subprocess.run([sys.executable, "scripts/coverage_tiers.py", "--ratchet", ""],
+                        cwd=root, capture_output=True, text=True)
+assert result.returncode == 2 and "needs a git ref" in result.stderr, result
 run(report(cli=summary(0, 0), extra=summary()), 1, "no measurable statements")
 data = report(extra=summary())
 data["files"]["src/demo/renamed.py"] = data["files"].pop("src/demo/cli.py")
@@ -2044,16 +2059,32 @@ print("coverage schema, separate floors, branchless policy, and membership probe
 PYPROBE
   ) || fail "coverage adversarial probes failed: $(tail -25 "$d.tiers.out")"
 }
-test_stack_python_long_name_passes_the_stack_guards() {
-  # Names are substituted into Python source; ruff's 100-column limit (lint and
-  # format --check) must hold for a long but ordinary project name too.
+test_stack_python_longest_name_passes_guards_and_tests() {
+  # Names are substituted into Python source: at the 60-character maximum, ruff's
+  # 100 columns (lint and format --check) must hold, and the exact --version test
+  # must pass in a narrow terminal (argparse wraps help text to the width).
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
   local d="$WORK/stack-long-name/proj"
   fresh_copy "$d"
-  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name "Acme Example Inventory Reconciliation Service v2.1" \
+  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name "Acme Example Inventory Reconciliation Service Version Two Ok" \
     --stack python --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
-  (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.gate.out" 2>&1 \
-    || fail "the python guards failed: $(tail -25 "$d.gate.out")"
+  (cd "$d" && stack_env bash scripts/check.d/python.sh && COLUMNS=20 stack_env uv run --locked pytest -q) \
+    >"$d.gate.out" 2>&1 || fail "the python guards or tests failed: $(tail -25 "$d.gate.out")"
+}
+test_stack_python_coverage_counts_untested_namespace_modules() {
+  # A module in a subdirectory without __init__.py that no test imports must still
+  # count against the floor, or the gate passes at 100% while it goes untested.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-namespace/demo" rc
+  fresh_copy "$d"
+  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name demo --stack python --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  mkdir -p "$d/src/demo/extra" || return 1
+  printf 'def pick(flag: bool) -> int:\n    if flag:\n        return 1\n    return 2\n' > "$d/src/demo/extra/service.py"
+  (cd "$d" && stack_env ./scripts/coverage.sh) >"$d.gate.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.gate.out" "src/demo/extra/service.py" || return 1
+  assert_contains "$d.gate.out" "global: line"
 }
 test_stack_python_project_is_green_on_first_run() {
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }

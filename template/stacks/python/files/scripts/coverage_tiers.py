@@ -211,10 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--ratchet", metavar="REF")
     parser.add_argument("--input", default="coverage.json")
     args = parser.parse_args(argv)
+    if args.ratchet is not None and not args.ratchet.strip():
+        parser.error("--ratchet needs a git ref")
     try:
         tiers = load_tiers()
         errors = validate(tiers)
-        if not errors and args.ratchet:
+        if not errors and args.ratchet is not None:
             errors = ratchet(tiers, args.ratchet)
         elif not errors and (args.check or args.report):
             report = json.loads((ROOT / args.input).read_text(encoding="utf-8"))
@@ -224,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if not errors:
                 errors = check(tiers, measured)
-    except (OSError, ValueError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
         errors = [f"cannot load valid configuration/report: {exc}"]
     for error in errors:
         print(f"coverage-tiers: FAIL {error}", file=sys.stderr)

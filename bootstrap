@@ -273,7 +273,7 @@ echo "Installed the project's own VERSION, CHANGELOG.md and TODOS.md."
 if [ -n "$STACK" ]; then
   pack="template/stacks/$STACK"
   (CDPATH='' cd "$pack/files" && find . -type f) | while IFS= read -r src; do
-    dest="$(printf '%s' "${src#./}" | sed "s#^__package__/#$PACKAGE_NAME/#; s#/__package__/#/$PACKAGE_NAME/#g")"
+    dest="$(printf '%s' "${src#./}" | PKG="$PACKAGE_NAME" perl -pe 's#(^|/)__package__(?=/|$)#$1$ENV{PKG}#g')"
     mkdir -p "$(dirname "$dest")"
     cp "$pack/files/$src" "$dest"
   done
