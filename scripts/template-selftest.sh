@@ -2146,6 +2146,520 @@ test_stack_python_project_is_green_on_first_run() {
     || fail "the new project's own gate failed: $(tail -25 "$d.gate.out")"
 }
 
+# --- tests: stack packs, ship coverage audit (plan 006) -------------------------
+fixture_pack() {  # $1 = pack dir: a minimal complete pack (files/, commands, gitignore)
+  mkdir -p "$1/files/src/__package__" || return 1
+  printf 'package={{PACKAGE_NAME}} project={{PROJECT_NAME}}\n' > "$1/files/src/__package__/hello.txt"
+  printf 'TEST_CMD=fixture-test\n' > "$1/commands"
+  printf '# --- Fixture ---\nfixture-out/\n' > "$1/gitignore"
+}
+python_project() {  # $1 = dir: a fresh copy bootstrapped as "demo" with the python pack
+  fresh_copy "$1" || return 1
+  (cd "$1" && HOME="$WORK/home" stack_env ./bootstrap --name demo --stack python --yes </dev/null >"$1.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+test_bootstrap_rejects_a_missing_or_empty_stack_value() {
+  local d="$WORK/stack-empty-value/proj" before rc
+  fresh_copy "$d" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --yes --stack; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--stack needs a value" || return 1
+  run_bootstrap "$d" --name proj --yes --stack=; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--stack needs a non-empty value" || return 1
+  run_bootstrap "$d" --name proj --stack "" --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "--stack needs a non-empty value" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections" || return 1
+  run_bootstrap "$d" --help || fail "bootstrap --help exited $?" || return 1
+  assert_contains "$d.out" "[--stack <name>]"
+}
+test_bootstrap_stack_none_equals_form_and_non_tty_default() {
+  # --stack none is the explicit no-pack choice, and a run without --stack or a
+  # TTY (an agent) never prompts: both stay stack-agnostic. --stack=<name> works too.
+  local d mode
+  for mode in none no-tty; do
+    d="$WORK/stack-$mode/proj"
+    fresh_copy "$d" || return 1
+    if [ "$mode" = none ]; then
+      run_bootstrap "$d" --name proj --stack none --yes || fail "--stack none exited $?: $(cat "$d.out")" || return 1
+    else
+      run_bootstrap "$d" --name proj || fail "the no-TTY run exited $?: $(cat "$d.out")" || return 1
+    fi
+    assert_not_contains "$d.out" "Stack pack [" || return 1
+    assert_contains "$d.out" "Then choose a stack" || return 1
+    assert_exists "$d/.github/workflows/ci.yml.example" || return 1
+    assert_absent "$d/pyproject.toml" || return 1
+    assert_contains "$d/.gitignore" "# Language sections" || return 1
+    assert_not_contains "$d/.bootstrapped" "stack pack" || return 1
+  done
+  d="$WORK/stack-equals/demo"
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  run_bootstrap "$d" --name demo --stack=fixture --yes || fail "--stack=fixture exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/src/demo/hello.txt" "package=demo project=demo" || return 1
+  assert_contains "$d/.bootstrapped" "with the fixture stack pack"
+}
+test_bootstrap_rejects_stack_names_that_leave_template_stacks() {
+  # The stack name becomes a path under template/stacks/. A complete pack outside
+  # it must stay unreachable through ../, and odd names are refused before any write.
+  local d="$WORK/stack-traversal/proj" before stack rc
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/decoy" || return 1
+  before="$(tree_fingerprint "$d")"
+  for stack in ../decoy ../../template/decoy Python -x _x a/b . ..; do
+    run_bootstrap "$d" --name proj --stack "$stack" --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "Invalid stack name '$stack'" || return 1
+  done
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejections"
+}
+test_bootstrap_rejects_an_incomplete_stack_pack() {
+  # A pack needs files/, commands and gitignore. Missing any one stops the run
+  # before any write and lists what is available.
+  local d part before rc
+  for part in files commands gitignore; do
+    d="$WORK/stack-incomplete-$part/proj"
+    fresh_copy "$d" || return 1
+    fixture_pack "$d/template/stacks/half" || return 1
+    rm -rf "$d/template/stacks/half/$part"
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name proj --stack half --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "Unknown stack 'half' (available: " || return 1
+    assert_contains "$d.out" "python" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "a pack without $part changed files" || return 1
+  done
+  d="$WORK/stack-incomplete-dir/proj"
+  fresh_copy "$d" || return 1
+  rm -rf "$d/template/stacks"
+  run_bootstrap "$d" --name proj --stack python --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "Unknown stack 'python' (available: none)"
+}
+test_stack_pack_validate_name_gets_both_names_before_any_write() {
+  # TEMPLATE.md's pack interface: `sh validate-name PACKAGE_NAME PROJECT_NAME` runs
+  # before any write, and any nonzero exit rejects the name (bootstrap exits 2).
+  local d="$WORK/stack-validate/demo" before rc
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  cat > "$d/template/stacks/fixture/validate-name" <<STUB || return 1
+printf '%s|%s\n' "\$1" "\$2" > "$d.args"
+exit 3
+STUB
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  [ "$(cat "$d.args" 2>/dev/null)" = "demo_thing|Demo Thing" ] \
+    || fail "validate-name got '$(cat "$d.args" 2>/dev/null)', want 'demo_thing|Demo Thing'" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "a rejected name changed files" || return 1
+  printf 'exit 0\n' > "$d/template/stacks/fixture/validate-name"
+  run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes || fail "an accepted name failed: $(cat "$d.out")" || return 1
+  assert_contains "$d/src/demo_thing/hello.txt" "package=demo_thing"
+}
+test_stack_pack_fills_values_literally_and_normalizes_the_package_name() {
+  # Values reach the docs verbatim: no shell or regex expansion of $, \, & or @.
+  # Lines that aren't KEY=value, or whose key has no placeholder, are skipped. Each
+  # run of other characters in the name becomes one underscore, trimmed at the ends.
+  local d="$WORK/stack-literal/acme" value
+  # shellcheck disable=SC2016  # the value must stay unexpanded, here and in the docs
+  value='run $HOME "\1" $1 @ARGV & $(id) \\ /x/'
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  printf 'not a key value line\nNO_SUCH_PLACEHOLDER=x\nTEST_CMD=%s\n' "$value" > "$d/template/stacks/fixture/commands"
+  run_bootstrap "$d" --name "Acme--Web.App 2_" --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`$value\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`$value\`" || return 1
+  assert_contains "$d/src/acme_web_app_2/hello.txt" "package=acme_web_app_2 project=Acme--Web.App 2_" || return 1
+  # A pack without a CI workflow leaves the inert example in place.
+  assert_exists "$d/.github/workflows/ci.yml.example" || return 1
+  assert_absent "$d/.github/workflows/ci.yml"
+}
+test_bootstrap_finishes_when_the_stack_follow_up_fails() {
+  # after-bootstrap is best effort: its failure is reported, and bootstrap still
+  # initializes git, marks itself done and self-deletes (set -e must not stop it).
+  local d="$WORK/stack-hook-fails/demo"
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  printf 'echo "hook ran"\nexit 7\n' > "$d/template/stacks/fixture/after-bootstrap"
+  run_bootstrap "$d" --name demo --stack fixture --yes \
+    || fail "bootstrap exited $? after a failed follow-up: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "hook ran" || return 1
+  assert_contains "$d.out" "note: the fixture pack follow-up failed" || return 1
+  assert_exists "$d/.git" || return 1
+  assert_contains "$d/.bootstrapped" "with the fixture stack pack" || return 1
+  assert_absent "$d/bootstrap"
+}
+test_stack_python_bootstrap_survives_missing_or_failing_uv() {
+  # With uv missing or offline, bootstrap still finishes and the hook says how to
+  # lock later. Stubs stand in for uv, so this needs neither uv nor a network.
+  local root="$WORK/stack-no-uv" d="$WORK/stack-no-uv/demo" rc
+  mkdir -p "$root/empty" "$root/bin" "$root/hook" || return 1
+  (cd "$root/hook" && env PATH="$root/empty" /bin/sh "$REPO/template/stacks/python/after-bootstrap") >"$root/hook.out" 2>&1; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$root/hook.out" "uv not found: install it" || return 1
+  assert_absent "$root/hook/uv.lock" || return 1
+  cat > "$root/bin/uv" <<STUB || return 1
+#!/bin/sh
+echo "uv \$*" >> "$root/uv.calls"
+echo "error: Failed to fetch: network unreachable" >&2
+exit 2
+STUB
+  chmod +x "$root/bin/uv" || return 1
+  fresh_copy "$d" || return 1
+  PATH="$root/bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack python --yes \
+    || fail "bootstrap exited $? with uv failing: $(cat "$d.out")" || return 1
+  assert_contains "$root/uv.calls" "uv lock" || return 1
+  assert_contains "$d.out" "uv lock failed (see above; offline?)" || return 1
+  assert_absent "$d/uv.lock" || return 1
+  assert_contains "$d/.bootstrapped" "with the python stack pack"
+}
+test_bootstrap_ships_what_new_project_ci_uses() {
+  # Every workflow a new project gets (the no-stack example, the python pack's live
+  # ci.yml) uses ./.github/actions/install-gitleaks, so that action must ship. git
+  # must also commit every file the pack's CI needs, uv.lock included, and ignore
+  # the pack's build artifacts. A stub uv writes the lockfile.
+  local root="$WORK/ci-inputs" d wf action f n
+  mkdir -p "$root/bin" || return 1
+  cat > "$root/bin/uv" <<'STUB' || return 1
+#!/bin/sh
+if [ "$1" = lock ]; then : > uv.lock; fi
+STUB
+  chmod +x "$root/bin/uv" || return 1
+  fresh_copy "$root/agnostic/proj" && fresh_copy "$root/python/demo" || return 1
+  run_bootstrap "$root/agnostic/proj" --name proj --yes || fail "no-stack bootstrap exited $?" || return 1
+  PATH="$root/bin:$(printenv PATH)" run_bootstrap "$root/python/demo" --name demo --stack python --yes \
+    || fail "python bootstrap exited $?: $(cat "$root/python/demo.out")" || return 1
+  for d in "$root/agnostic/proj" "$root/python/demo"; do
+    n=0
+    for wf in "$d"/.github/workflows/*; do
+      [ -f "$wf" ] || continue
+      sed -n 's|^ *uses: \(\./[^ #]*\).*$|\1|p' "$wf" > "$root/uses" || return 1
+      while IFS= read -r action; do
+        n=$((n + 1))
+        [ -f "$d/$action/action.yml" ] || fail "${wf#"$d"/} uses $action, which the new project lacks" || return 1
+      done < "$root/uses"
+    done
+    [ "$n" -gt 0 ] || fail "no local action found in ${d#"$WORK"/}'s workflows" || return 1
+  done
+  d="$root/python/demo"
+  (cd "$d" && git add -A) || fail "git add failed" || return 1
+  { git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/python/files \
+      | sed 's|^template/stacks/python/files/||; s|__package__|demo|g'
+    printf '%s\n' uv.lock .github/workflows/ci.yml .github/actions/install-gitleaks/action.yml
+  } > "$root/committed" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$root/committed"
+  for f in .venv/bin/python src/demo/__pycache__/cli.cpython-314.pyc .coverage coverage.json \
+    .pytest_cache/v .ruff_cache/v dist/demo-0.0.0.tar.gz; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
+  done
+}
+test_check_runs_every_guard_and_only_guard_scripts() {
+  # A failing guard must not hide the rest (one run reports every problem), and
+  # only regular *.sh files in scripts/check.d are guards.
+  local d="$WORK/check-guards-all/proj" rc
+  fresh_copy "$d" || return 1
+  mkdir -p "$d/scripts/check.d/dir.sh" || return 1
+  printf 'echo "guard a failed"\nexit 3\n' > "$d/scripts/check.d/a.sh"
+  printf 'echo "guard b ran"\n' > "$d/scripts/check.d/b.sh"
+  printf 'echo "notes ran"\nexit 1\n' > "$d/scripts/check.d/notes.txt"
+  run_check "$d" GITLEAKS_BIN=/nonexistent CI=false; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "guard a failed" || return 1
+  assert_contains "$d.out" "guard b ran" || return 1
+  assert_not_contains "$d.out" "notes ran" || return 1
+  assert_not_contains "$d.out" "dir.sh"
+}
+tty_bootstrap() {  # $1 = dir, $2 = what to type at the stack prompt, rest = bootstrap args -> "$1.out"
+  # A maintainer at a terminal: ./bootstrap runs on a pseudo-terminal (Python's
+  # pty module, through uv), and $2 is typed once the stack prompt appears.
+  local dir="$1" answer="$2"; shift 2
+  mkdir -p "$WORK/home"
+  (cd "$WORK" && HOME="$WORK/home" stack_env uv run --no-project --quiet python - "$dir" "$answer" "$@" \
+    >"$dir.out" 2>&1 <<'PY'
+import os
+import pty
+import select
+import sys
+
+cwd, answer, *args = sys.argv[1:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(cwd)
+    os.execv("./bootstrap", ["./bootstrap", *args])
+out, typed = b"", False
+while True:
+    ready, _, _ = select.select([fd], [], [], 30)
+    if not ready:  # a prompt nobody answers must not hang the suite
+        os.kill(pid, 9)
+        out += b"\n[tty driver: timed out waiting for bootstrap]\n"
+        break
+    try:
+        data = os.read(fd, 4096)
+    except OSError:  # Linux: EIO once bootstrap has exited
+        break
+    if not data:
+        break
+    out += data
+    if not typed and b"Stack pack [" in out:
+        os.write(fd, answer.encode() + b"\n")
+        typed = True
+_, status = os.waitpid(pid, 0)
+sys.stdout.write(out.decode(errors="replace").replace("\r\n", "\n"))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+PY
+  )
+}
+test_bootstrap_stack_prompt_at_a_terminal() {
+  # At a terminal with no --stack, bootstrap offers "none" and the sorted packs;
+  # the typed pack is installed and Enter means none. --yes means no prompts at all.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed (it drives the pseudo-terminal)"; return; }
+  local root="$WORK/stack-prompt" case
+  for case in typed enter yes; do
+    fresh_copy "$root/$case/demo" || return 1
+    fixture_pack "$root/$case/demo/template/stacks/fixture" || return 1
+  done
+  tty_bootstrap "$root/typed/demo" fixture --name demo || fail "exited $?: $(cat "$root/typed/demo.out")" || return 1
+  assert_contains "$root/typed/demo.out" "Stack pack [none fixture python" || return 1
+  assert_contains "$root/typed/demo/src/demo/hello.txt" "package=demo" || return 1
+  assert_contains "$root/typed/demo/.bootstrapped" "with the fixture stack pack" || return 1
+  tty_bootstrap "$root/enter/demo" "" --name demo || fail "exited $?: $(cat "$root/enter/demo.out")" || return 1
+  assert_contains "$root/enter/demo.out" "Stack pack [none fixture python" || return 1
+  assert_contains "$root/enter/demo.out" "Then choose a stack" || return 1
+  assert_not_contains "$root/enter/demo/.bootstrapped" "stack pack" || return 1
+  tty_bootstrap "$root/yes/demo" fixture --name demo --yes || fail "exited $?: $(cat "$root/yes/demo.out")" || return 1
+  assert_not_contains "$root/yes/demo.out" "Stack pack [" || return 1
+  assert_not_contains "$root/yes/demo/.bootstrapped" "stack pack"
+}
+test_stack_python_guard_fails_closed() {
+  # scripts/check.d/python.sh runs under set -e: a lint, format or type error, a
+  # missing or stale uv.lock, or no uv must each fail it, not only its last
+  # command. check.sh must pick the guard up from the pack's scripts/check.d.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-guard/demo" rc bad
+  python_project "$d" || return 1
+  (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1 \
+    || fail "the guard failed on a fresh project: $(tail -20 "$d.guard.out")" || return 1
+  # Each snippet trips exactly one tool: ruff check, ruff format, then ty.
+  while IFS= read -r bad; do
+    printf '%b' "$bad" > "$d/src/demo/bad.py"
+    (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
+    rm -f "$d/src/demo/bad.py"
+    [ "$rc" -ne 0 ] || fail "the guard passed src/demo/bad.py containing: $bad" || return 1
+    assert_contains "$d.guard.out" "bad.py" || return 1
+  done <<'CASES'
+import os\n
+x=1\n
+x: int = "a"\n
+CASES
+  mv "$d/uv.lock" "$d.lock" || return 1
+  (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
+  mv "$d.lock" "$d/uv.lock" || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed without uv.lock" || return 1
+  assert_contains "$d.guard.out" "uv.lock" || return 1
+  cp "$d/pyproject.toml" "$d.pyproject" || return 1
+  perl -0pi -e 's/\n  "ty>=[^"\n]*",//' "$d/pyproject.toml" || return 1
+  ! cmp -s "$d/pyproject.toml" "$d.pyproject" || fail "the pyproject.toml edit did not apply" || return 1
+  (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
+  cp "$d.pyproject" "$d/pyproject.toml" || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed a uv.lock that no longer matches pyproject.toml" || return 1
+  mkdir -p "$d.empty" || return 1
+  (cd "$d" && env PATH="$d.empty" /bin/bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "uv is not installed" || return 1
+  printf 'import os\n' > "$d/src/demo/bad.py"
+  (cd "$d" && stack_env env EDITORCONFIG_CHECKER_BIN=/nonexistent GITLEAKS_BIN=/nonexistent CI=false \
+    ./scripts/check.sh) >"$d.check.out" 2>&1; rc=$?
+  rm -f "$d/src/demo/bad.py"
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.check.out" "- python: running scripts/check.d/python.sh..." || return 1
+  assert_contains "$d.check.out" "F401" || return 1
+  assert_not_contains "$d.check.out" "OK: checks passed."
+}
+test_stack_python_version_bump_keeps_the_gate_green() {
+  # gstack /ship bumps only VERSION. hatchling reads it, uv.lock must not pin it, and
+  # uv's cache-keys must rebuild the existing editable install, or the project
+  # reports its old version and its own VERSION test fails after every /ship.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-bump/demo" want
+  python_project "$d" || return 1
+  for want in 0.0.0 0.1.0; do
+    [ "$want" = 0.0.0 ] || printf '%s\n' "$want" > "$d/VERSION"
+    (cd "$d" && stack_env uv run --locked --quiet demo --version) >"$d.version" 2>"$d.version.err" \
+      || fail "demo --version failed at VERSION $want: $(cat "$d.version.err")" || return 1
+    [ "$(cat "$d.version")" = "demo $want" ] || fail "at VERSION $want the project reports: $(cat "$d.version")" || return 1
+  done
+  (cd "$d" && stack_env bash scripts/check.d/python.sh && stack_env uv run --locked --quiet pytest -q) \
+    >"$d.gate.out" 2>&1 || fail "the gate failed after a VERSION bump: $(tail -20 "$d.gate.out")"
+}
+test_stack_python_ci_job_on_a_shallow_pr_checkout() {
+  # The new project's own ci.yml, run as GitHub runs it for a pull request: a fresh
+  # shallow checkout of the PR (committed files only), each one-line `run:` step in
+  # order, then the ratchet step, which fetches the base branch itself. A PR that
+  # adds a tested module to a tier passes; one that drops a tier fails the ratchet.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  command -v gitleaks >/dev/null 2>&1 || { skip "gitleaks not installed"; return; }
+  local root="$WORK/stack-ci" d="$WORK/stack-ci/demo" wf ci step ratchet pr rc
+  python_project "$d" || return 1
+  wf="$d/.github/workflows/ci.yml"
+  sed -n 's/^ *run: \([^|].*\)$/\1/p' "$wf" > "$root/steps" || return 1
+  ratchet="$(sed -n '/name: Coverage tiers never slip/,$p' "$wf" | sed '1,/run: |/d' | sed 's/^ *//')"
+  [ -s "$root/steps" ] && [ -n "$ratchet" ] || fail "cannot find ci.yml's run steps" || return 1
+  git init -q --bare "$root/origin.git" || return 1
+  (cd "$d" && git add -A && git commit -qm init && git branch -M main && git push -q "$root/origin.git" main \
+    && git checkout -q -b pr1) || fail "pushing main failed" || return 1
+  printf 'def double(n: int) -> int:\n    return 2 * n\n' > "$d/src/demo/core.py"
+  printf 'from demo.core import double\n\n\ndef test_double() -> None:\n    assert double(2) == 4\n' \
+    > "$d/tests/test_core.py"
+  perl -0pi -e 's|include = \[\]\nallow_empty = true[^\n]*|include = ["src/demo/core.py"]|' "$d/pyproject.toml"
+  assert_contains "$d/pyproject.toml" 'include = ["src/demo/core.py"]' || return 1
+  (cd "$d" && git add -A && git commit -qm pr1 && git push -q "$root/origin.git" pr1 \
+    && git checkout -q -b pr2 main) || fail "pushing pr1 failed" || return 1
+  perl -0pi -e 's/\n\[tool\.coverage_tiers\.api_surface\]\n.*\z/\n/s' "$d/pyproject.toml"
+  assert_not_contains "$d/pyproject.toml" "api_surface" || return 1
+  (cd "$d" && git commit -qam pr2 && git push -q "$root/origin.git" pr2) || fail "pushing pr2 failed" || return 1
+  for pr in 1 2; do
+    ci="$root/pr$pr"
+    mkdir -p "$ci" || return 1
+    (cd "$ci" && git init -q && git remote add origin "file://$root/origin.git" \
+      && git fetch -q --depth=1 origin "+refs/heads/pr$pr:refs/remotes/pull/$pr/merge" \
+      && git checkout -q "refs/remotes/pull/$pr/merge") || fail "checking out PR $pr failed" || return 1
+    if [ "$pr" = 1 ]; then
+      while IFS= read -r step; do
+        (cd "$ci" && stack_env env CI=true GITHUB_ACTIONS=true EDITORCONFIG_CHECKER_BIN=/nonexistent \
+          bash -eo pipefail -c "$step") >>"$ci.out" 2>&1 \
+          || fail "PR 1: CI step '$step' failed: $(tail -20 "$ci.out")" || return 1
+      done < "$root/steps"
+    fi
+    (cd "$ci" && stack_env env CI=true GITHUB_ACTIONS=true GITHUB_BASE_REF=main \
+      bash -eo pipefail -c "$ratchet") >"$ci.ratchet.out" 2>&1; rc=$?
+    if [ "$pr" = 1 ]; then
+      assert_exit 0 "$rc" || { cat "$ci.ratchet.out"; return 1; }
+      assert_contains "$ci.ratchet.out" "coverage-tiers: ok" || return 1
+    else
+      [ "$rc" -ne 0 ] || fail "the ratchet step passed a PR that removed a tier" || return 1
+      assert_contains "$ci.ratchet.out" "api_surface: tier removed since origin/main" || return 1
+    fi
+  done
+}
+test_stack_python_coverage_tiers_boundaries_report_and_errors() {
+  # Floors are inclusive: exactly 90% (global) or exactly the tier minimum passes and
+  # a hair below fails. --report prints only the snapshot table. Schema, CLI and
+  # ratchet error paths fail cleanly, and an unchanged config passes the ratchet.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-tiers-edges/demo" rc
+  python_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  py_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.tiers.out" "coverage-tiers: ok" || return 1
+  py_tiers "$d" --ratchet no-such-ref; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read pyproject.toml at no-such-ref" || return 1
+  py_tiers "$d" --check; rc=$?  # no coverage.json yet
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "coverage-tiers: FAIL cannot load valid configuration/report" || return 1
+  assert_not_contains "$d.tiers.out" "Traceback" || return 1
+  py_tiers "$d"; rc=$?
+  assert_exit 2 "$rc" || return 1
+  (cd "$d" && stack_env uv run --locked --quiet python - "$d" >"$d.tiers.out" 2>&1 <<'PYPROBE'
+import copy
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("tiers", root / "scripts/coverage_tiers.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+config = module.load_tiers()
+
+def summary(lines, line_hits, branches=0, branch_hits=0):
+    return dict(num_statements=lines, covered_lines=line_hits,
+                num_branches=branches, covered_branches=branch_hits)
+
+def report(cli, extra=None):
+    files = {"src/demo/cli.py": {"summary": cli}}
+    if extra is not None:
+        files["src/demo/other.py"] = {"summary": extra}
+    return dict(meta={"branch_coverage": True}, files=files,
+                totals={key: sum(entry["summary"][key] for entry in files.values())
+                        for key in module.COUNTERS})
+
+def run(data, *args, name="coverage.json"):
+    (root / name).write_text(json.dumps(data))
+    return subprocess.run([sys.executable, "scripts/coverage_tiers.py", *(args or ["--check"])],
+                          cwd=root, text=True, capture_output=True)
+
+def fails(result, text):
+    assert result.returncode == 1 and text in result.stderr, result
+
+# Exactly at the global floor (lines 90/100, branches 9/10) and the tier's 100% passes.
+at_floor = report(summary(10, 10), summary(90, 80, 10, 9))
+result = run(at_floor)
+assert result.returncode == 0, result
+fails(run(report(summary(10, 10), summary(990, 889))), "global: line 89.90% is below its minimum 90.0%")
+fails(run(report(summary(10, 10), summary(10, 10, 1000, 899))),
+      "global: branch 89.90% is below its minimum 90.0%")
+fails(run(report(summary(1000, 999))), "api_surface: line 99.90% is below its minimum 100.0%")
+# --report: the table alone, explicit about empty tiers and branchless code.
+result = run(at_floor, "--report")
+assert result.returncode == 0, result
+assert result.stdout == (
+    "| Tier | Line | Branch | Minimum | Target |\n|---|---|---|---|---|\n"
+    "| Global | 90.00% | 90.00% | 90.0% | 100% |\n"
+    "| Pure logic & utilities | n/a (explicitly empty) | n/a (explicitly empty) | 100.0% | 100.0% |\n"
+    "| API / contract surface | 100.00% | n/a (branchless) | 100.0% | 100.0% |\n"
+), result.stdout
+# --input reads the named report instead of coverage.json.
+(root / "coverage.json").write_text("{}")
+result = run(report(summary(10, 10)), "--check", "--input", "alt.json", name="alt.json")
+assert result.returncode == 0, result
+
+def rejected(text, mutate):
+    bad = copy.deepcopy(config)
+    mutate(bad)
+    errors = module.validate(bad)
+    assert any(text in error for error in errors), (text, errors)
+
+empty = {"title": "Reserved", "minimum": 0.0, "target": 0.0, "include": [], "allow_empty": True}
+rejected("global is reserved", lambda c: c.update({"global": empty}))
+rejected("unknown tier keys: ['minimun']", lambda c: c["api_surface"].update(minimun=100.0))
+for tier, field, value in (("api_surface", "target", 99.0), ("pure_logic", "target", 101.0),
+                           ("pure_logic", "minimum", -1.0)):
+    rejected("need 0 <= minimum <= target <= 100", lambda c: c[tier].update({field: value}))
+rejected("title must be a nonempty string", lambda c: c["api_surface"].update(title="  "))
+for path in ("src/demo/cli.txt", "src/demo\\cli.py", "src//demo/cli.py", "src/./demo/cli.py",
+             "tests/test_cli.py"):
+    rejected("include must name canonical src/*.py files", lambda c: c["api_surface"].update(include=[path]))
+rejected("duplicate membership", lambda c: c["pure_logic"].update(include=["src/demo/cli.py"]))
+outside = root.parent / "outside.py"
+outside.write_text("x = 1\n")
+link = root / "src/demo/escape.py"
+link.symlink_to(outside)
+try:
+    rejected("is not a file within the project",
+             lambda c: c["pure_logic"].update(include=["src/demo/escape.py"]))
+finally:
+    link.unlink()
+print("coverage tier boundaries, report, input and schema probes passed")
+PYPROBE
+  ) || fail "coverage tier probes failed: $(tail -25 "$d.tiers.out")" || return 1
+  # A base branch whose tier config is invalid fails the ratchet instead of passing.
+  perl -pi -e 's/^minimum = 100\.0$/minimum = 101.0/' "$d/pyproject.toml" || return 1
+  (cd "$d" && git commit -qam "invalid tiers" && git checkout -q HEAD~1 -- pyproject.toml) \
+    || fail "git setup failed" || return 1
+  py_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "base config: " || return 1
+  assert_contains "$d.tiers.out" "need 0 <= minimum <= target <= 100"
+}
+
 # --- runner -------------------------------------------------------------------
 if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
