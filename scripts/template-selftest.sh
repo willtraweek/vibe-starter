@@ -1933,9 +1933,14 @@ test_stack_pack_retry_matches_a_clean_run() {
   # A failed bootstrap is retried with the same arguments (plan 005). Reapplying
   # the pack must converge on a clean run's tree: no second .gitignore block (with
   # LF or CRLF line endings), and CLAUDE.md keeps one blank line where the
-  # stack-agnostic note was.
-  local root="$WORK/stack-retry" bin="$WORK/stack-retry/bin" real d rc eol
-  mkdir -p "$bin" || return 1
+  # stack-agnostic note was. The clock is frozen: the trees hold the date and year.
+  local root="$WORK/stack-retry" bin="$WORK/stack-retry/bin" clock="$WORK/stack-retry/clock" real d rc eol
+  mkdir -p "$bin" "$clock" || return 1
+  cat > "$clock/date" <<STUB || return 1
+#!/bin/sh
+case "\$1" in +%Y) echo 2026 ;; +%Y-%m-%d) echo 2026-01-02 ;; *) exec "$(command -v date)" "\$@" ;; esac
+STUB
+  chmod +x "$clock/date" || fail "date stub setup failed" || return 1
   real="$(command -v rm)"
   cat > "$bin/rm" <<STUB || return 1
 #!/bin/sh
@@ -1952,11 +1957,14 @@ STUB
       printf '# --- Fixture ---\nfixture-out/\n' > "$d/template/stacks/fixture/gitignore"
       [ "$eol" = lf ] || perl -pi -e 's/\n/\r\n/' "$d/.gitignore"
     done
-    run_bootstrap "$root/$eol/clean/demo" --name demo --stack fixture --yes || fail "clean $eol run exited $?" || return 1
+    PATH="$clock:$(printenv PATH)" run_bootstrap "$root/$eol/clean/demo" --name demo --stack fixture --yes \
+      || fail "clean $eol run exited $?" || return 1
     d="$root/$eol/retried/demo"
-    PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
+    PATH="$bin:$clock:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
     [ "$rc" -ne 0 ] || fail "the stubbed cleanup did not fail" || return 1
-    run_bootstrap "$d" --name demo --stack fixture --yes || fail "$eol retry failed: $(cat "$d.out")" || return 1
+    PATH="$clock:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes \
+      || fail "$eol retry failed: $(cat "$d.out")" || return 1
+    assert_contains "$d/.bootstrapped" "2026-01-02 from vibe-starter" || return 1  # the frozen clock
     [ "$(grep -c '^# --- Fixture ---$' "$d/.gitignore")" = 1 ] || fail "$eol: the pack's .gitignore block is not there exactly once" || return 1
     assert_not_contains "$d/.gitignore" "# Language sections" || return 1
     [ "$(tree_fingerprint "$root/$eol/clean/demo")" = "$(tree_fingerprint "$d")" ] || fail "$eol: the retried tree differs from a clean run" || return 1
