@@ -1768,6 +1768,21 @@ STUB
   assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4'
 }
 
+test_bootstrap_leaves_nested_checkouts_alone() {
+  # A worktree or submodule inside the project is another repo, often a full
+  # copy of the template (.claude/worktrees/*): bootstrap must not touch it.
+  local d="$WORK/nested-checkout/proj" n want
+  fresh_copy "$d" || return 1
+  n="$d/.claude/worktrees/x"
+  mkdir -p "$n/plans" || return 1
+  printf 'gitdir: /elsewhere\n' > "$n/.git"
+  want="$(printf 'KEEP\n<!-- template-only:start -->\nTHEIRS\n<!-- template-only:end -->')"
+  printf '%s\n' "$want" > "$n/AGENTS.md"
+  printf '   <!-- template-only:start -->\n' > "$n/plans/example.md"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(cat "$n/AGENTS.md")" = "$want" ] || fail "bootstrap changed a nested checkout"
+}
+
 # --- runner -------------------------------------------------------------------
 if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
