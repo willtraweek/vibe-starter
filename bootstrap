@@ -312,14 +312,17 @@ if [ -n "$STACK" ]; then
   # Only the commented block goes: rules a user uncommented or appended there stay.
   PACK_GITIGNORE="$(cat "$pack/gitignore")" perl -0pi -e '
     s{\r?\n# =+\r?\n# Language sections.*\z}{
-      my @kept = grep { /\S/ && !/^\s*#/ } split /\r?\n/, $&;
+      my @kept = grep { /\S/ && !/^#/ } split /\r?\n/, $&;
       "\n\n$ENV{PACK_GITIGNORE}\n"
         . (@kept ? "\n# --- Kept from before the stack pack ---\n" . join("\n", @kept) . "\n" : "")
     }se' .gitignore
   # No language block matched (it was edited away): append the pack's rules, once.
-  if ! grep -qxF -- "$(head -n 1 "$pack/gitignore")" .gitignore 2>/dev/null; then
-    { printf '\n'; cat "$pack/gitignore"; } >> .gitignore
-  fi
+  missing=0
+  while IFS= read -r rule || [ -n "$rule" ]; do
+    case "$rule" in ''|'#'*) continue ;; esac
+    grep -qxF -- "$rule" .gitignore 2>/dev/null || { missing=1; break; }
+  done < "$pack/gitignore"
+  if [ "$missing" = 1 ]; then { printf '\n'; cat "$pack/gitignore"; } >> .gitignore; fi
   if [ -f .github/workflows/ci.yml ]; then rm -f .github/workflows/ci.yml.example; fi
   echo "Installed the $STACK stack pack."
 fi

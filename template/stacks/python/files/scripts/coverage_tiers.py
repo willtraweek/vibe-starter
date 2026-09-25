@@ -182,17 +182,24 @@ def ratchet(tiers: dict[str, Any], ref: str) -> list[str]:
     # rev-parse first: it also refuses a ref that git would read as an option.
     if git("rev-parse", "--verify", "--quiet", ref + "^{commit}").returncode:
         return [f"cannot read pyproject.toml at {ref}: unknown revision"]
-    # A base that predates the tier table (the project's first PR) has no floors to keep.
-    if git("cat-file", "-e", f"{ref}:pyproject.toml").returncode:
+    # A base that predates the tier table (the project's first PR) has no floors to
+    # keep. Only a confirmed absence counts: an unreadable tree still fails.
+    listed = git("ls-tree", "--name-only", ref, "--", "pyproject.toml")
+    if listed.returncode:
+        return [f"cannot read pyproject.toml at {ref}: {listed.stderr.strip()}"]
+    if not listed.stdout.strip():
         print(f"coverage-tiers: no pyproject.toml at {ref}; nothing to ratchet against")
         return []
     shown = git("show", f"{ref}:pyproject.toml")
     if shown.returncode:
         return [f"cannot read pyproject.toml at {ref}: {shown.stderr.strip()}"]
-    old_tiers = load_tiers(shown.stdout)
-    if not old_tiers:
+    tool = tomllib.loads(shown.stdout).get("tool", {})
+    if not isinstance(tool, dict):
+        return [f"base config: [tool] at {ref} is not a table"]
+    if "coverage_tiers" not in tool:
         print(f"coverage-tiers: no [tool.coverage_tiers] at {ref}; nothing to ratchet against")
         return []
+    old_tiers = tool["coverage_tiers"]
     errors = validate(old_tiers, check_files=False)
     if errors:
         return [f"base config: {error}" for error in errors]

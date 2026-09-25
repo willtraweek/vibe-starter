@@ -1983,9 +1983,10 @@ test_stack_pack_gitignore_swap_keeps_real_rules() {
   fresh_copy "$d" || return 1
   fixture_pack "$d/template/stacks/fixture" || return 1
   perl -pi -e 's|^# node_modules/$|node_modules/|' "$d/.gitignore" || return 1
-  printf 'secrets.local.json\n' >> "$d/.gitignore"
+  printf 'secrets.local.json\n #private\n' >> "$d/.gitignore"
   run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   grep -qx 'node_modules/' "$d/.gitignore" || fail "the uncommented node_modules/ rule was dropped" || return 1
+  grep -qx ' #private' "$d/.gitignore" || fail "the ' #private' pattern (# only comments in column 0) was dropped" || return 1
   grep -qx 'secrets.local.json' "$d/.gitignore" || fail "the appended secrets.local.json rule was dropped" || return 1
   grep -qx 'fixture-out/' "$d/.gitignore" || fail "the pack's rules are missing" || return 1
   assert_not_contains "$d/.gitignore" "# Language sections" || return 1
@@ -1996,6 +1997,7 @@ test_stack_pack_gitignore_swap_keeps_real_rules() {
   fixture_pack "$d/template/stacks/fixture" || return 1
   perl -0pi -e 's/\n# =+\n# Language sections.*\z/\n/s' "$d/.gitignore" || return 1
   assert_not_contains "$d/.gitignore" "# Language sections" || return 1
+  printf '# --- Fixture ---\n' >> "$d/.gitignore"   # the pack's header without its rules
   run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   [ "$(grep -cx 'fixture-out/' "$d/.gitignore")" = 1 ] || fail "the pack's rules did not land once without a language block"
 }
@@ -2049,7 +2051,36 @@ test_stack_python_ratchet_passes_when_the_base_predates_the_pack() {
   py_tiers "$d" "--ratchet=--output=$d.leak"; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "unknown revision" || return 1
-  assert_absent "$d.leak"
+  assert_absent "$d.leak" || return 1
+  # Bases made of one pyproject.toml: absent table passes; malformed, emptied or
+  # unreadable ones fail (only a confirmed absence means "no baseline").
+  base_with() {  # $1 = branch, $2 = pyproject.toml content
+    (cd "$d" && git branch -f "$1" "$(git commit-tree -m "$1" "$(printf '100644 blob %s\tpyproject.toml\n' \
+      "$(printf '%b' "$2" | git hash-object -w --stdin)" | git mktree)")")
+  }
+  base_with notiers '[project]
+name = "demo"
+' || fail "git setup failed" || return 1
+  py_tiers "$d" --ratchet notiers; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.tiers.out" "no [tool.coverage_tiers] at notiers" || return 1
+  base_with malformed '[tool]
+coverage_tiers = false
+' || fail "git setup failed" || return 1
+  py_tiers "$d" --ratchet malformed; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "base config: " || return 1
+  base_with emptied '[tool.coverage_tiers]
+' || fail "git setup failed" || return 1
+  py_tiers "$d" --ratchet emptied; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "base config: coverage_tiers must be a nonempty table" || return 1
+  (cd "$d" && tree="$(git rev-parse 'emptied^{tree}')" \
+    && rm -f ".git/objects/$(printf '%s' "$tree" | cut -c1-2)/$(printf '%s' "$tree" | cut -c3-)") \
+    || fail "removing the base tree failed" || return 1
+  py_tiers "$d" --ratchet emptied; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read pyproject.toml at emptied"
 }
 test_stack_pack_retry_keeps_the_first_runs_stack() {
   # A retry must finish the pack the first attempt started. Without --stack it
