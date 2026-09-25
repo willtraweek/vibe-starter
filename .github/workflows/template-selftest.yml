@@ -22,18 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install gitleaks (pinned, checksum-verified)
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
-          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin"
-          tar --no-same-owner -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" gitleaks
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
 
       - name: Install shellcheck (pinned, checksum-verified)
         # The image ships shellcheck 0.9.0, which flags code that 0.11.0 accepts.
@@ -50,8 +40,13 @@ jobs:
             --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: Install uv (for the python stack-pack tests)
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+
       - name: Lint shell scripts
-        run: shellcheck --version && shellcheck bootstrap scripts/*.sh
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
 
       - name: Template self-test
         run: ./scripts/template-selftest.sh

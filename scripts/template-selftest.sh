@@ -805,13 +805,19 @@ test_check_env_example_allowlist_stops_at_a_directory() {
   assert_contains "$d.out" ".env.d/app.example:1:github-pat"
 }
 test_ci_example_installs_the_gitleaks_the_template_ci_runs() {
-  # ci.yml.example never runs here. Keep its install step byte-identical to the
-  # one template-selftest.yml runs on every push: same version, same checksum.
-  local wf="$REPO/.github/workflows" want got
-  got="$(sed -n '/- name: Install gitleaks/,/GITHUB_PATH/p' "$wf/ci.yml.example")"
-  want="$(sed -n '/- name: Install gitleaks/,/GITHUB_PATH/p' "$wf/template-selftest.yml")"
-  [ -n "$want" ] || fail "template-selftest.yml has no 'Install gitleaks' step" || return 1
-  [ "$got" = "$want" ] || fail "ci.yml.example's gitleaks install step drifted from template-selftest.yml's"
+  # ci.yml.example and the stack packs' ci.yml never run here. They must install
+  # gitleaks exactly as template-selftest.yml does on every push: through the one
+  # pinned, checksum-verified action (plan 006), never an inline copy that can drift.
+  local wf f
+  assert_contains "$REPO/.github/actions/install-gitleaks/action.yml" "GITLEAKS_SHA256: " || return 1
+  for wf in "$REPO/.github/workflows/template-selftest.yml" "$REPO/.github/workflows/ci.yml.example" \
+    "$REPO"/template/stacks/*/files/.github/workflows/ci.yml; do
+    [ -f "$wf" ] || continue
+    f="${wf#"$REPO"/}"
+    grep -Eq '^ +uses: \./\.github/actions/install-gitleaks$' "$wf" \
+      || fail "$f does not install gitleaks with ./.github/actions/install-gitleaks" || return 1
+    assert_not_contains "$wf" "GITLEAKS_SHA256" || return 1
+  done
 }
 test_selftest_finds_its_repo_through_a_link_or_cdpath() {
   # Same resolution as check.sh: a linked harness, or a bare relative call with a
