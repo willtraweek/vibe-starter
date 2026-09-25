@@ -1,5 +1,15 @@
 # Agents working on {{PROJECT_NAME}}
 
+<!-- template-only:start -->
+> **You are in the vibe-starter template itself, not in a project made from it.** Everything
+> outside the template-only blocks is the skeleton each new project starts from, so the
+> `{{...}}` placeholders are intentional: never fill them in or "fix" them here. Verify every
+> change with `./scripts/template-selftest.sh`. The root `VERSION`, `CHANGELOG.md` and
+> `TODOS.md` belong to the template (gstack `/ship` maintains them); new projects get the
+> copies in `template/skeleton/`. Maintainer guide: `TEMPLATE.md`. `./bootstrap` removes this
+> block.
+<!-- template-only:end -->
+
 This is the install and operating protocol for every coding agent in this repo.
 AGENTS.md and CLAUDE.md are companion instruction files; read both regardless of where your host starts.
 

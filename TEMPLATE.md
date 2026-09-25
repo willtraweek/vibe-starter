@@ -8,7 +8,9 @@ my conventions instead of empty. This file is removed by `./bootstrap`.
 1. Create a repo from this template:
    - GitHub: **Use this template**, or `gh repo create <name> --template willtraweek/vibe-starter`
    - or a no-history copy: `npx degit willtraweek/vibe-starter <name>`
-2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`)
+2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`), then commit the result to
+   the default branch before you branch or run gstack `/ship`: `/ship` compares `VERSION` with
+   the base branch, which holds the template's version until then.
 3. Fill in the placeholders the checklist prints, choose a stack, and start building.
 
 `./bootstrap` personalizes the bootstrap-owned placeholders, optionally notes gstack, prints a
@@ -16,7 +18,10 @@ first-run checklist, and then deletes itself and the template-only paths listed 
 
 The project name defaults to the `origin` remote's repo name, else the directory name. Bad
 arguments exit 2. In the vibe-starter template repo itself, or where git can't read the
-directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run anyway.
+directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run anyway. A
+malformed template-only marker, a missing `template/skeleton/` file or an invalid template
+version stops it with exit 1 before it changes anything; after a later failure, fix the cause
+and rerun with the same arguments.
 
 ## What's inside
 
@@ -25,7 +30,8 @@ directory's `.git`, it refuses with exit 3; pass `--force --name <name>` to run 
 - `DOCTRINE.md` — the cross-project ethos (completeness, primitives-complete, CLI-as-contract,
   deterministic/gray-space, estimate framing).
 - `TESTING.md`, `ENGINEERING.md` — the testing doctrine and code-organization standards.
-- `README.md`, `CHANGELOG.md`, `TODOS.md`, `VERSION`, `docs/`, `.context/` — working scaffold.
+- `README.md`, `docs/`, `.context/` — working scaffold; a new project's own `VERSION`,
+  `CHANGELOG.md`, `TODOS.md` come from `template/skeleton/`.
 - `DESIGN.md`, `MISSION.md` — optional; delete if a project doesn't need them.
 - config: `.gitignore`, `.editorconfig`, `.gitleaks.toml`, an inert `.github/workflows/ci.yml.example`.
 - `scripts/check.sh` — the stack-neutral pre-test guard: a gitleaks scan of what git would commit
@@ -38,7 +44,23 @@ scaffold a coverage gate until you've chosen a language and test runner.
 
 ## Maintaining the template
 
-Changes to `bootstrap` or `scripts/check.sh` must keep the self-test and shellcheck green:
+This repo is two things at once: the template's own project, and the skeleton every new
+project starts from. Keep them apart:
+
+- **Skeleton files** are what a new project starts with: `AGENTS.md`, `CLAUDE.md`, `DOCTRINE.md`,
+  `TESTING.md`, `ENGINEERING.md`, `README.md`, `DESIGN.md`, `MISSION.md`, `docs/`, the config
+  files, `scripts/check.sh`, `.github/workflows/ci.yml.example`, and `template/skeleton/` (the
+  project's own `VERSION`, `CHANGELOG.md`, `TODOS.md`). Their `{{...}}` placeholders are
+  intentional.
+- **Template-owned files** describe the template itself: the root `VERSION`, `CHANGELOG.md` and
+  `TODOS.md`. gstack `/ship` bumps and writes them. `./bootstrap` swaps in the skeleton copies
+  and records the template version in the new project's `.bootstrapped`.
+- **Template-only paths** are deleted by `./bootstrap`: `TEMPLATE.md`, `template/`, `plans/`,
+  `scripts/template-selftest.sh`, `.github/workflows/template-selftest.yml`, and any markdown
+  between `<!-- template-only:start -->` and `<!-- template-only:end -->` lines. A repo created
+  with **Use this template** still has them in its initial commit; `npx degit` copies no history.
+
+### Verifying a change
 
 ```sh
 ./scripts/template-selftest.sh             # every test
@@ -52,6 +74,19 @@ that need gitleaks are skipped locally when it is missing; CI installs it and tr
 failures. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
 `willtraweek/vibe-starter`.
 
-Template-only paths, deleted by `./bootstrap`: `TEMPLATE.md`, `scripts/template-selftest.sh`,
-`.github/workflows/template-selftest.yml`, `plans/`. A repo created with **Use this template**
-still has them in its initial commit; `npx degit` copies no history.
+### Shipping with gstack
+
+`/ship` works here. It runs the self-test (TESTING.md's template-only block tells it to), bumps
+the template's own `VERSION`, and writes the template's `CHANGELOG.md` and `TODOS.md`. Its docs
+step may propose edits to skeleton files. Accept only changes meant for every future project,
+and never let it fill in a placeholder: `test_skeleton_placeholders_are_intact` fails if one
+changes.
+
+### Placeholders
+
+- `{{PROJECT_NAME}}` and `{{YEAR}}` are bootstrap-owned: `./bootstrap` replaces them.
+- Everything else is filled in by hand in the new project. The bootstrap checklist must name
+  every file that still has one (`test_bootstrap_checklist_names_every_file_with_placeholders`).
+- After an intentional placeholder change, review the token diff, then print the inventory with
+  `./scripts/template-selftest.sh --print-inventory` and paste it into
+  `test_skeleton_placeholders_are_intact`.
