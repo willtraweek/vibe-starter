@@ -174,17 +174,25 @@ def report_markdown(tiers: dict[str, Any], measured: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+
+
 def ratchet(tiers: dict[str, Any], ref: str) -> list[str]:
-    shown = subprocess.run(
-        ["git", "show", f"{ref}:pyproject.toml"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # rev-parse first: it also refuses a ref that git would read as an option.
+    if git("rev-parse", "--verify", "--quiet", ref + "^{commit}").returncode:
+        return [f"cannot read pyproject.toml at {ref}: unknown revision"]
+    # A base that predates the tier table (the project's first PR) has no floors to keep.
+    if git("cat-file", "-e", f"{ref}:pyproject.toml").returncode:
+        print(f"coverage-tiers: no pyproject.toml at {ref}; nothing to ratchet against")
+        return []
+    shown = git("show", f"{ref}:pyproject.toml")
     if shown.returncode:
         return [f"cannot read pyproject.toml at {ref}: {shown.stderr.strip()}"]
     old_tiers = load_tiers(shown.stdout)
+    if not old_tiers:
+        print(f"coverage-tiers: no [tool.coverage_tiers] at {ref}; nothing to ratchet against")
+        return []
     errors = validate(old_tiers, check_files=False)
     if errors:
         return [f"base config: {error}" for error in errors]

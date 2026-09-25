@@ -203,10 +203,10 @@ if [ -n "$STACK" ]; then
   fi
   case "$PACKAGE_NAME" in
     [abcdefghijklmnopqrstuvwxyz]*) ;;
-    *) echo "With a stack pack the project name must start with a letter: '$NAME'" >&2; exit 2 ;;
+    *) echo "With a stack pack the project name must start with a letter: '$NAME'$NAME_HINT" >&2; exit 2 ;;
   esac
   if [ -f "$pack/validate-name" ]; then
-    sh "$pack/validate-name" "$PACKAGE_NAME" "$NAME" || exit 2
+    sh "$pack/validate-name" "$PACKAGE_NAME" "$NAME" || { [ -z "$NAME_HINT" ] || echo "Name '$NAME'$NAME_HINT" >&2; exit 2; }
   fi
 fi
 YEAR="$(date +%Y)"
@@ -316,6 +316,10 @@ if [ -n "$STACK" ]; then
       "\n\n$ENV{PACK_GITIGNORE}\n"
         . (@kept ? "\n# --- Kept from before the stack pack ---\n" . join("\n", @kept) . "\n" : "")
     }se' .gitignore
+  # No language block matched (it was edited away): append the pack's rules, once.
+  if ! grep -qxF -- "$(head -n 1 "$pack/gitignore")" .gitignore 2>/dev/null; then
+    { printf '\n'; cat "$pack/gitignore"; } >> .gitignore
+  fi
   if [ -f .github/workflows/ci.yml ]; then rm -f .github/workflows/ci.yml.example; fi
   echo "Installed the $STACK stack pack."
 fi
@@ -398,7 +402,11 @@ Commit this to your default branch before you branch or run gstack /ship:
 /ship compares VERSION with the base branch, which still has the template's.
 CHECKLIST
 if [ -n "$STACK" ]; then
-  echo "Stack pack: $STACK. Commands, CI (.github/workflows/ci.yml) and .gitignore are set up."
+  if [ -f .github/workflows/ci.yml ]; then
+    echo "Stack pack: $STACK. Commands, CI (.github/workflows/ci.yml) and .gitignore are set up."
+  else
+    echo "Stack pack: $STACK. Commands and .gitignore are set up; this pack has no CI workflow."
+  fi
   echo "  Run the gate and commit the lockfile before the first push; resolve any hook warning first."
   echo "  Delete DESIGN.md and/or MISSION.md if this project doesn't need them."
 else

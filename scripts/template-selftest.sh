@@ -1989,7 +1989,67 @@ test_stack_pack_gitignore_swap_keeps_real_rules() {
   grep -qx 'secrets.local.json' "$d/.gitignore" || fail "the appended secrets.local.json rule was dropped" || return 1
   grep -qx 'fixture-out/' "$d/.gitignore" || fail "the pack's rules are missing" || return 1
   assert_not_contains "$d/.gitignore" "# Language sections" || return 1
-  assert_not_contains "$d/.gitignore" "# .turbo/"
+  assert_not_contains "$d/.gitignore" "# .turbo/" || return 1
+  # With the language block edited away, the pack's rules are appended instead.
+  d="$WORK/stack-gitignore-noblock/demo"
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  perl -0pi -e 's/\n# =+\n# Language sections.*\z/\n/s' "$d/.gitignore" || return 1
+  assert_not_contains "$d/.gitignore" "# Language sections" || return 1
+  run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(grep -cx 'fixture-out/' "$d/.gitignore")" = 1 ] || fail "the pack's rules did not land once without a language block"
+}
+test_stack_name_rejections_say_where_a_default_name_came_from() {
+  # Same rule as the generic name checks: a rejected default names its source.
+  local name d rc
+  for name in json 3d-viewer; do
+    d="$WORK/stack-hint/$name"
+    fresh_copy "$d" || return 1
+    run_bootstrap "$d" --stack python --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "(from the directory name; pass --name <project>)" || return 1
+  done
+}
+test_stack_pack_files_carry_only_bootstrap_owned_tokens() {
+  # Pack files skip the golden inventory and the no-stack checklist test, yet ship
+  # downstream: a hand-fill token or a GitHub expression there would go unnamed.
+  local hits
+  hits="$(cd "$REPO" && find template/stacks/*/files -type f -exec perl -ne \
+    's/\{\{(?:PROJECT_NAME|PACKAGE_NAME|YEAR)\}\}//g; print "$ARGV:$.: $_" if /\{\{|\}\}/; close ARGV if eof' {} +)" \
+    || fail "cannot scan the pack files" || return 1
+  [ -z "$hits" ] || fail "pack files carry tokens the bootstrap checklist won't name: $hits"
+}
+test_stack_python_rejected_names_track_the_pinned_python() {
+  # validate-name copies sys.stdlib_module_names by hand; a .python-version bump that
+  # adds modules must fail here instead of reopening the shadowing bug.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local py want got
+  py="$(cat "$REPO/template/stacks/python/files/.python-version")"
+  want="$(cd "$WORK" && stack_env uv run --no-project --quiet --python "$py" python -c \
+    'import sys; print("\n".join(sorted(n for n in sys.stdlib_module_names if n[0] != "_" and n == n.lower())))')" \
+    || fail "cannot list Python $py's standard library" || return 1
+  got="$(sed -n '/^stdlib="/,/"$/p' "$REPO/template/stacks/python/validate-name" | tr -d '"' \
+    | sed 's/^stdlib=//' | tr ' ' '\n' | grep . | LC_ALL=C sort)"
+  [ "$want" = "$got" ] || fail "validate-name's stdlib list drifted from Python $py: $(diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | tr '\n' ' ')"
+}
+test_stack_python_ratchet_passes_when_the_base_predates_the_pack() {
+  # A project's first PR into a protected default branch compares against the
+  # template commit, which has no pyproject.toml: nothing to ratchet, so it passes.
+  # An unknown ref, or one git would read as an option, still fails.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-ratchet-nobase/demo" rc
+  python_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init \
+    && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w README.md)" | git mktree)")") \
+    || fail "git setup failed" || return 1
+  py_tiers "$d" --ratchet prepack; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.tiers.out" "no pyproject.toml at prepack; nothing to ratchet against" || return 1
+  assert_contains "$d.tiers.out" "coverage-tiers: ok" || return 1
+  py_tiers "$d" "--ratchet=--output=$d.leak"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "unknown revision" || return 1
+  assert_absent "$d.leak"
 }
 test_stack_pack_retry_keeps_the_first_runs_stack() {
   # A retry must finish the pack the first attempt started. Without --stack it
@@ -2319,9 +2379,11 @@ test_stack_pack_fills_values_literally_and_normalizes_the_package_name() {
   assert_contains "$d/TESTING.md" "Tests: \`$value\`" || return 1
   assert_contains "$d/CLAUDE.md" "Tests: \`$value\`" || return 1
   assert_contains "$d/src/acme_web_app_2/hello.txt" "package=acme_web_app_2 project=Acme--Web.App 2_" || return 1
-  # A pack without a CI workflow leaves the inert example in place.
+  # A pack without a CI workflow leaves the inert example in place, and says so.
   assert_exists "$d/.github/workflows/ci.yml.example" || return 1
-  assert_absent "$d/.github/workflows/ci.yml"
+  assert_absent "$d/.github/workflows/ci.yml" || return 1
+  assert_not_contains "$d.out" "CI (.github/workflows/ci.yml)" || return 1
+  assert_contains "$d.out" "this pack has no CI workflow"
 }
 test_bootstrap_finishes_when_the_stack_follow_up_fails() {
   # after-bootstrap is best effort: its failure is reported, and bootstrap still
