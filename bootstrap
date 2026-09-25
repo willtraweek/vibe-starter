@@ -150,11 +150,12 @@ echo "Personalizing template -> name='$NAME', year='$YEAR'"
 
 # --- Validate template-only markers before any writes -----------------------
 # Same rules as template_markers_valid in scripts/template-selftest.sh. A
-# marker the strip below would miss (indented, trailing space, CRLF) is an
-# error here, so a block can't silently ship.
+# marker the strip below would miss (indented 1-3 spaces, trailing space,
+# CRLF) is an error here, so a block can't silently ship. Four spaces or a tab
+# make an indented code example, which is left alone.
 validate_template_markers() {
   awk '
-    /^[ \t]*<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
+    /^(   |  | )?<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
       print FILENAME ":" FNR ": template-only marker must be alone on its line, at column 0" > "/dev/stderr"
       bad=1; next
     }

@@ -1353,7 +1353,7 @@ placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skel
 }
 template_markers_valid() {  # same rules as validate_template_markers in bootstrap
   awk '
-    /^[ \t]*<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
+    /^(   |  | )?<!-- template-only:(start|end) -->[ \t\r]*$/ && !/^<!-- template-only:(start|end) -->$/ {
       print FILENAME ":" FNR ": template-only marker must be alone on its line, at column 0" > "/dev/stderr"
       bad=1; next
     }
@@ -1398,7 +1398,6 @@ test_template_owned_files_are_not_skeletons() {
   # A release entry may quote a {{TOKEN}}; the skeletons' own lines may not appear.
   assert_not_contains "$REPO/CHANGELOG.md" 'All notable changes to {{PROJECT_NAME}}' || return 1
   assert_not_contains "$REPO/TODOS.md" 'The working backlog for {{PROJECT_NAME}}' || return 1
-  assert_not_contains "$REPO/TODOS.md" '{{FIRST_TASK' || return 1
   assert_exists "$REPO/template/skeleton/VERSION" || return 1
   [ "$(cat "$REPO/template/skeleton/VERSION")" = "0.0.0" ] || fail "skeleton VERSION is not 0.0.0"
 }
@@ -1531,7 +1530,7 @@ test_template_owned_files_may_quote_a_placeholder() {
   (cd "$d" && git init -q) || fail "git init failed" || return 1
   expected="$(placeholder_inventory)" || return 1
   printf -- '- Stack packs fill {{TEST_CMD}}.\n' >> "$d/CHANGELOG.md"
-  printf -- '- Fill {{CHECK_CMD}} next.\n' >> "$d/TODOS.md"
+  printf -- '- Explain how to fill {{FIRST_TASK}} in the starter backlog.\n' >> "$d/TODOS.md"
   [ "$(REPO="$d" placeholder_inventory)" = "$expected" ] || fail "template-owned files joined the skeleton inventory" || return 1
   REPO="$d" test_template_owned_files_are_not_skeletons || fail "a quoted token counted as a skeleton" || return 1
   # A real skeleton leak still fails.
@@ -1567,6 +1566,16 @@ test_bootstrap_rejects_near_miss_markers_before_changes() {
     assert_contains "$d.out" "must be alone on its line" || return 1
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "$kind markers changed files before rejection" || return 1
   done
+}
+
+test_bootstrap_leaves_indented_marker_examples_alone() {
+  # Four spaces or a tab make a markdown code example, not a directive.
+  local d="$WORK/marker-example/proj" want
+  fresh_copy "$d" || return 1
+  want="$(printf 'Example:\n\n    <!-- template-only:start -->\n    PRIVATE\n    <!-- template-only:end -->\n\n\t<!-- template-only:end -->')"
+  printf '%s\n' "$want" > "$d/example.md"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(cat "$d/example.md")" = "$want" ] || fail "an indented marker example was changed"
 }
 
 # --- runner -------------------------------------------------------------------
