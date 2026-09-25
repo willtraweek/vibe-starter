@@ -1864,6 +1864,9 @@ json|taken by the Python standard library
 pytest|taken by the Python standard library
 ruff|taken by the Python standard library
 colorama|taken by the Python standard library
+Python|reserved by Python or uv
+activate|reserved by Python or uv
+SiteCustomize|reserved by Python or uv
 Acme Example Inventory Reconciliation Service Version Two Ok1|too long for the python stack pack
 NAMES
 }
@@ -1971,6 +1974,48 @@ STUB
   done
   perl -0ne 'exit(/^## Commands\n\nKeep the check/m ? 0 : 1)' "$d/CLAUDE.md" \
     || fail "CLAUDE.md's Commands section lost its layout: $(grep -A3 '^## Commands' "$d/CLAUDE.md")"
+}
+test_stack_pack_gitignore_swap_keeps_real_rules() {
+  # The pack replaces .gitignore's commented language block. A rule a user
+  # uncommented or appended there before bootstrapping must survive the swap:
+  # dropping it would make those paths committable.
+  local d="$WORK/stack-gitignore-keep/demo"
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  perl -pi -e 's|^# node_modules/$|node_modules/|' "$d/.gitignore" || return 1
+  printf 'secrets.local.json\n' >> "$d/.gitignore"
+  run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  grep -qx 'node_modules/' "$d/.gitignore" || fail "the uncommented node_modules/ rule was dropped" || return 1
+  grep -qx 'secrets.local.json' "$d/.gitignore" || fail "the appended secrets.local.json rule was dropped" || return 1
+  grep -qx 'fixture-out/' "$d/.gitignore" || fail "the pack's rules are missing" || return 1
+  assert_not_contains "$d/.gitignore" "# Language sections" || return 1
+  assert_not_contains "$d/.gitignore" "# .turbo/"
+}
+test_stack_pack_retry_keeps_the_first_runs_stack() {
+  # A retry must finish the pack the first attempt started. Without --stack it
+  # reuses that choice (the prompt's default, none, would leave a half-applied
+  # pack); an explicit different stack is refused before any write.
+  local d="$WORK/stack-retry-choice/demo" bin="$WORK/stack-retry-choice/bin" real before rc
+  fresh_copy "$d" || return 1
+  fixture_pack "$d/template/stacks/fixture" || return 1
+  mkdir -p "$bin" || return 1
+  real="$(command -v rm)"
+  cat > "$bin/rm" <<STUB || return 1
+#!/bin/sh
+[ "\$2" = "plans" ] && exit 1
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/rm" || fail "rm stub setup failed" || return 1
+  PATH="$bin:$(printenv PATH)" run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
+  [ "$rc" -ne 0 ] || fail "the stubbed cleanup did not fail" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name demo --stack none --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "This bootstrap was started with --stack fixture" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "a refused retry changed files" || return 1
+  run_bootstrap "$d" --name demo || fail "the retry without --stack failed: $(cat "$d.out")" || return 1
+  assert_contains "$d/.bootstrapped" "with the fixture stack pack" || return 1
+  assert_contains "$d/src/demo/hello.txt" "package=demo"
 }
 test_stack_python_coverage_tiers_fail_closed() {
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
@@ -2116,7 +2161,9 @@ test_stack_python_coverage_counts_untested_namespace_modules() {
     || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
   mkdir -p "$d/src/demo/extra" || return 1
   printf 'def pick(flag: bool) -> int:\n    if flag:\n        return 1\n    return 2\n' > "$d/src/demo/extra/service.py"
-  (cd "$d" && stack_env ./scripts/coverage.sh) >"$d.gate.out" 2>&1; rc=$?
+  # Run as `bash scripts/coverage.sh` with a CDPATH decoy: its cd must stay in the project.
+  mkdir -p "$d.decoy/scripts" || return 1
+  (cd "$d" && CDPATH="$d.decoy" stack_env bash scripts/coverage.sh) >"$d.gate.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.gate.out" "src/demo/extra/service.py" || return 1
   assert_contains "$d.gate.out" "global: line"
@@ -2466,6 +2513,7 @@ CASES
   (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
   cp "$d.pyproject" "$d/pyproject.toml" || return 1
   [ "$rc" -ne 0 ] || fail "the guard passed a uv.lock that no longer matches pyproject.toml" || return 1
+  assert_contains "$d.guard.out" "uv.lock is missing or out of date" || return 1
   mkdir -p "$d.empty" || return 1
   (cd "$d" && env PATH="$d.empty" /bin/bash scripts/check.d/python.sh) >"$d.guard.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1

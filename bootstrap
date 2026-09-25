@@ -169,11 +169,26 @@ if [ -d template/stacks ]; then
   STACKS="$(find template/stacks -mindepth 1 -maxdepth 1 -type d -exec basename {} \; \
     | LC_ALL=C sort | tr '\n' ' ' | sed 's/ *$//')"
 fi
-if [ "$STACK_GIVEN" = "0" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ] && [ -n "$STACKS" ]; then
+# A retry finishes the stack the first attempt chose (saved next to the template
+# version below); the prompt's default, none, must not quietly replace it.
+SAVED_STACK=""
+HAVE_SAVED_STACK=0
+if [ -f template/.bootstrap-stack ]; then
+  SAVED_STACK="$(cat template/.bootstrap-stack)"
+  HAVE_SAVED_STACK=1
+fi
+if [ "$STACK_GIVEN" = "0" ] && [ "$HAVE_SAVED_STACK" = "1" ]; then
+  STACK="$SAVED_STACK"
+elif [ "$STACK_GIVEN" = "0" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ] && [ -n "$STACKS" ]; then
   printf "Stack pack [none %s]: " "$STACKS"
   read -r STACK </dev/tty || STACK=""
 fi
 if [ "$STACK" = "none" ]; then STACK=""; fi
+if [ "$HAVE_SAVED_STACK" = "1" ] && [ "$STACK" != "$SAVED_STACK" ]; then
+  if [ -n "$SAVED_STACK" ]; then was="--stack $SAVED_STACK"; else was="no stack pack"; fi
+  echo "This bootstrap was started with $was; rerun it with the same arguments to finish." >&2
+  exit 2
+fi
 # Normalization is shared; reserved words are language-specific. Letters are
 # enumerated for the same locale reason as the name checks above.
 PACKAGE_NAME="$(printf '%s' "$NAME" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
@@ -258,6 +273,9 @@ if [ "$VERSION_FROM" = VERSION ]; then
   printf '%s\n' "$TEMPLATE_VERSION" > template/.bootstrap-version.tmp
   mv template/.bootstrap-version.tmp template/.bootstrap-version
 fi
+if [ "$HAVE_SAVED_STACK" = "0" ]; then
+  printf '%s\n' "$STACK" > template/.bootstrap-stack
+fi
 for f in VERSION CHANGELOG.md TODOS.md; do
   cp "template/skeleton/$f" "$f"
 done
@@ -291,8 +309,13 @@ if [ -n "$STACK" ]; then
     done
   done < "$pack/commands"
   perl -0pi -e 's/^This template is stack-agnostic\. Fill these in once a stack is chosen, then delete this note\.\n\n?//m' CLAUDE.md
-  PACK_GITIGNORE="$(cat "$pack/gitignore")" perl -0pi -e \
-    's/\r?\n# =+\r?\n# Language sections.*\z/\n\n$ENV{PACK_GITIGNORE}\n/s' .gitignore
+  # Only the commented block goes: rules a user uncommented or appended there stay.
+  PACK_GITIGNORE="$(cat "$pack/gitignore")" perl -0pi -e '
+    s{\r?\n# =+\r?\n# Language sections.*\z}{
+      my @kept = grep { /\S/ && !/^\s*#/ } split /\r?\n/, $&;
+      "\n\n$ENV{PACK_GITIGNORE}\n"
+        . (@kept ? "\n# --- Kept from before the stack pack ---\n" . join("\n", @kept) . "\n" : "")
+    }se' .gitignore
   if [ -f .github/workflows/ci.yml ]; then rm -f .github/workflows/ci.yml.example; fi
   echo "Installed the $STACK stack pack."
 fi

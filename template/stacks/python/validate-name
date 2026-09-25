@@ -7,6 +7,14 @@ case "$1" in
     echo "Package name '$1' is a reserved Python identifier; choose another project name." >&2
     exit 2 ;;
 esac
+# Names Python or uv claim: uv refuses console scripts named like the interpreter,
+# an `activate` script would overwrite the venv's own, and site imports
+# sitecustomize/usercustomize at startup, before coverage starts measuring.
+case "$1" in
+  python|python3|pythonw|activate|sitecustomize|usercustomize)
+    echo "Package name '$1' is reserved by Python or uv; choose another project name." >&2
+    exit 2 ;;
+esac
 # Top-level standard-library modules (Python 3.14's sys.stdlib_module_names, public
 # lowercase names) and the pack's own tools. The editable src/ path comes after both
 # on sys.path, so a package with one of these names is shadowed: the new project's
