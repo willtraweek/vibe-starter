@@ -109,6 +109,7 @@ test_bootstrap_removes_template_only_paths() {
   assert_absent "$d/scripts/template-selftest.sh" || return 1
   assert_absent "$d/.github/workflows/template-selftest.yml" || return 1
   assert_absent "$d/plans" || return 1
+  assert_absent "$d/template" || return 1
   # The downstream CI skeleton and the check guard must survive.
   assert_exists "$d/.github/workflows/ci.yml.example" || return 1
   assert_exists "$d/scripts/check.sh"
@@ -1320,7 +1321,176 @@ test_instruction_pair_documents_both_entry_points() {
   assert_contains "$d.out" 'Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.'
 }
 
+# --- tests: template-owned files, skeletons, template-only blocks (plan 005) --
+placeholder_tokens() {  # complete tokens, whitespace-normalized and sorted; bad delimiters fail
+  perl -0777 -ne '
+    my @tokens;
+    while (/\{\{([^{}]*)\}\}/g) {
+      my $t = $1; $t =~ s/\s+/ /g; push @tokens, "{{$t}}";
+    }
+    s/\{\{([^{}]*)\}\}//g;
+    die "malformed placeholder delimiters in $ARGV\n" if /\{\{|\}\}/;
+    print "$_\n" for sort @tokens;
+  ' "$1"
+}
+placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skeleton file
+  local f tokens n digest
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      bootstrap|TEMPLATE.md|plans/*|scripts/template-selftest.sh) continue ;;
+    esac
+    [ -f "$REPO/$f" ] || continue
+    tokens="$(placeholder_tokens "$REPO/$f")" || return 1
+    [ -n "$tokens" ] || continue
+    n="$(printf '%s\n' "$tokens" | wc -l | tr -d ' ')"
+    digest="$(printf '%s\n' "$tokens" | shasum -a 256 | awk '{print $1}')"
+    printf '%s %s %s\n' "$f" "$n" "$digest"
+  done < <(cd "$REPO" && git ls-files -z --cached --others --exclude-standard | LC_ALL=C sort -zu)
+}
+template_markers_valid() {
+  awk '
+    /^<!-- template-only:start -->$/ {
+      if (inside) { print FILENAME ": nested template-only start" > "/dev/stderr"; bad=1 }
+      inside=1; next
+    }
+    /^<!-- template-only:end -->$/ {
+      if (!inside) { print FILENAME ": unmatched template-only end" > "/dev/stderr"; bad=1 }
+      inside=0
+    }
+    END {
+      if (inside) { print FILENAME ": unclosed template-only start" > "/dev/stderr"; bad=1 }
+      exit bad
+    }
+  ' "$1"
+}
+test_skeleton_placeholders_are_intact() {
+  # Golden inventory. gstack's /document-release (run inside /ship) auto-applies
+  # "factual" doc fixes; token identities, descriptions and delimiters must survive.
+  # After an intentional change: ./scripts/template-selftest.sh --print-inventory
+  local expected actual
+  expected='.github/workflows/ci.yml.example 4 b54d42db089f26e1efd40c8fe67b923da6ecedea8d23d323c76e4e64d3371c80
+.gitleaks.toml 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
+AGENTS.md 7 24b65e92ead6eaca62bf62f865263db7846d12a25a7f6ece7e519385ebfeb9be
+CLAUDE.md 16 ad5fecd2b2c16cbe94f4ab75a68957d336bdcb852f52df0bb006db3368dfe4cf
+DESIGN.md 7 d7d0105be65334da5869323f56bbc467181a4fd9fae7f38db570ef000a945790
+DOCTRINE.md 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
+ENGINEERING.md 3 5a25f6421a333ad79cb00b36e89f756be496e290a103349eafd3d29322296243
+MISSION.md 4 9941f9fb5142a080db73acdae6db4846842550bd9f87d64edf2690597b454ee3
+README.md 9 6f4012246e96c2d2e4c0e4d699530443a57548c4be1f343b3b5f138b696ade64
+TESTING.md 11 e1735bde2b46fbc18e18d17e3104173fd3431b55a6e863badb6ef272b35f8c94
+docs/architecture.md 4 3b5f13e48bbc3e83fc93660a1d8665316f1ea124393c006de40eb8277a819244
+docs/guides/README.md 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
+template/skeleton/CHANGELOG.md 2 033352f6b40172964595ffde23b7c162618fe6a2ce8c7f3a26e7657ce556ecf5
+template/skeleton/TODOS.md 2 54fdbe3163f63aa797cde77414a02b1fcdf26fabe1afa24f7a8b824bbe7875f6'
+  actual="$(placeholder_inventory)" || return 1
+  [ "$expected" = "$actual" ] || fail "placeholder inventory changed (expected vs actual):
+$(diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual"))"
+}
+test_template_owned_files_are_not_skeletons() {
+  assert_not_contains "$REPO/CHANGELOG.md" '{{' || return 1
+  assert_not_contains "$REPO/TODOS.md" '{{' || return 1
+  assert_exists "$REPO/template/skeleton/VERSION" || return 1
+  [ "$(cat "$REPO/template/skeleton/VERSION")" = "0.0.0" ] || fail "skeleton VERSION is not 0.0.0"
+}
+test_template_only_markers_are_balanced() {
+  local f
+  while IFS= read -r -d '' f; do
+    [ -f "$REPO/$f" ] || continue
+    template_markers_valid "$REPO/$f" || return 1
+  done < <(cd "$REPO" && git ls-files -z --cached --others --exclude-standard -- '*.md' ':!:plans/**' | LC_ALL=C sort -zu)
+}
+test_testing_md_gives_gstack_the_selftest_command() {
+  assert_contains "$REPO/TESTING.md" "the test command is \`./scripts/template-selftest.sh\`"
+}
+test_skeleton_todos_pass_gstack_structure_check() {
+  # gstack /ship step 14 wants: items under ## groups, a **Priority:** P0-P4 per item,
+  # and ## Completed as the last section. Otherwise it asks to "reorganize" TODOS.md.
+  local f="$REPO/template/skeleton/TODOS.md"
+  [ "$(grep '^## ' "$f" | tail -n 1)" = "## Completed" ] || fail "## Completed is not the last section" || return 1
+  awk '/^### /{ if (item && !prio) bad=1; item=1; prio=0 } /^\*\*Priority:\*\* P[0-4]/{ prio=1 }
+       /^## /{ if (item && !prio) bad=1; item=0 } END { if (item && !prio) bad=1; exit bad }' "$f" \
+    || fail "an item in the skeleton TODOS.md lacks a **Priority:** P0-P4 line"
+}
+test_bootstrap_installs_project_skeletons_and_provenance() {
+  local d="$WORK/skeletons/demo" tver
+  tver="$(head -n 1 "$REPO/VERSION")"
+  fresh_copy "$d"
+  run_bootstrap "$d" --name demo --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  [ "$(cat "$d/VERSION")" = "0.0.0" ] || fail "project VERSION is not 0.0.0" || return 1
+  assert_contains "$d/CHANGELOG.md" "All notable changes to demo" || return 1
+  assert_not_contains "$d/CHANGELOG.md" "vibe-starter template itself" || return 1
+  assert_contains "$d/TODOS.md" "The working backlog for demo" || return 1
+  assert_contains "$d/.bootstrapped" "from vibe-starter $tver"
+}
+test_bootstrap_strips_template_only_blocks() {
+  local d="$WORK/strip/proj" hits
+  fresh_copy "$d"
+  printf 'PROJECT BEFORE\n<!-- template-only:start -->\nMAINTAINER PRIVATE\n<!-- template-only:end -->\nPROJECT AFTER\n' > "$d/canary.md"
+  printf 'EOF BEFORE\n<!-- template-only:start -->\nMAINTAINER PRIVATE\n<!-- template-only:end -->' > "$d/eof-canary.md"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?" || return 1
+  [ "$(cat "$d/eof-canary.md")" = "EOF BEFORE" ] || fail "EOF marker was not stripped" || return 1
+  [ "$(cat "$d/canary.md")" = "$(printf 'PROJECT BEFORE\nPROJECT AFTER')" ] || fail "stripping damaged surrounding content" || return 1
+  hits="$(grep -rl --exclude-dir=.git 'template-only' "$d" || true)"
+  [ -z "$hits" ] || fail "template-only markers survived in: $hits" || return 1
+  assert_not_contains "$d/AGENTS.md" "You are in the vibe-starter template itself" || return 1
+  assert_not_contains "$d/TESTING.md" "template-selftest" || return 1
+  grep -qx '## Skill routing' "$d/CLAUDE.md" || fail "CLAUDE.md lost its routing heading" || return 1
+  grep -qx '## Commands' "$d/TESTING.md" || fail "TESTING.md lost its Commands section"
+}
+test_placeholder_inventory_detects_same_count_corruption() {
+  local f="$WORK/tokens.md" before after rc
+  printf '{{CHECK_CMD}}\n{{TEST_CMD}}\n' > "$f"
+  before="$(placeholder_tokens "$f")" || return 1
+  printf '{{CHECK_CMD}}\n{{CHECK_CMD}}\n' > "$f"
+  after="$(placeholder_tokens "$f")" || return 1
+  [ "$before" != "$after" ] || fail "same-count token replacement was invisible" || return 1
+  printf '{{CHECK_CMD}\n' > "$f"
+  placeholder_tokens "$f" > "$f.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "malformed delimiter accepted" || return 1
+  printf '{{CHECK_CMD{{TEST_CMD}}}}\n' > "$f"
+  placeholder_tokens "$f" > "$f.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "nested placeholders accepted"
+}
+test_bootstrap_rejects_malformed_markers_before_changes() {
+  local kind d before rc
+  for kind in reversed nested unclosed; do
+    d="$WORK/markers-$kind/proj"
+    fresh_copy "$d" || return 1
+    case "$kind" in
+      reversed) printf '<!-- template-only:end -->\nkeep\n<!-- template-only:start -->\n' > "$d/canary.md" ;;
+      nested) printf '<!-- template-only:start -->\n<!-- template-only:start -->\n<!-- template-only:end -->\n<!-- template-only:end -->\n' > "$d/canary.md" ;;
+      unclosed) printf '<!-- template-only:start -->\nkeep\n' > "$d/canary.md" ;;
+    esac
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name proj --yes; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.out" "template-only" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "$kind markers changed files before rejection" || return 1
+  done
+}
+test_bootstrap_retry_preserves_template_version() {
+  local d="$WORK/retry/proj" shim="$WORK/cp-shim" rc
+  fresh_copy "$d" || return 1
+  printf '2.3.4\n' > "$d/VERSION"
+  mkdir -p "$shim"
+  cat > "$shim/cp" <<'SHIM'
+#!/bin/sh
+if [ "$1" = "template/skeleton/CHANGELOG.md" ]; then exit 42; fi
+exec /bin/cp "$@"
+SHIM
+  chmod +x "$shim/cp"
+  PATH="$shim:$(printenv PATH)" run_bootstrap "$d" --name proj --yes; rc=$?
+  assert_exit 42 "$rc" || return 1
+  [ "$(cat "$d/VERSION")" = "0.0.0" ] || fail "failure did not occur after the version swap" || return 1
+  assert_absent "$d/.bootstrapped" || return 1
+  [ "$(cat "$d/template/.bootstrap-version")" = "2.3.4" ] || fail "original version was not saved" || return 1
+  run_bootstrap "$d" --name proj --yes || fail "retry failed: $(cat "$d.out")" || return 1
+  assert_contains "$d/.bootstrapped" 'from vibe-starter 2.3.4' || return 1
+  assert_absent "$d/template"
+}
+
 # --- runner -------------------------------------------------------------------
+if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac
   echo "- $t"
