@@ -2044,6 +2044,17 @@ print("coverage schema, separate floors, branchless policy, and membership probe
 PYPROBE
   ) || fail "coverage adversarial probes failed: $(tail -25 "$d.tiers.out")"
 }
+test_stack_python_long_name_passes_the_stack_guards() {
+  # Names are substituted into Python source; ruff's 100-column limit (lint and
+  # format --check) must hold for a long but ordinary project name too.
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-long-name/proj"
+  fresh_copy "$d"
+  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name "Acme Example Inventory Reconciliation Service v2.1" \
+    --stack python --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  (cd "$d" && stack_env bash scripts/check.d/python.sh) >"$d.gate.out" 2>&1 \
+    || fail "the python guards failed: $(tail -25 "$d.gate.out")"
+}
 test_stack_python_project_is_green_on_first_run() {
   command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
   local d="$WORK/stack-python/demo-app"
