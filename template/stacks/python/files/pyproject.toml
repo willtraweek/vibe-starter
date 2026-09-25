@@ -1,0 +1,75 @@
+[project]
+name = "{{PACKAGE_NAME}}"
+description = "{{PROJECT_NAME}}"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+# The version lives in the root VERSION file (gstack /ship bumps it); hatchling reads it.
+dynamic = ["version"]
+
+[project.scripts]
+{{PACKAGE_NAME}} = "{{PACKAGE_NAME}}.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4",
+  "pytest-cov>=7.0",
+  "ruff>=0.16.8",
+  "ty>=0.0.83",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "VERSION"
+pattern = "(?P<version>.+)"
+
+[tool.uv]
+# Rebuild the editable install when VERSION changes, so --version stays current.
+cache-keys = [{ file = "pyproject.toml" }, { file = "VERSION" }]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "PT", "RUF"]
+
+[tool.ty.src]
+include = ["src", "tests", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+
+# Coverage gate (TESTING.md): 90% line+branch floor. Only runs with --cov
+# (scripts/coverage.sh and CI); plain `uv run pytest` stays fast and gate-free.
+[tool.coverage.run]
+branch = true
+source_pkgs = ["{{PACKAGE_NAME}}"]
+
+[tool.coverage.report]
+fail_under = 0  # Independent line and branch floors are enforced by coverage_tiers.py.
+show_missing = true
+# Count never-imported modules under src/ even in directories without __init__.py.
+include_namespace_packages = true
+exclude_also = ["if TYPE_CHECKING:", "@overload"]
+
+# Per-tier gates (TESTING.md), enforced by scripts/coverage_tiers.py. `minimum` is
+# enforced and only ever rises; `target` is the doctrine's aim. CI's ratchet rejects
+# dropping a member from `include`: to rename, move or delete one, add its old path
+# to that tier's `retired = [...]` (a reviewed migration; note why in TESTING.md's
+# Decisions Log).
+[tool.coverage_tiers.pure_logic]
+title = "Pure logic & utilities"
+target = 100.0
+minimum = 100.0
+include = []
+allow_empty = true  # Deliberate until the first pure-logic module exists.
+
+[tool.coverage_tiers.api_surface]
+title = "API / contract surface"
+target = 100.0
+minimum = 100.0
+include = ["src/{{PACKAGE_NAME}}/cli.py"]

@@ -178,6 +178,16 @@ else
   echo "- editorconfig-checker not installed - skipping format check."
 fi
 
+# --- Stack guards: scripts/check.d/*.sh -------------------------------------
+# Stack packs (./bootstrap --stack ...) and the project itself add guards here.
+# Each runs from the repo root; a non-zero exit fails the check.
+for guard in scripts/check.d/*.sh; do
+  [ -f "$guard" ] || continue
+  ran_any=1
+  echo "- $(basename "$guard" .sh): running $guard..."
+  bash "$guard" || status=1
+done
+
 if [ "$status" = "0" ]; then
   [ "$ran_any" = "1" ] && echo "OK: checks passed." || echo "OK: no checks configured yet."
 fi

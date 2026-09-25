@@ -8,10 +8,11 @@ my conventions instead of empty. This file is removed by `./bootstrap`.
 1. Create a repo from this template:
    - GitHub: **Use this template**, or `gh repo create <name> --template willtraweek/vibe-starter`
    - or a no-history copy: `npx degit willtraweek/vibe-starter <name>`
-2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`), then commit the result to
+2. `cd <name> && ./bootstrap`  (or `./bootstrap --name <name> --yes`). Add `--stack python` to
+   start with a ready-to-ship language pack (see Stack packs below). Then commit the result to
    the default branch before you branch or run gstack `/ship`: `/ship` compares `VERSION` with
    the base branch, which holds the template's version until then.
-3. Fill in the placeholders the checklist prints, choose a stack, and start building.
+3. Fill in the placeholders the checklist prints and start building.
 
 `./bootstrap` personalizes the bootstrap-owned placeholders, optionally notes gstack, prints a
 first-run checklist, and then deletes itself and the template-only paths listed below.
@@ -33,9 +34,36 @@ and rerun with the same arguments.
 - `README.md`, `docs/`, `.context/` — working scaffold; a new project's own `VERSION`,
   `CHANGELOG.md`, `TODOS.md` come from `template/skeleton/`.
 - `DESIGN.md`, `MISSION.md` — optional; delete if a project doesn't need them.
-- config: `.gitignore`, `.editorconfig`, `.gitleaks.toml`, an inert `.github/workflows/ci.yml.example`.
+- config: `.gitignore`, `.editorconfig`, `.gitleaks.toml`, an inert `.github/workflows/ci.yml.example`,
+  and `.github/actions/install-gitleaks/` (the pinned gitleaks install every workflow uses).
 - `scripts/check.sh` — the stack-neutral pre-test guard: a gitleaks scan of what git would commit
   (gitleaks 8.22+; skipped locally if missing, required in CI) and editorconfig-checker if present.
+
+## Stack packs
+
+`./bootstrap --stack <name>` also installs an opt-in language pack from `template/stacks/<name>/`.
+Without `--stack`, the project stays stack-agnostic, exactly as before. A pack is:
+
+- `files/`: copied into the project root. A path segment named `__package__` becomes the
+  package name (the project name in snake_case). `{{PROJECT_NAME}}`, `{{PACKAGE_NAME}}` and
+  `{{YEAR}}` are replaced like everywhere else.
+- `commands`: `KEY=value` lines that fill the matching `{{KEY}}` / `{{KEY: ...}}` placeholders
+  (install, dev, build, check, test commands, the stack summary, the ship gate, and coverage
+  enforcement).
+- `gitignore`: replaces the commented "Language sections" block of `.gitignore`.
+- `validate-name` (optional): runs before any file is written, as
+  `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects unusable names with a nonzero exit
+  (Python: keywords, names the standard library, uv or the pack's tools already use, and names
+  over 60 characters).
+- `after-bootstrap` (optional): runs once at the end, for example to write the lockfile.
+
+A pack's `files/.github/workflows/ci.yml` replaces `ci.yml.example`, activating the new project's
+CI. Resolve any lockfile-hook warning and run the full gate before the first push. Stack guards
+go in `files/scripts/check.d/<name>.sh`; `scripts/check.sh` runs every `scripts/check.d/*.sh`.
+The self-test runs each real pack end to end: bootstrap a project, then run that project's own
+checks and tests.
+
+Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floors).
 
 ## Note
 
@@ -65,14 +93,17 @@ project starts from. Keep them apart:
 ```sh
 ./scripts/template-selftest.sh             # every test
 ./scripts/template-selftest.sh bootstrap   # only tests whose name contains "bootstrap"
-shellcheck bootstrap scripts/*.sh          # CI lints first, with shellcheck 0.11.0
+shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh \
+  template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap \
+  template/stacks/*/validate-name          # CI lints first, with shellcheck 0.11.0
 ```
 
 The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
 `scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
-that need gitleaks are skipped locally when it is missing; CI installs it and treats skips as
-failures. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
-`willtraweek/vibe-starter`.
+that need gitleaks or uv are skipped locally when it is missing; CI installs both and treats
+skips as failures. The Python pack tests download Python 3.14 and a few PyPI packages into your
+normal uv cache on first run. CI runs it via `.github/workflows/template-selftest.yml`, which
+only runs on `willtraweek/vibe-starter`.
 
 ### Shipping with gstack
 
@@ -84,7 +115,10 @@ changes.
 
 ### Placeholders
 
-- `{{PROJECT_NAME}}` and `{{YEAR}}` are bootstrap-owned: `./bootstrap` replaces them.
+- `{{PROJECT_NAME}}` and `{{YEAR}}` are bootstrap-owned: `./bootstrap` replaces them (and
+  `{{PACKAGE_NAME}}` in stack-pack files). Stack-pack files under `template/stacks/` are not in
+  the golden inventory: a self-test checks they carry only those three tokens, and each pack's
+  end-to-end test checks a new project has none of the pack's command placeholders left.
 - Everything else is filled in by hand in the new project. The bootstrap checklist must name
   every file that still has one (`test_bootstrap_checklist_names_every_file_with_placeholders`).
 - After an intentional placeholder change, review the token diff, then print the inventory with

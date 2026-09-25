@@ -1,0 +1,40 @@
+# CI for {{PROJECT_NAME}} (vibe-starter python stack pack): guards, then tests
+# with the 90% line+branch coverage floor from TESTING.md.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+
+      - name: Install (Python from .python-version, locked dependencies)
+        run: uv sync --locked
+
+      - name: Checks (guards run before tests)
+        run: ./scripts/check.sh
+
+      - name: Tests with the coverage gates (90% line+branch floor, then per-tier)
+        run: ./scripts/coverage.sh
+
+      - name: Coverage tiers never slip (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          uv run --locked python scripts/coverage_tiers.py --ratchet "origin/$GITHUB_BASE_REF"

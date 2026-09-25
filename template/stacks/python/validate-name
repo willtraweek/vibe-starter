@@ -1,0 +1,48 @@
+#!/bin/sh
+# Reject package names a Python 3.14 project can't use, before bootstrap writes
+# anything. No Python needed. The human-facing name is preserved separately.
+# Hard keywords that can survive lowercase normalization:
+case "$1" in
+  and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield)
+    echo "Package name '$1' is a reserved Python identifier; choose another project name." >&2
+    exit 2 ;;
+esac
+# Names Python or uv claim: uv refuses console scripts named like the interpreter,
+# an `activate` script would overwrite the venv's own, and site imports
+# sitecustomize/usercustomize at startup, before coverage starts measuring.
+case "$1" in
+  python|python3|pythonw|activate|sitecustomize|usercustomize)
+    echo "Package name '$1' is reserved by Python or uv; choose another project name." >&2
+    exit 2 ;;
+esac
+# Top-level standard-library modules (Python 3.14's sys.stdlib_module_names, public
+# lowercase names) and the pack's own tools. The editable src/ path comes after both
+# on sys.path, so a package with one of these names is shadowed: the new project's
+# imports, CLI and tests break before its first commit.
+stdlib="abc annotationlib antigravity argparse array ast asyncio atexit base64 bdb binascii bisect
+builtins bz2 calendar cmath cmd code codecs codeop collections colorsys compileall compression
+concurrent configparser contextlib contextvars copy copyreg csv ctypes curses dataclasses
+datetime dbm decimal difflib dis doctest email encodings ensurepip enum errno faulthandler
+fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass
+gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib importlib inspect
+io ipaddress itertools json keyword linecache locale logging lzma mailbox marshal math
+mimetypes mmap modulefinder msvcrt multiprocessing netrc nt ntpath nturl2path numbers opcode
+operator optparse os pathlib pdb pickle pickletools pkgutil platform plistlib poplib posix
+posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri
+random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve
+shlex shutil signal site smtplib socket socketserver sqlite3 sre_compile sre_constants
+sre_parse ssl stat statistics string stringprep struct subprocess symtable sys sysconfig syslog
+tabnanny tarfile tempfile termios textwrap this threading time timeit tkinter token tokenize
+tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest
+urllib uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xml xmlrpc zipapp
+zipfile zipimport zlib zoneinfo"
+for taken in $stdlib colorama coverage hatchling iniconfig packaging pluggy py pygments pytest pytest_cov ruff ty; do
+  [ "$1" = "$taken" ] || continue
+  echo "Package name '$1' is taken by the Python standard library or the pack's tools; choose another project name." >&2
+  exit 2
+done
+# Names are substituted into Python source; longer ones break ruff's 100 columns.
+if [ ${#1} -gt 60 ] || [ ${#2} -gt 60 ]; then
+  echo "Project name is too long for the python stack pack (60 characters at most): '$2'" >&2
+  exit 2
+fi

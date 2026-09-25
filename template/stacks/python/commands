@@ -1,0 +1,10 @@
+# KEY=value lines. ./bootstrap --stack python replaces {{KEY}} and {{KEY: description}}
+# placeholders in the project's docs with these values.
+INSTALL_CMD=uv sync
+DEV_CMD=uv run {{PACKAGE_NAME}} --help
+BUILD_CMD=uv build
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=uv run pytest
+SHIP_GATE=./scripts/check.sh && ./scripts/coverage.sh
+STACK=Python 3.14 managed by uv; ruff (lint + format); ty (type checks); pytest with coverage.py branch coverage.
+COVERAGE_ENFORCEMENT=./scripts/coverage.sh: pytest --cov and coverage JSON, then scripts/coverage_tiers.py independently enforces 90% lines and 90% branches plus per-tier floors; explicit branchless and empty-tier policy, fail-closed in CI

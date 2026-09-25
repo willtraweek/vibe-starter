@@ -3,6 +3,33 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.1.0] - 2026-09-25
+
+### Added
+- `./bootstrap --stack python` starts a project ready to ship: Python 3.14 managed by uv, ruff for
+  lint and format, ty for type checks, and pytest. It has live CI from its first push, takes its
+  version from the `VERSION` file gstack `/ship` bumps, and has every command placeholder in its
+  docs filled in.
+- New Python projects enforce the testing doctrine's coverage gates. `./scripts/coverage.sh`
+  checks separate 90% line and branch floors plus per-tier minimums, and CI's ratchet stops a pull
+  request from lowering a floor or dropping a module from its tier. A rename or deletion goes
+  through the tier's `retired` list, so it shows up in review.
+- Stack packs are an opt-in mechanism in `template/stacks/<name>/`, so more languages can follow.
+  Without `--stack`, or with `--stack none`, a project stays stack-agnostic exactly as before; at
+  a terminal, bootstrap offers the available packs. Bad stack names and project names a Python
+  project can't use are rejected before anything changes, and a retried bootstrap finishes with
+  the pack the first attempt chose.
+- `scripts/check.sh` runs every guard in `scripts/check.d/`, so a project or a stack pack can add
+  its own pre-test checks.
+
+### Changed
+- Every workflow installs gitleaks through one pinned, checksum-verified action
+  (`.github/actions/install-gitleaks`), which new projects keep.
+- The template's CI installs a pinned uv and lints the stack packs' scripts, so every pull request
+  bootstraps a Python project and runs its checks, coverage gates and CI steps end to end.
+- `TEMPLATE.md` documents stack packs and how to add one.
+- Template maintenance: 35 new self-tests (143 in total), and the plan index marks plan 006 done.
+
 ## [0.0.5] - 2026-09-25
 
 ### Added

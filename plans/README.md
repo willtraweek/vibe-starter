@@ -16,7 +16,7 @@ deletes `plans/`, so none of this reaches projects created from the template.
 | [003](003-harden-bootstrap.md) | Harden `bootstrap`: remote-derived name, refuse to run on the template, strict args, worktree-aware git init | P1 | S | 001 | DONE (23 tests: the plan's 8 + 15 from review and /ship; landed before 002, so the suite is 11 + 23 = 34) |
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (28 tests: the plan's 10 + 12 from review + 6 from /ship; suite: 108 passed, 0 failed, 0 skipped) |
-| [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | TODO |
+| [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | DONE (35 tests: the plan's 8 + 5 from review + 22 from /ship; suite: 143 passed, 0 failed, 0 skipped) |
 | [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
@@ -50,6 +50,30 @@ Codex CLI 0.155.1 (`gpt-6-astra`) and Claude Code 2.1.281 (`claude-opus-5-5[1m]`
 confirming both companion reads and no loop or fixture changes. Claude's existing dual-file
 preload setting was excluded for the second invocation; global settings were not changed.
 No hosted CI run was performed. Full execution evidence is in plan 004.
+
+**Plan 006 implementation, 2026-09-25.** Baseline 108 (not the projected 90), so the plan's
+target was 116; review added 5 more tests (121), and /ship's review added 22 (143). Two predecessor tests were adapted, not
+dropped: plan 002's gitleaks drift test now checks that every workflow uses the shared
+`install-gitleaks` action, which step 3's extraction broke. Plan 005's strip-listing stub now
+fails only markdown listings, because stack discovery runs `find` first and made that test
+vacuous. Review fixes beyond the plan:
+- the Python pack rejects names the stdlib or its own tools would shadow (e.g. `calendar`,
+  `pytest`) and names over 60 characters;
+- `cli.py` keeps one argparse argument per line, and its `--version` output no longer wraps;
+- coverage counts untested namespace modules; `coverage_tiers.py` rejects an empty
+  `--ratchet` ref and fails cleanly on huge or deeply nested input;
+- adjacent `__package__` segments are all renamed; a retried stack bootstrap (LF or CRLF
+  `.gitignore`) matches a clean run.
+
+/ship's review (v0.1.0) added more pack hardening: names uv or Python reserve are rejected; a
+retried bootstrap keeps its first stack; the `.gitignore` swap keeps real rules; the ratchet
+passes a base that predates the pack and accepts a tier's `retired` list for reviewed renames.
+Master now has a ruleset requiring the `selftest` check before merge.
+
+Checks: the normal and `CI=true` suites pass, shellcheck and the YAML parse are clean, and the
+step-7 clone printed `demo_app 0.0.0`. The pins were checked upstream: setup-uv v10.2.0 at
+`c18668a`, uv 0.12.17, ruff 0.16.8, ty 0.0.83. Local uv is 0.11.6. No GitHub Actions run has
+happened yet.
 
 The rehearsal counts below describe earlier plan versions and are historical evidence only.
 
