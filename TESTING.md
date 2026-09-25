@@ -19,6 +19,11 @@ Fill these in as soon as a stack exists so agents and workflow skills can discov
 - Checks (guards that run before tests): `{{CHECK_CMD}}`
 - Tests: `{{TEST_CMD}}`
 
+<!-- template-only:start -->
+**Testing the template itself:** the test command is `./scripts/template-selftest.sh` and the
+checks are `./scripts/check.sh`. gstack's `/ship` reads this block. `./bootstrap` removes it.
+<!-- template-only:end -->
+
 ## Why Tiers, Not One Number
 
 Testing is the most-neglected part of vibe-coded projects, so the reflex is to over-correct
