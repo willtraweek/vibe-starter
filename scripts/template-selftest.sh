@@ -41,6 +41,12 @@ trap 'rm -rf "$WORK"' EXIT
 FILTER="${1:-}"
 PASS=0; FAIL=0; SKIP=0
 
+# Real tool homes, captured before any test sandboxes HOME (see stack_env).
+REAL_UV_CACHE_DIR="${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null || echo "$HOME/.cache/uv")}"
+REAL_UV_PYTHON_DIR="${UV_PYTHON_INSTALL_DIR:-$(uv python dir 2>/dev/null || echo "$HOME/.local/share/uv/python")}"
+REAL_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+REAL_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+
 # Hermetic git: ignore the user's global/system config (signing, hooks,
 # templates) and use a fixed identity for any test commits.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -1339,7 +1345,7 @@ placeholder_inventory() {  # "<file> <token count> <token sha256>" for each skel
   local f tokens n digest
   while IFS= read -r -d '' f; do
     case "$f" in
-      bootstrap|TEMPLATE.md|plans/*|scripts/template-selftest.sh) continue ;;
+      bootstrap|TEMPLATE.md|plans/*|scripts/template-selftest.sh|template/stacks/*) continue ;;
       .github/workflows/template-selftest.yml) continue ;;
       CHANGELOG.md|TODOS.md|VERSION) continue ;;  # template-owned: /ship writes them
     esac
@@ -1782,6 +1788,231 @@ test_bootstrap_marker_passes_skip_nested_checkouts() {
   printf '   <!-- template-only:start -->\n' > "$n/plans/example.md"
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   [ "$(cat "$n/AGENTS.md")" = "$want" ] || fail "the strip changed a nested checkout"
+}
+
+# --- tests: stack packs (plan 006) --------------------------------------------
+stack_env() {  # run "$@" with the real uv/cargo homes, so a sandboxed HOME doesn't
+  # force fresh downloads of Python, crates, or toolchains on every test run.
+  env UV_CACHE_DIR="$REAL_UV_CACHE_DIR" UV_PYTHON_INSTALL_DIR="$REAL_UV_PYTHON_DIR" \
+    CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" "$@"
+}
+py_tiers() {  # $1 = python-pack project dir, rest = coverage_tiers.py args -> "$1.tiers.out"
+  local dir="$1"; shift
+  (cd "$dir" && stack_env uv run --locked --quiet python scripts/coverage_tiers.py "$@" >"$dir.tiers.out" 2>&1)
+}
+test_bootstrap_rejects_unknown_stack() {
+  local d="$WORK/stack-unknown/proj" before rc
+  fresh_copy "$d"
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name proj --stack cobol --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "Unknown stack 'cobol'" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "files changed despite the rejection"
+}
+test_stack_needs_a_letter_first_name() {
+  local d="$WORK/stack-digit/proj" rc
+  fresh_copy "$d"
+  run_bootstrap "$d" --name 1up --stack python --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "must start with a letter"
+}
+test_bootstrap_without_stack_directory_stays_stack_agnostic() {
+  local d="$WORK/no-stack-directory/proj"
+  fresh_copy "$d"
+  rm -rf "$d/template/stacks"
+  run_bootstrap "$d" --name proj --yes || fail "no-pack bootstrap exited $?" || return 1
+  assert_contains "$d.out" "Then choose a stack" || return 1
+  assert_absent "$d/pyproject.toml"
+}
+test_stack_python_rejects_keywords_before_mutation() {
+  local d name before rc
+  for name in class Async await; do
+    d="$WORK/stack-keyword-$name/proj"
+    fresh_copy "$d"
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name "$name" --stack python --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "reserved Python identifier" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "keyword rejection changed files" || return 1
+  done
+}
+test_bootstrap_without_stack_stays_stack_agnostic() {
+  local d="$WORK/no-stack/proj"
+  fresh_copy "$d"
+  run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?" || return 1
+  assert_exists "$d/.github/workflows/ci.yml.example" || return 1
+  assert_absent "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/pyproject.toml" || return 1
+  assert_absent "$d/Cargo.toml" || return 1
+  assert_contains "$d/.gitignore" "# Language sections" || return 1
+  assert_contains "$d/CLAUDE.md" "This template is stack-agnostic" || return 1
+  assert_contains "$d.out" "Then choose a stack"
+}
+test_stack_pack_mechanism_with_a_fixture_pack() {
+  # Exercises every step of pack application with a synthetic pack, so the
+  # mechanism is covered even where uv/cargo are not installed.
+  local d="$WORK/stack-fixture/demo" p
+  fresh_copy "$d"
+  p="$d/template/stacks/fixture"
+  mkdir -p "$p/files/src/__package__" "$p/files/.github/workflows"
+  printf 'package={{PACKAGE_NAME}} project={{PROJECT_NAME}}\n' > "$p/files/src/__package__/hello.txt"
+  printf 'name: ci\n' > "$p/files/.github/workflows/ci.yml"
+  printf '# comment line\nTEST_CMD=fixture-test --all\nINSTALL_CMD=fixture-install\nSTACK=Fixture stack\n' > "$p/commands"
+  printf '# --- Fixture ---\nfixture-out/\n' > "$p/gitignore"
+  printf '#!/bin/sh\ntouch after-bootstrap-ran\n' > "$p/after-bootstrap"
+  run_bootstrap "$d" --name "Demo Thing" --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/src/demo_thing/hello.txt" "package=demo_thing project=Demo Thing" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`fixture-test --all\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`fixture-test --all\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`fixture-install\`" || return 1
+  assert_contains "$d/AGENTS.md" "Install deps: \`fixture-install\`" || return 1
+  assert_contains "$d/README.md" "Fixture stack" || return 1
+  assert_not_contains "$d/CLAUDE.md" "This template is stack-agnostic" || return 1
+  assert_not_contains "$d/.gitignore" "# Language sections" || return 1
+  assert_contains "$d/.gitignore" "fixture-out/" || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_exists "$d/after-bootstrap-ran" || return 1
+  assert_contains "$d/.bootstrapped" "with the fixture stack pack" || return 1
+  assert_contains "$d.out" "Stack pack: fixture."
+}
+test_stack_python_coverage_tiers_fail_closed() {
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-tiers/demo" rc
+  fresh_copy "$d"
+  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name demo --stack python --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  # 1. An include that is not a file fails --validate.
+  perl -pi -e 's|include = \[\]|include = ["src/demo/missing.py"]|' "$d/pyproject.toml"
+  py_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "is not a file" || return 1
+  (cd "$d" && git checkout -q pyproject.toml)
+  # 2. Below the minimum, 3. missing from the report, 4. no branch data: all fail --check.
+  printf '%s' '{"meta": {"branch_coverage": true}, "totals": {"covered_lines": 5, "num_statements": 10, "covered_branches": 0, "num_branches": 0}, "files": {"src/demo/cli.py": {"summary": {"covered_lines": 5, "num_statements": 10, "covered_branches": 0, "num_branches": 0}}}}' > "$d/coverage.json"
+  py_tiers "$d" --check; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "below its minimum" || return 1
+  printf '%s' '{"meta": {"branch_coverage": false}, "totals": {"covered_lines": 1, "num_statements": 1, "covered_branches": 0, "num_branches": 0}, "files": {"src/demo/other.py": {"summary": {"covered_lines": 1, "num_statements": 1, "covered_branches": 0, "num_branches": 0}}}}' > "$d/coverage.json"
+  py_tiers "$d" --check; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "no branch data" || return 1
+  assert_contains "$d.tiers.out" "not in the coverage report" || return 1
+  # 5. Lowering a minimum fails --ratchet against the committed state.
+  perl -0pi -e 's/(\[tool\.coverage_tiers\.api_surface\]\ntitle = "[^"]*"\ntarget = 100\.0\n)minimum = 100\.0/${1}minimum = 90.0/' "$d/pyproject.toml"
+  py_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "minimum lowered from 100.0 to 90.0" || return 1
+  (cd "$d" && git checkout -q pyproject.toml)
+  # Independent dimensions, schema rejection, branchless/empty policy, and membership.
+  (cd "$d" && stack_env uv run --locked --quiet python - "$d" >"$d.tiers.out" 2>&1 <<'PYPROBE'
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("tiers", root / "scripts/coverage_tiers.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+config = module.load_tiers()
+
+def summary(lines=10, line_hits=10, branches=0, branch_hits=0):
+    return dict(num_statements=lines, covered_lines=line_hits,
+                num_branches=branches, covered_branches=branch_hits)
+
+def report(cli=None, extra=None):
+    files = {"src/demo/cli.py": {"summary": cli or summary()}}
+    if extra is not None:
+        files["src/demo/outside_tier.py"] = {"summary": extra}
+    return dict(meta={"branch_coverage": True}, files=files,
+                totals={key: sum(entry["summary"][key] for entry in files.values())
+                        for key in module.COUNTERS})
+
+def run(data, expected, text="", mode="--check"):
+    (root / "coverage.json").write_text(json.dumps(data))
+    result = subprocess.run([sys.executable, "scripts/coverage_tiers.py", mode],
+                            cwd=root, text=True, capture_output=True)
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert text in result.stdout + result.stderr, result.stdout + result.stderr
+
+run(report(), 0)  # Positive lines with measured zero branches is deliberately branchless.
+run(report(extra=summary(100, 100, 20, 8)), 1, "global: branch")
+run(report(extra=summary(100, 40, 20, 20)), 1, "global: line")
+run(report(cli=summary(100, 100, 20, 8), extra=summary(1000, 1000, 200, 200)),
+    1, "api_surface: branch")
+run(report(cli=summary(100, 40, 20, 20), extra=summary(1000, 1000, 200, 200)),
+    1, "api_surface: line")
+for mutation in (
+    lambda data: data["files"]["src/demo/cli.py"]["summary"].pop("covered_branches"),
+    lambda data: data["files"]["src/demo/cli.py"].update(summary={}),
+    lambda data: data.update(totals={}),
+    lambda data: data["totals"].update(covered_lines=True),
+    lambda data: data["totals"].update(num_statements=-1),
+    lambda data: data["totals"].update(covered_lines=11),
+    lambda data: data["totals"].update(num_statements=11),
+    lambda data: data.update(meta={"branch_coverage": False}),
+    lambda data: data.update(files={}),
+):
+    data = report()
+    mutation(data)
+    run(data, 1)
+    run(data, 1, mode="--report")  # Invalid inputs cannot produce a success snapshot.
+run(report(cli=summary(0, 0)), 1, "no measurable statements")
+run(report(cli=summary(0, 0), extra=summary()), 1, "no measurable statements")
+data = report(extra=summary())
+data["files"]["src/demo/renamed.py"] = data["files"].pop("src/demo/cli.py")
+run(data, 1, "not in the coverage report")
+for field, value in (
+    ("minimum", True), ("minimum", float("nan")), ("target", float("inf")),
+    ("include", "src/demo/cli.py"), ("include", ["src/demo/cli.py"] * 2),
+    ("include", ["src/demo/../demo/cli.py"]), ("include", ["/tmp/foreign.py"]),
+    ("include", []), ("allow_empty", "true"), ("title", 1),
+):
+    bad = copy.deepcopy(config)
+    bad["api_surface"][field] = value
+    assert module.validate(bad), (field, value)
+assert module.validate({})
+assert module.validate({"broken": []})
+original = (root / "pyproject.toml").read_text()
+try:
+    # The explicit empty-tier opt-in must not bypass historical membership.
+    changed = original.replace('include = ["src/demo/cli.py"]',
+                               'include = []\nallow_empty = true')
+    assert changed != original
+    (root / "pyproject.toml").write_text(changed)
+    result = subprocess.run([sys.executable, "scripts/coverage_tiers.py", "--ratchet", "HEAD"],
+                            cwd=root, capture_output=True, text=True)
+    assert result.returncode == 1 and "existing members removed" in result.stderr, result
+finally:
+    (root / "pyproject.toml").write_text(original)
+print("coverage schema, separate floors, branchless policy, and membership probes passed")
+PYPROBE
+  ) || fail "coverage adversarial probes failed: $(tail -25 "$d.tiers.out")"
+}
+test_stack_python_project_is_green_on_first_run() {
+  command -v uv >/dev/null 2>&1 || { skip "uv not installed"; return; }
+  local d="$WORK/stack-python/demo-app"
+  fresh_copy "$d"
+  (cd "$d" && HOME="$WORK/home" stack_env ./bootstrap --name "Demo App" --stack python --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d/pyproject.toml" 'name = "demo_app"' || return 1
+  assert_exists "$d/src/demo_app/cli.py" || return 1
+  assert_exists "$d/uv.lock" || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_absent "$d/template" || return 1
+  assert_contains "$d/.bootstrapped" "with the python stack pack" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`uv run pytest\`" || return 1
+  assert_tree_lacks "$d" '{{TEST_CMD' || return 1
+  assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
+  (cd "$d" && git add -A && git commit -qm init \
+    && stack_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
+    && stack_env ./scripts/coverage.sh) >"$d.gate.out" 2>&1 \
+    || fail "the new project's own gate failed: $(tail -25 "$d.gate.out")"
 }
 
 # --- runner -------------------------------------------------------------------
