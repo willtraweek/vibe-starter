@@ -135,14 +135,14 @@ After revised plans 001–006, verify these contracts before editing:
 - `scripts/template-selftest.sh` has `stack_env`, captures `REAL_CARGO_HOME`/`REAL_RUSTUP_HOME`,
   and excludes `template/stacks/*` from ordinary project placeholder inventory.
 - Record `grep -c '^test_[A-Za-z0-9_]*()' scripts/template-selftest.sh` before Step 1. This plan
-  adds six test functions; the full suite must discover baseline + 6, with zero failures.
+  adds nine test functions; the full suite must discover baseline + 9, with zero failures.
 
 ## Commands you will need
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Self-test | `./scripts/template-selftest.sh` | baseline + 6 discovered; zero failures; zero skips in fully provisioned CI |
-| Rust tests only | `./scripts/template-selftest.sh stack_rust` | 6 tests; log named skips for unavailable local tools |
+| Self-test | `./scripts/template-selftest.sh` | baseline + 9 discovered; zero failures; zero skips in fully provisioned CI |
+| Rust tests only | `./scripts/template-selftest.sh stack_rust` | 9 tests; log named skips for unavailable local tools |
 | Shell lint | `shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name` | exit 0 |
 | YAML | `ruby -ryaml -e 'ARGV.each(&YAML.method(:load_file))' .github/workflows/template-selftest.yml template/stacks/rust/files/.github/workflows/ci.yml` | exit 0 |
 | Tools | `rustup run "${SELFTEST_RUST_TOOLCHAIN:-stable}" cargo --version && jq --version` | both print a version |
@@ -357,6 +357,58 @@ test_stack_rust_reserved_name_fails_before_writes() {
     rm -rf "$d"
   done
 }
+test_stack_rust_packs_keep_names_out_of_doc_comments() {
+  # clippy's pedantic doc_markdown (warnings are errors) rejects a name like MyApp
+  # or my_tool in a doc comment, so no Rust pack puts the project's name in one.
+  local hits
+  hits="$(cd "$REPO" && grep -rnE '^[[:space:]]*//[/!].*\{\{(PROJECT_NAME|PACKAGE_NAME)\}\}' \
+    --include='*.rs' template/stacks || true)"
+  [ -z "$hits" ] || fail "a project name in a Rust doc comment: $hits"
+}
+test_stack_rust_after_bootstrap_formats_before_locking() {
+  # The name changes the starter's line lengths, so the hook formats before it
+  # locks, and without cargo it names both steps. The stub cargo fails and logs
+  # its calls, so no toolchain or network is needed.
+  local d="$WORK/stack-rust-hook/demo-app" rc
+  mkdir -p "$d.stub" "$d.empty" || return 1
+  cat > "$d.stub/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$d.cargo-calls"
+exit 101
+STUB
+  chmod +x "$d.stub/cargo" || return 1
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --offline --quiet')" ] \
+    || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  (cd "$d.empty" && PATH="$d.empty" /bin/sh "$REPO/template/stacks/rust/after-bootstrap") >"$d.hook" 2>&1; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.hook" "run 'cargo fmt --all && cargo generate-lockfile'"
+}
+test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
+  # A project's first PR into a protected default branch compares against the
+  # template commit: no Cargo.toml, or one without tiers, is nothing to ratchet,
+  # as for the python pack. An unknown ref or an unreadable base still fails.
+  local d="$WORK/stack-rust-ratchet-nobase/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w README.md)" | git mktree)")" \
+    && git branch -f broken "$(git commit-tree -m broken "$(printf '100644 blob %s\tCargo.toml\n' "$(printf 'not [valid toml\n' | git hash-object -w --stdin)" | git mktree)")") \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet prepack || fail "a base without Cargo.toml failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no Cargo.toml at prepack; nothing to ratchet against" || return 1
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\..*//s' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'no tiers' && git branch -f notiers && git reset -q --hard HEAD~1) \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet notiers || fail "a base without tiers failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no coverage tiers at notiers; nothing to ratchet against" || return 1
+  rs_tiers "$d" --ratchet no-such-ref; rc=$?
+  assert_exit 1 "$rc" || return 1
+  rs_tiers "$d" --ratchet broken; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tiers"
+}
 ```
 
 **Verify**: shellcheck passes. Run `./scripts/template-selftest.sh stack_rust` and record
@@ -493,7 +545,7 @@ style_edition = "2024"
 `template/stacks/rust/files/src/lib.rs`:
 
 ```rust
-//! {{PROJECT_NAME}}.
+//! The command line's logic; `main.rs` only runs it.
 
 /// The project version, from the root `VERSION` file. gstack `/ship` bumps that
 /// file; `Cargo.toml` keeps `0.0.0` so `Cargo.lock` never churns.
@@ -520,7 +572,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
 `template/stacks/rust/files/src/main.rs`:
 
 ```rust
-//! Command-line entry point: the machine contract for {{PROJECT_NAME}} (DOCTRINE.md §3).
+//! Command-line entry point: the machine contract (DOCTRINE.md §3).
 
 use std::process::ExitCode;
 
@@ -738,10 +790,18 @@ case "$mode" in
     fi ;;
   --ratchet)
     base="$(git rev-parse --verify "${2}^{commit}")" || fail "cannot resolve base $2"
+    # A base from before the pack (a new project's first pull request) has nothing
+    # to ratchet against. An unreadable tree or unreadable metadata still fails.
+    if ! git cat-file -e "$base:Cargo.toml" 2>/dev/null; then
+      echo "coverage-tiers: no Cargo.toml at $2; nothing to ratchet against"; exit 0
+    fi
     old_dir="$(mktemp -d)"; trap 'rm -rf "$old_dir"' EXIT
     # Restore the complete base tree so metadata sees its actual targets/paths.
     git archive "$base" | tar -x -C "$old_dir" || fail "cannot read base tree"
-    old="$(tiers_of "$old_dir/Cargo.toml")" || fail "cannot read base tiers"
+    # tiers_of prints null (and fails) only when the base package has no tiers.
+    old="$(tiers_of "$old_dir/Cargo.toml")" || {
+      [ "$old" = null ] || fail "cannot read base tiers"
+      echo "coverage-tiers: no coverage tiers at $2; nothing to ratchet against"; exit 0; }
     (cd "$old_dir" && validate "$old") || fail "invalid base tiers"
     errors="$(jq -r --argjson new "$tiers" 'to_entries[] | .key as $k |
       if $new[$k] == null then "\($k): tier removed since the base"
@@ -812,7 +872,7 @@ jobs:
           ./scripts/coverage_tiers.sh --ratchet "origin/$GITHUB_BASE_REF"
 ```
 
-**Verify**: shell lint passes. Run all six `stack_rust` tests: zero failures, with any missing
+**Verify**: shell lint passes. Run all nine `stack_rust` tests: zero failures, with any missing
 local tool skips named explicitly. The generated CLI has five contract tests, including help
 and the explicit policy that more than one argument fails with exit 2 and no stdout.
 
@@ -932,7 +992,7 @@ Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floo
 ### Step 6: Full verification and a manual look
 
 ```sh
-./scripts/template-selftest.sh             # baseline + 6 discovered; zero failures
+./scripts/template-selftest.sh             # baseline + 9 discovered; zero failures
 ./scripts/check.sh                         # exit 0
 ```
 
@@ -982,7 +1042,7 @@ without `--install` requires an existing toolchain and applies its override to b
 
 ALL must hold:
 
-- [ ] Full self-test discovers preflight baseline + 6 tests and has zero failures; every local
+- [ ] Full self-test discovers preflight baseline + 9 tests and has zero failures; every local
       skip is named, and fully provisioned CI has zero skips
 - [ ] All five generated CLI tests pass on the selected installed toolchain
 - [ ] Both shell-lint and YAML commands pass; predecessor workflow guards remain intact

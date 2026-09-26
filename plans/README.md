@@ -7,7 +7,8 @@ executor: read the plan fully before starting, honor its STOP conditions, and up
 done.
 
 These plans are for maintaining the **template itself**. After plan 001 lands, `./bootstrap`
-deletes `plans/`, so none of this reaches projects created from the template.
+deletes `plans/` from new projects' working trees; a repo made with **Use this template** still
+has it in its initial commit (see `TEMPLATE.md`).
 
 ## Execution order & status
 
@@ -27,7 +28,7 @@ deletes `plans/`, so none of this reaches projects created from the template.
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 Current suite after 001–006: **143 tests** (live). Projected totals for the remaining plans:
-007 → **149**, 008 → **158**, 009 → **166**, 010 → **172** (the last three include 1, 2 and 3
+007 → **152**, 008 → **161**, 009 → **169**, 010 → **175** (the last three include 1, 2 and 3
 heavy tests). These totals are execution targets, not results of a new sequential rehearsal.
 Python tests need uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully
 provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
@@ -103,8 +104,9 @@ Evidence gathered while planning (research notes and prototypes are in the plann
   only skip was cargo-llvm-cov, not installed there) and the heavy test on Linux; after 009, 163
   passed, and both heavy tests and all six rust-pack tests passed on Linux; after 010, 168 passed
   on macOS (3 heavy tests excluded) and the plugin's heavy test passed on Linux.
-- Projected suite, from the live 143 plus 007's 6: 008 → 158 (157 in `selftest`, 1 heavy),
-  009 → 166 (164 + 2), 010 → 172 (169 + 3). Use the live predecessor baseline, as before.
+- Projected suite, from the live 143 plus 007's 9 (6 as first planned, 3 from the pre-landing
+  review): 008 → 161 (160 in `selftest`, 1 heavy), 009 → 169 (167 + 2), 010 → 175 (172 + 3).
+  The rehearsal counts above predate those 3. Use the live predecessor baseline, as before.
 - No GitHub Actions run has happened for any of this.
 
 Two planning findings changed other plans:
@@ -124,8 +126,12 @@ Open decisions for the maintainer (the plans document them; neither blocks execu
 
 **Pre-landing review, 2026-09-26.** gstack `/ship` reviewed these plans (testing,
 maintainability and simplification specialists, a red team, a Claude adversarial pass, and Codex
-adversarial and structured passes). Each correction below was checked before it went in, and none
-changes a test count:
+adversarial and structured passes). Each correction below was checked before it went in; only
+007's three new tests change a count:
+- 007: the starter keeps the project's name out of doc comments (clippy's pedantic `doc_markdown`
+  failed `MyApp` and `my_tool`), and the ratchet passes a base that predates the pack, as the
+  python pack's does, while an unknown ref or unreadable base still fails. New tests cover both,
+  and the `cargo fmt` amendment gets a call-order test. 007 is now baseline + 9.
 - 010: the guard scans QML with its folders kept, and hands Omarchy's validator links as links.
   Before, same-named files overwrote each other and a directory or dangling symlink was dropped,
   so either could pass; both false passes reproduced with Omarchy's validator and scanner at
@@ -280,6 +286,8 @@ by host and keep the shared test command in `TESTING.md`.
 | D2 | Opt-in stack packs: you asked for Python (Astral: uv, ruff, ty) and Rust defaults | — | 006, 007 |
 | D3 | Omarchy apps and plugins as stacks, chosen by what the app should do | — | 008, 009, 010 |
 | F11 | The rust pack's starter fails `cargo fmt --check` for long package names | Med | 007 (amended) |
+| F12 | The rust pack's starter fails clippy's `doc_markdown` for names like `MyApp` or `my_tool` | High | 007 (amended) |
+| F13 | The Rust ratchet fails a first pull request whose base predates the pack | High | 007 (amended) |
 
 ## Direction (not planned; recorded as backlog in the template's own `TODOS.md` by plan 005)
 
