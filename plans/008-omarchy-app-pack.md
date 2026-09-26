@@ -109,6 +109,8 @@ After this plan:
   `cargo fmt --all` first (it works offline, before any lockfile), then
   `cargo generate-lockfile` (network). Verified for both names, and for `MyApp` (a CamelCase
   name in a doc comment would trip clippy's `doc_markdown`, so names appear only in strings).
+  Code names its own crate `::{{PACKAGE_NAME}}::…`, so a project named like one of its modules
+  or imports (`app`, `cli`) still compiles; the heavy test checks those names.
 - **Desktop integration uses stable surfaces only.** `APP_ID` (the package name) is the Wayland
   app id, which Hyprland reports as the window class; the desktop entry's `StartupWMClass`, the
   installed binary and the icon share it, and a named test keeps them in step. `install.sh`
@@ -461,7 +463,7 @@ test_heavy_stack_omarchy_app_project_is_green() {
   # The whole new-project gate, for real: bootstrap (its hook formats the code and
   # locks GPUI's crates from crates.io), then the project's own check.sh,
   # coverage.sh and ratchet. A long name, because rustfmt's layout depends on it.
-  local d="$WORK/heavy-omarchy-app/omarchy-disk-usage-explorer" why target
+  local d="$WORK/heavy-omarchy-app/omarchy-disk-usage-explorer" why target name
   why="$(omarchy_app_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   fresh_copy "$d" || return 1
@@ -484,6 +486,14 @@ test_heavy_stack_omarchy_app_project_is_green() {
       fail "a desktop entry without Type= passed the guard" || return 1
     fi
   fi
+  # A project named like one of the starter's modules or imports still compiles,
+  # tests included: the code names its own crate ::name::.
+  for name in app cli model; do
+    fresh_copy "$d.$name" || return 1
+    (cd "$d.$name" && HOME="$WORK/home" rust_env ./bootstrap --name "$name" --stack omarchy-app --yes </dev/null \
+      && CARGO_TARGET_DIR="$target" rust_env cargo clippy --locked --all-targets --all-features -- -D warnings) \
+      >"$d.$name.out" 2>&1 || fail "a project named $name does not compile: $(tail -20 "$d.$name.out")" || return 1
+  done
 }
 ```
 
@@ -1075,7 +1085,7 @@ impl Render for MainWindow {
 
 use std::process::ExitCode;
 
-use {{PACKAGE_NAME}}::cli::{self, Command};
+use ::{{PACKAGE_NAME}}::cli::{self, Command};
 use gpui_kit::assets::Assets;
 
 fn main() -> ExitCode {
@@ -1090,7 +1100,7 @@ fn main() -> ExitCode {
             // platform's event loop until the window closes.
             gpui_kit::application()
                 .with_assets(Assets)
-                .run({{PACKAGE_NAME}}::app::start);
+                .run(::{{PACKAGE_NAME}}::app::start);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -1134,7 +1144,7 @@ fn version_flag_prints_the_version_file_and_exits_zero() {
 fn help_flag_prints_usage_and_exits_zero() {
     let out = cli(&["--help"]);
     assert!(out.status.success());
-    assert_eq!(out.stdout, {{PACKAGE_NAME}}::cli::USAGE.as_bytes());
+    assert_eq!(out.stdout, ::{{PACKAGE_NAME}}::cli::USAGE.as_bytes());
     assert!(out.stderr.is_empty());
 }
 
@@ -1159,7 +1169,7 @@ fn surplus_arguments_exit_two_on_stderr() {
 #[test]
 fn no_arguments_means_open_the_window() {
     // Asserted on the parser: the binary would open a real window here.
-    assert_eq!({{PACKAGE_NAME}}::cli::parse(&[]), Ok({{PACKAGE_NAME}}::cli::Command::Open));
+    assert_eq!(::{{PACKAGE_NAME}}::cli::parse(&[]), Ok(::{{PACKAGE_NAME}}::cli::Command::Open));
 }
 ```
 
@@ -1168,7 +1178,7 @@ fn no_arguments_means_open_the_window() {
 ```rust
 //! Pure-logic tests (TESTING.md tier 1): every rule of the window's state.
 
-use {{PACKAGE_NAME}}::model::Counter;
+use ::{{PACKAGE_NAME}}::model::Counter;
 
 #[test]
 fn a_new_counter_starts_at_zero() {
@@ -1207,7 +1217,7 @@ fn reset_goes_back_to_zero() {
 //! The main window through GPUI's test harness (TESTING.md tier 3): real
 //! frames and real key presses, with no display or GPU.
 
-use {{PACKAGE_NAME}}::app::{self, MainWindow};
+use ::{{PACKAGE_NAME}}::app::{self, MainWindow};
 use gpui_kit::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use gpui_omarchy::Theme;
 
@@ -1273,7 +1283,7 @@ fn starting_opens_one_focused_window_under_the_app_id(cx: &mut TestAppContext) {
     // Hyprland window rules and the desktop entry match this class.
     assert_eq!(
         app::window_options().app_id.as_deref(),
-        Some({{PACKAGE_NAME}}::APP_ID)
+        Some(::{{PACKAGE_NAME}}::APP_ID)
     );
 }
 ```
@@ -1293,7 +1303,7 @@ fn entry() -> String {
 #[test]
 fn the_desktop_entry_names_the_app_id_everywhere() {
     let entry = entry();
-    let id = {{PACKAGE_NAME}}::APP_ID;
+    let id = ::{{PACKAGE_NAME}}::APP_ID;
     for line in [
         format!("Exec=\"@BINDIR@/{id}\""),
         format!("Icon={id}"),
@@ -1801,7 +1811,8 @@ Eight new test functions, one heavy test, and one adapted predecessor test:
 - `test_stack_omarchy_app_shares_the_rust_packs_gates`: the five shared files are byte-identical.
 - `test_heavy_stack_omarchy_app_project_is_green` (heavy job): a real bootstrap (hook formats
   and locks), then the project's own `check.sh`, `coverage.sh` and ratchet, then a broken
-  desktop entry fails the guard.
+  desktop entry fails the guard, and projects named `app`, `cli` and `model` pass clippy on
+  every target.
 
 The generated project's own tests: 5 CLI tests through the binary, 4 pure-logic tests, 4
 window-harness tests and 1 desktop-entry invariant. All were rehearsed while planning:

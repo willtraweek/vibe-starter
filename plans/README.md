@@ -148,6 +148,12 @@ adversarial and structured passes). Each correction below was checked before it 
 - 008: the `CHECK_CI` test no longer passes on GitHub's own `CI=true`, the harness unsets
   `install.sh`'s overrides, `install.sh --help` works from any directory, and the guides say to
   build as yourself before a system-wide `sudo … --no-build` install.
+- 008 and 009: the starters name their own crate `::{{PACKAGE_NAME}}::…`. Before, a project named
+  like one of their modules or imports (`app`, `cli`; `cli`, `event`, `io`, `view`) passed
+  `validate-name` and then failed to compile; each heavy test now builds those names.
+- 010: the plugin's `INSTALL_CMD`, which AGENTS.md's setup step runs, is `./scripts/omarchy-kit`
+  (it fetches Omarchy's pinned tools, with no desktop side effects). `./scripts/dev-link.sh`,
+  which loads the checkout into the live bar, is `DEV_CMD`, run on purpose.
 
 The rehearsal counts below describe earlier plan versions and are historical evidence only.
 

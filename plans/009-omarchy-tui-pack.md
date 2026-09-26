@@ -95,7 +95,9 @@ After this plan:
   move to `_rust-gates/validate-name`; each Rust pack's `validate-name` delegates to it.
 - **Formatting follows the name, for every Rust pack.** Plan 007 was amended on 2026-09-25 so the
   rust pack's `after-bootstrap` runs `cargo fmt --all` before locking (a 52-character name
-  failed `cargo fmt --check` otherwise). This pack's hook does the same.
+  failed `cargo fmt --check` otherwise). This pack's hook does the same. Code names its own
+  crate `::{{PACKAGE_NAME}}::…`, so a project named like one of its modules or imports (`cli`,
+  `event`, `io`, `view`) still compiles; the heavy test checks those names.
 - **Heavy, not slim.** The TUI's end-to-end test builds a real project and runs it in a
   pseudo-terminal, so it's a `test_heavy_*` test in 008's `heavy` job (which already has the
   toolchain, cargo-llvm-cov, desktop-file-utils and python3).
@@ -354,7 +356,7 @@ test_heavy_stack_omarchy_tui_project_is_green() {
   # The whole new-project gate for real, then the real binary in a real
   # pseudo-terminal: it enters the alternate screen, `q` quits with exit 0, and
   # it restores the terminal.
-  local d="$WORK/heavy-omarchy-tui/omarchy-disk-usage-explorer" why target
+  local d="$WORK/heavy-omarchy-tui/omarchy-disk-usage-explorer" why target name
   why="$(omarchy_tui_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   fresh_copy "$d" || return 1
@@ -369,7 +371,7 @@ test_heavy_stack_omarchy_tui_project_is_green() {
     && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage_tiers.sh --ratchet HEAD \
     && CARGO_TARGET_DIR="$target" rust_env cargo build --locked -q) \
     >"$d.gate.out" 2>&1 || fail "the new project's gate failed: $(tail -30 "$d.gate.out")" || return 1
-  python3 - "$target/debug/omarchy_disk_usage_explorer" >"$d.pty.out" 2>&1 <<'PY' || fail "the real terminal run failed: $(tail -5 "$d.pty.out")"
+  python3 - "$target/debug/omarchy_disk_usage_explorer" >"$d.pty.out" 2>&1 <<'PY' || fail "the real terminal run failed: $(tail -5 "$d.pty.out")" || return 1
 import fcntl, os, pty, select, struct, sys, termios, time
 pid, fd = pty.fork()
 if pid == 0:
@@ -398,6 +400,14 @@ assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, status
 assert b"\x1b[?1049l" in out, "the terminal was not restored"
 print("entered and left the alternate screen; exit 0")
 PY
+  # A project named like one of the starter's modules or imports still compiles,
+  # tests included: the code names its own crate ::name::.
+  for name in app cli event io model view; do
+    fresh_copy "$d.$name" || return 1
+    (cd "$d.$name" && HOME="$WORK/home" rust_env ./bootstrap --name "$name" --stack omarchy-tui --yes </dev/null \
+      && CARGO_TARGET_DIR="$target" rust_env cargo clippy --locked --all-targets --all-features -- -D warnings) \
+      >"$d.$name.out" 2>&1 || fail "a project named $name does not compile: $(tail -20 "$d.$name.out")" || return 1
+  done
 }
 ```
 
@@ -1005,7 +1015,7 @@ pub const APP_ID: &str = "{{PACKAGE_NAME}}";
 
 use std::process::ExitCode;
 
-use {{PACKAGE_NAME}}::cli::{self, Command};
+use ::{{PACKAGE_NAME}}::cli::{self, Command};
 use ratatui::crossterm::event;
 
 fn main() -> ExitCode {
@@ -1018,7 +1028,7 @@ fn main() -> ExitCode {
         Ok(Command::Open) => {
             // The one path no test runs: the real terminal and its real keys.
             let events = std::iter::repeat_with(event::read);
-            match ratatui::run(|terminal| {{PACKAGE_NAME}}::app::run(terminal, events)) {
+            match ratatui::run(|terminal| ::{{PACKAGE_NAME}}::app::run(terminal, events)) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(err) => {
                     eprintln!("error: {err}");
@@ -1169,7 +1179,7 @@ pub fn render(model: Model, frame: &mut Frame) {
 
 use std::io;
 
-use {{PACKAGE_NAME}}::app;
+use ::{{PACKAGE_NAME}}::app;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Cell;
@@ -1272,7 +1282,7 @@ fn version_flag_prints_the_version_file_and_exits_zero() {
 fn help_flag_prints_usage_and_exits_zero() {
     let out = cli(&["--help"]);
     assert!(out.status.success());
-    assert_eq!(out.stdout, {{PACKAGE_NAME}}::cli::USAGE.as_bytes());
+    assert_eq!(out.stdout, ::{{PACKAGE_NAME}}::cli::USAGE.as_bytes());
     assert!(out.stderr.is_empty());
 }
 
@@ -1297,7 +1307,7 @@ fn surplus_arguments_exit_two_on_stderr() {
 #[test]
 fn no_arguments_means_run_the_app() {
     // Asserted on the parser: the binary would take over this terminal.
-    assert_eq!({{PACKAGE_NAME}}::cli::parse(&[]), Ok({{PACKAGE_NAME}}::cli::Command::Open));
+    assert_eq!(::{{PACKAGE_NAME}}::cli::parse(&[]), Ok(::{{PACKAGE_NAME}}::cli::Command::Open));
 }
 ```
 
@@ -1312,7 +1322,7 @@ fn no_arguments_means_run_the_app() {
 fn the_desktop_entry_launches_the_binary_in_a_floating_terminal() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/app.desktop.in");
     let entry = std::fs::read_to_string(path).expect("packaging/app.desktop.in exists");
-    let id = {{PACKAGE_NAME}}::APP_ID;
+    let id = ::{{PACKAGE_NAME}}::APP_ID;
     for line in [
         format!("Exec=xdg-terminal-exec --app-id=TUI.float -e \"@BINDIR@/{id}\""),
         format!("Icon={id}"),
@@ -1328,7 +1338,7 @@ fn the_desktop_entry_launches_the_binary_in_a_floating_terminal() {
 ```rust
 //! Pure-logic tests (TESTING.md tier 1): the key map and every state change.
 
-use {{PACKAGE_NAME}}::model::{Action, Model, action_for};
+use ::{{PACKAGE_NAME}}::model::{Action, Model, action_for};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 fn press(code: KeyCode) -> KeyEvent {
@@ -1391,12 +1401,12 @@ fn reset_goes_to_zero_and_quit_is_remembered() {
 ```rust
 //! The screen (TESTING.md tier 3), drawn into ratatui's `TestBackend`.
 
+use ::{{PACKAGE_NAME}}::model::{Action, Model};
+use ::{{PACKAGE_NAME}}::view;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
-use {{PACKAGE_NAME}}::model::{Action, Model};
-use {{PACKAGE_NAME}}::view;
 
 fn draw(model: Model, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
@@ -1505,7 +1515,8 @@ Nine new test functions and two changes:
   `…_guard_refuses_rgb_and_256_colour_literals`: as for omarchy-app.
 - `test_heavy_stack_omarchy_tui_project_is_green` (heavy job): real bootstrap, `check.sh`,
   `coverage.sh`, ratchet, then the real binary in a 24×80 pseudo-terminal: it enters the
-  alternate screen, `q` exits 0, and it leaves the alternate screen.
+  alternate screen, `q` exits 0, and it leaves the alternate screen. Projects named `app`,
+  `cli`, `event`, `io`, `model` and `view` pass clippy on every target.
 - Changed: `test_bootstrap_help_lists_stack_packs_with_what_they_are_for` skips `_*` directories;
   `test_stack_omarchy_app_bootstrap_installs_the_pack` expects the `_rust-gates` files;
   `test_stack_pack_includes_copy_partial_packs_first` checks that an override keeps its own

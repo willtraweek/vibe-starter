@@ -389,12 +389,14 @@ STUB
 test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
   # A project's first PR into a protected default branch compares against the
   # template commit: no Cargo.toml, or one without tiers, is nothing to ratchet,
-  # as for the python pack. An unknown ref or an unreadable base still fails.
+  # as for the python pack. An unknown ref, an unreadable tree or unreadable
+  # metadata still fails.
   local d="$WORK/stack-rust-ratchet-nobase/demo-app" why rc
   why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
   bootstrap_rust "$d" || return 1
   (cd "$d" && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w README.md)" | git mktree)")" \
-    && git branch -f broken "$(git commit-tree -m broken "$(printf '100644 blob %s\tCargo.toml\n' "$(printf 'not [valid toml\n' | git hash-object -w --stdin)" | git mktree)")") \
+    && git branch -f broken "$(git commit-tree -m broken "$(printf '100644 blob %s\tCargo.toml\n' "$(printf 'not [valid toml\n' | git hash-object -w --stdin)" | git mktree)")" \
+    && git branch -f unreadable "$(git commit-tree -m unreadable "$(printf '100644 blob %s\tCargo.toml\n' 0123456789abcdef0123456789abcdef01234567 | git mktree --missing)")") \
     || fail "git setup failed" || return 1
   rs_tiers "$d" --ratchet prepack || fail "a base without Cargo.toml failed: $(cat "$d.tiers.out")" || return 1
   assert_contains "$d.tiers.out" "no Cargo.toml at prepack; nothing to ratchet against" || return 1
@@ -407,7 +409,10 @@ test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
   assert_exit 1 "$rc" || return 1
   rs_tiers "$d" --ratchet broken; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.tiers.out" "cannot read base tiers"
+  assert_contains "$d.tiers.out" "cannot read base tiers" || return 1
+  rs_tiers "$d" --ratchet unreadable; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tree"
 }
 ```
 
@@ -790,14 +795,14 @@ case "$mode" in
     fi ;;
   --ratchet)
     base="$(git rev-parse --verify "${2}^{commit}")" || fail "cannot resolve base $2"
-    # A base from before the pack (a new project's first pull request) has nothing
-    # to ratchet against. An unreadable tree or unreadable metadata still fails.
-    if ! git cat-file -e "$base:Cargo.toml" 2>/dev/null; then
-      echo "coverage-tiers: no Cargo.toml at $2; nothing to ratchet against"; exit 0
-    fi
     old_dir="$(mktemp -d)"; trap 'rm -rf "$old_dir"' EXIT
     # Restore the complete base tree so metadata sees its actual targets/paths.
     git archive "$base" | tar -x -C "$old_dir" || fail "cannot read base tree"
+    # A base from before the pack (a new project's first pull request) has nothing
+    # to ratchet against; an unreadable tree (above) or unreadable metadata fails.
+    if [ ! -f "$old_dir/Cargo.toml" ]; then
+      echo "coverage-tiers: no Cargo.toml at $2; nothing to ratchet against"; exit 0
+    fi
     # tiers_of prints null (and fails) only when the base package has no tiers.
     old="$(tiers_of "$old_dir/Cargo.toml")" || {
       [ "$old" = null ] || fail "cannot read base tiers"
@@ -1027,9 +1032,11 @@ without `--install` requires an existing toolchain and applies its override to b
 
 ## Test plan
 
-- Six new template tests: generated project checks/tests/version; real coverage; malformed or
+- Nine new template tests: generated project checks/tests/version; real coverage; malformed or
   absent coverage/config; tier floor/membership ratchets; workspace rejection; reserved-name
-  preflight with unchanged tree. The coverage-data probes require no cargo-llvm-cov.
+  preflight with unchanged tree; no project name in a Rust doc comment; `after-bootstrap`
+  formatting before locking; a ratchet against a base that predates the pack. The coverage-data
+  probes require no cargo-llvm-cov, and the doc-comment and hook tests need no toolchain.
 - Generated CLI tests cover no arguments, `--help`, `--version`, unknown arguments and surplus
   arguments; they assert the appropriate stdout/stderr and exit status.
 - Coverage probes include valid positive controls, each independent line/region failure, an

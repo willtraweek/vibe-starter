@@ -98,10 +98,15 @@ After this plan, `./bootstrap --stack omarchy-plugin` creates a plugin that:
 - **CI for new projects**: `ubuntu-24.04`, `actions/setup-node@v7` with Node 24, five apt
   packages for Qt 6's QML test runner, then `check.sh` and `tests/run`. elsewhen's equivalent
   job takes about 30 s.
+- **Setup doesn't touch the desktop.** `INSTALL_CMD` fills AGENTS.md's "Install deps" step,
+  which every agent runs, so it is `./scripts/omarchy-kit`: it fetches Omarchy's pinned tools
+  into a cache and has no desktop side effects. Loading the plugin into the live bar is
+  `DEV_CMD`, `./scripts/dev-link.sh`, run on purpose.
 - **The dev loop**: `scripts/dev-link.sh` links the checkout into
   `~/.config/omarchy/plugins/<id>`, runs `omarchy-shell shell rescanPlugins` and
   `omarchy plugin enable <id> --section right` once Omarchy lists the plugin (the rescan
-  finishes in the background, so it waits as `omarchy plugin add` does); `--reload` rescans after
+  finishes in the background, so it waits as `omarchy plugin add` does, and stops with an error
+  if Omarchy never lists it); `--reload` rescans after
   an edit (Omarchy's watcher doesn't follow symlinked folders); `--unlink` runs
   `omarchy plugin remove --yes` only when the link points at this checkout, since `remove`
   deletes a cloned plugin folder outright.
@@ -209,6 +214,10 @@ test_stack_omarchy_plugin_bootstrap_installs_the_pack() {
     || fail "the pack's scripts lost their exec bit" || return 1
   assert_contains "$d/TESTING.md" "Tests: \`./tests/run\`" || return 1
   assert_contains "$d/CLAUDE.md" "Tests: \`./tests/run\`" || return 1
+  # Setup only fetches Omarchy's pinned tools; loading the plugin into the desktop
+  # is the explicit dev step.
+  assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`./scripts/omarchy-kit\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Dev / run locally: \`./scripts/dev-link.sh\`" || return 1
   assert_contains "$d/.bootstrapped" "with the omarchy-plugin stack pack" || return 1
   for s in '{{PACKAGE_NAME}}' '{{TEST_CMD' TEMPLATE.md template/stacks template-selftest; do
     assert_tree_lacks "$d" "$s" || return 1
@@ -285,10 +294,15 @@ test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
   omarchy_plugin_project "$d" || return 1
   mkdir -p "$d.bin" "$home" || return 1
   for tool in omarchy omarchy-shell; do
+    # Omarchy lists the plugin only on the third query, like a rescan that
+    # finishes in the background.
     cat > "$d.bin/$tool" <<STUB || return 1
 #!/bin/sh
 echo "$tool \$*" >> "$d.calls"
-if [ "\$*" = "plugin list --json" ]; then echo '[{"id": "demo_app"}]'; fi
+if [ "\$*" = "plugin list --json" ]; then
+  n=\$((\$(cat "$d.lists" 2>/dev/null || echo 0) + 1)); echo "\$n" > "$d.lists"
+  if [ "\$n" -ge 3 ]; then echo '[{"id": "demo_app"}]'; else echo '[]'; fi
+fi
 STUB
     chmod +x "$d.bin/$tool" || return 1
   done
@@ -296,8 +310,9 @@ STUB
     || fail "dev-link exited $?: $(cat "$d.link")" || return 1
   [ -L "$home/.config/omarchy/plugins/demo_app" ] || fail "no link in the plugin folder" || return 1
   [ "$home/.config/omarchy/plugins/demo_app" -ef "$d" ] || fail "the link points elsewhere" || return 1
-  # Omarchy rescans in the background, so dev-link waits until it lists the plugin.
-  [ "$(cat "$d.calls")" = "$(printf 'omarchy-shell shell rescanPlugins\nomarchy plugin list --json\nomarchy plugin enable demo_app --section right')" ] \
+  # dev-link waits until Omarchy lists the plugin, and only then enables it.
+  [ "$(cat "$d.calls")" = "$(printf '%s\n' 'omarchy-shell shell rescanPlugins' 'omarchy plugin list --json' \
+      'omarchy plugin list --json' 'omarchy plugin list --json' 'omarchy plugin enable demo_app --section right')" ] \
     || fail "dev-link ran: $(cat "$d.calls")" || return 1
   (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >/dev/null 2>&1 \
     || fail "--unlink failed" || return 1
@@ -312,7 +327,13 @@ STUB
   (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >"$d.link" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.link" "is not a link to this checkout" || return 1
-  [ ! -s "$d.calls" ] || fail "--unlink called Omarchy: $(cat "$d.calls")"
+  [ ! -s "$d.calls" ] || fail "--unlink called Omarchy: $(cat "$d.calls")" || return 1
+  # A plugin Omarchy never lists is an error, never a blind enable.
+  rmdir "$home/.config/omarchy/plugins/demo_app" && printf '%s\n' -1000 > "$d.lists" || return 1
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh) >"$d.link" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.link" "doesn't list demo_app" || return 1
+  assert_not_contains "$d.calls" "plugin enable"
 }
 test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
   # One pin drives every host check; a branch name would drift under CI.
@@ -387,8 +408,8 @@ Omarchy shell plugin (a bar widget, panel, menu or service): QML
 ```text
 # KEY=value lines. ./bootstrap --stack omarchy-plugin replaces {{KEY}} and
 # {{KEY: description}} placeholders in the project's docs with these values.
-INSTALL_CMD=./scripts/dev-link.sh
-DEV_CMD=./scripts/dev-link.sh --reload
+INSTALL_CMD=./scripts/omarchy-kit
+DEV_CMD=./scripts/dev-link.sh
 BUILD_CMD=omarchy plugin validate .
 CHECK_CMD=./scripts/check.sh
 TEST_CMD=./tests/run
@@ -750,10 +771,15 @@ case "${1:-}" in
     omarchy-shell shell rescanPlugins
     # The rescan finishes in the background: wait until Omarchy lists the plugin,
     # as `omarchy plugin add` does, or enabling it fails.
+    found=0
     for (( attempt = 0; attempt < 40; attempt++ )); do
-      omarchy plugin list --json | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null && break
+      if omarchy plugin list --json | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null; then
+        found=1
+        break
+      fi
       sleep 0.05
     done
+    [ "$found" = 1 ] || { echo "dev-link.sh: Omarchy doesn't list $id after a rescan (omarchy plugin list)" >&2; exit 1; }
     omarchy plugin enable "$id" --section right
     echo "Linked $dest -> $PWD and enabled $id." ;;
   --reload) omarchy-shell shell rescanPlugins ;;
@@ -1078,7 +1104,8 @@ Six new test functions:
 
 - `test_stack_omarchy_plugin_bootstrap_installs_the_pack`: the manifest is filled, equal to
   `VERSION` and in 2-space form; the widget and its test carry the id; scripts are executable;
-  commands are filled; no placeholders or template paths are left; git commits every pack file
+  commands are filled (setup is `./scripts/omarchy-kit`, the dev step `./scripts/dev-link.sh`);
+  no placeholders or template paths are left; git commits every pack file
   and the gstack pin, and ignores the rest of `.gstack/`.
 - `test_stack_omarchy_plugin_rejects_the_omarchy_name`: exit 2, nothing changed.
 - `test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step`: with a stubbed kit, the
@@ -1086,8 +1113,9 @@ Six new test functions:
   widget and same-named files in two folders but not the tests, a four-part VERSION matches its
   npm form, and a version drift, a one-line manifest or a failing validator fails.
 - `test_stack_omarchy_plugin_dev_link_links_rescans_and_enables`: stubbed `omarchy` and
-  `omarchy-shell`: the link, the rescan, the wait until Omarchy lists the plugin and the enable
-  (right section), `--unlink --yes`, and refusing a real folder in the way, for both.
+  `omarchy-shell`: the link, the rescan, the wait until Omarchy lists the plugin (a lagging
+  list) and only then the enable (right section), an error when it never does, `--unlink --yes`,
+  and refusing a real folder in the way, for both.
 - `test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref`: a branch name in `.omarchy-ref` exits
   1 and clones nothing.
 - `test_heavy_stack_omarchy_plugin_project_is_green` (heavy job): the project's own `check.sh`
