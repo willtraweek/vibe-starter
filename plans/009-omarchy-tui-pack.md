@@ -68,13 +68,14 @@ After this plan:
   `TestBackend` and scripted keys, including a read error. ratatui 0.30's `TestBackend` has
   `Error = Infallible` and `io::Error` has no `From<Infallible>`, so drawing errors convert with
   `io::Error::other` under `B::Error: Send + Sync + 'static`.
-- **Measured** (Rust 1.98.1, `ubuntu:24.04`): 92.98% lines and 91.12% regions overall;
-  `model.rs`, `cli.rs` and `view.rs` at 100%, `app.rs` at 100% lines and 92.31% regions (the
-  unreachable `Infallible` error arm), `main.rs` 58.8% (its real-terminal branch). clippy
-  pedantic and rustfmt pass. The lockfile has 182 packages; a cold gate takes seconds.
+- **Measured** (Rust 1.98.1, `ubuntu:24.04`, with the pre-landing review's resize fix): 94.17%
+  lines and 92.35% regions overall; `model.rs`, `cli.rs` and `view.rs` at 100%, `app.rs` at 100%
+  lines and 91.30% regions (the unreachable `Infallible` error arms), `main.rs` 58.8% (its
+  real-terminal branch). clippy pedantic and rustfmt pass. The lockfile has 182 packages; a cold gate takes seconds.
 - **The real binary was driven in a real pseudo-terminal**: 24×80, it drew the box and title,
   space counted twice, `r` reset, `q` exited 0, and the alternate screen was left. The heavy
-  test repeats that with Python's `pty` module.
+  test repeats the essentials with Python's `pty` module: it waits for the first frame, sends two
+  presses and `q`, and checks the exit status and that the alternate screen is left.
 - **Theme colours are the terminal's.** crossterm writes `Color::Blue` as palette index 4
   (`38;5;4`), which is one of the 16 colours Omarchy's themes set; `Color::Rgb` and
   `Color::Indexed` bypass the theme, so the guard refuses them and `tests/view.rs` checks every
@@ -168,7 +169,25 @@ history follows them.
        case "$pack" in _*) continue ;; esac  # partial packs are included, never offered
    ```
 
-3. Insert this block immediately **above** `# --- runner ---`, after plan 008's block:
+3. In `test_stack_omarchy_app_bootstrap_installs_the_pack`, add `part` to its `local` line and
+   replace the two lines that list the pack's files,
+
+   ```bash
+     { git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/omarchy-app/files \
+         | sed 's|^template/stacks/omarchy-app/files/||'
+   ```
+
+   with this loop, so the gates step 3 moves into `_rust-gates` are still expected in the
+   project:
+
+   ```bash
+     { for part in _rust-gates omarchy-app; do
+         git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
+           | sed "s|^template/stacks/$part/files/||"
+       done
+   ```
+
+4. Insert this block immediately **above** `# --- runner ---`, after plan 008's block:
 
 ```bash
 # --- tests: partial packs and the omarchy-tui stack pack (plan 009) ----------
@@ -183,10 +202,13 @@ test_stack_pack_includes_copy_partial_packs_first() {
   printf 'shared {{PACKAGE_NAME}}\n' > "$p/_fixture-shared/files/scripts/shared.txt"
   printf 'from the partial pack\n' > "$p/_fixture-shared/files/override.txt"
   printf 'from the pack\n' > "$p/fixture/files/override.txt"
+  printf 'shared, not executable\n' > "$p/_fixture-shared/files/run.sh"
+  printf '#!/bin/sh\necho pack\n' > "$p/fixture/files/run.sh" && chmod +x "$p/fixture/files/run.sh" || return 1
   printf '# shared files\n_fixture-shared\n' > "$p/fixture/includes"
   run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_contains "$d/scripts/shared.txt" "shared demo" || return 1
   assert_contains "$d/override.txt" "from the pack" || return 1
+  [ -x "$d/run.sh" ] || fail "the pack's executable run.sh kept the partial pack's mode" || return 1
   assert_absent "$d/template"
 }
 test_stack_pack_includes_are_checked_before_writes() {
@@ -351,8 +373,9 @@ test_heavy_stack_omarchy_tui_project_is_green() {
 import fcntl, os, pty, select, struct, sys, termios, time
 pid, fd = pty.fork()
 if pid == 0:
+    # Size the terminal before the app asks, so its first frame is 24x80.
+    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     os.execv(sys.argv[1], [sys.argv[1]])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 out, sent, deadline = b"", False, time.time() + 20
 while time.time() < deadline:
     ready, _, _ = select.select([fd], [], [], 0.2)
@@ -429,6 +452,7 @@ skips; every predecessor test still passes.
        (CDPATH='' cd "template/stacks/$part/files" && find . -type f) | while IFS= read -r src; do
          dest="$(printf '%s' "${src#./}" | PKG="$PACKAGE_NAME" perl -pe 's#(^|/)__package__(?=/|$)#$1$ENV{PKG}#g')"
          mkdir -p "$(dirname "$dest")"
+         rm -f "$dest"  # a fresh copy takes its own mode, not an included file's
          cp "template/stacks/$part/files/$src" "$dest"
        done
      done
@@ -766,8 +790,8 @@ themed by Omarchy, and the launcher on `Super + Space`.
   `TUI.float` class.
 - `~/.local/share/icons/hicolor/scalable/apps/{{PACKAGE_NAME}}.svg`
 
-`./scripts/install.sh --uninstall` removes exactly those three files. Set `PREFIX=/usr/local`
-(with sudo) to install system-wide.
+`./scripts/install.sh --uninstall` removes exactly those three files. To install system-wide,
+build as yourself, then run `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
 
 ## Keybinding
 
@@ -863,7 +887,7 @@ use crate::model::{Model, action_for};
 use crate::view;
 
 /// Draws, then handles `events` until the user quits or they run out, and
-/// returns the final model.
+/// returns the final model. A resize draws again, at the terminal's new size.
 ///
 /// # Errors
 ///
@@ -879,7 +903,15 @@ where
     let mut model = Model::default();
     draw(terminal, model)?;
     for event in events {
-        let Event::Key(key) = event? else { continue };
+        let key = match event? {
+            Event::Key(key) => key,
+            // ratatui fits the screen to the terminal's size when it draws.
+            Event::Resize(..) => {
+                draw(terminal, model)?;
+                continue;
+            }
+            _ => continue,
+        };
         let Some(action) = action_for(key) else {
             continue;
         };
@@ -1181,11 +1213,20 @@ fn the_screen_shows_the_latest_count() {
 #[test]
 fn other_events_and_unbound_keys_are_ignored() {
     let mut terminal = terminal();
-    let mut events = vec![Ok(Event::Resize(80, 24)), Ok(Event::FocusGained)];
+    let mut events = vec![Ok(Event::FocusGained)];
     events.extend(keys("x "));
     let model = app::run(&mut terminal, events).expect("run");
     assert_eq!(model.count(), 1);
     assert!(!model.should_quit());
+}
+
+#[test]
+fn a_resize_draws_again_without_waiting_for_a_key() {
+    let mut terminal = terminal();
+    let model = app::run(&mut terminal, vec![Ok(Event::Resize(80, 24))]).expect("run");
+    assert_eq!(model.count(), 0);
+    // Two frames: the first draw, and the resize's.
+    assert_eq!(terminal.get_frame().count(), 2);
 }
 
 #[test]
@@ -1466,7 +1507,9 @@ Nine new test functions and two changes:
   `coverage.sh`, ratchet, then the real binary in a 24×80 pseudo-terminal: it enters the
   alternate screen, `q` exits 0, and it leaves the alternate screen.
 - Changed: `test_bootstrap_help_lists_stack_packs_with_what_they_are_for` skips `_*` directories;
-  `test_stack_omarchy_app_shares_the_rust_packs_gates` is deleted (replaced, as above).
+  `test_stack_omarchy_app_bootstrap_installs_the_pack` expects the `_rust-gates` files;
+  `test_stack_pack_includes_copy_partial_packs_first` checks that an override keeps its own
+  mode; `test_stack_omarchy_app_shares_the_rust_packs_gates` is deleted (replaced, as above).
 
 Net: +8 tests (7 in the `selftest` job, 1 heavy). Rehearsed while planning: the full suite on
 macOS bash 3.2 (163 passed; the only skip was cargo-llvm-cov, not installed there), and both
@@ -1497,13 +1540,18 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
-- **Adding a Rust pack** now means `includes` with `_rust-gates` and no copies; a toolchain bump
-  changes one file.
+- **Adding a Rust pack** now means `includes` with `_rust-gates` and no copies. A toolchain bump
+  still spans files: the channel in `_rust-gates/files/rust-toolchain.toml`, both jobs' `rustup
+  toolchain install` and `SELFTEST_RUST_TOOLCHAIN` in `.github/workflows/template-selftest.yml`,
+  the Omarchy packs' `rust-version` and the `-ge 98` checks in their `*_heavy_ready` helpers, and
+  the Rust version the packs' `commands` STACK lines and `rust/description` name. `grep -rn
+  '1\.98' .github scripts template TEMPLATE.md` lists them.
 - **A third copy of `install.sh`** (a fourth native Omarchy pack) should move it into a
   partial pack, `_omarchy-launcher`, the same way.
 - **ratatui upgrades**: ratatui re-exports crossterm; keep using `ratatui::crossterm` so the two
   never diverge. 0.30 changed `Backend` to an associated `Error` type; `app::run`'s bound reflects
-  that.
+  that. The version is also named in `commands`' STACK line and `TEMPLATE.md`'s table; bump them
+  with the pin.
 - **Terminal colours**: crossterm writes the 16 named colours as palette indices 0–15, which
   Omarchy's themes set. Keep the guard: a single `Color::Rgb` quietly breaks theming.
 - Reviewer focus: the `includes` validation (exit 2 before writes) and copy order; the `git mv`

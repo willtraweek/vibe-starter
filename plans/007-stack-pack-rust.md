@@ -609,7 +609,7 @@ fn surplus_arguments_exit_two_on_stderr() {
 
 ```bash
 #!/usr/bin/env bash
-# Rust stack guards (from ./bootstrap --stack rust): formatting, lints, and the
+# Rust stack guards (from a vibe-starter Rust stack pack): formatting, lints, and the
 # coverage-tier config (cheap; runs before any tests).
 set -euo pipefail
 if ! command -v cargo >/dev/null 2>&1; then

@@ -22,15 +22,16 @@ deletes `plans/`, so none of this reaches projects created from the template.
 | [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
 | [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | TODO |
 | [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | TODO |
-| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008 | TODO |
+| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
-Current suite after 001–004: **80 tests**. Projected totals for the remaining revised
-plans: 005 → **90**, 006 → **98**, 007 → **104**. These later totals are execution targets,
-not results of a new sequential rehearsal. Python tests need uv; the Rust coverage test skips
-locally without cargo-llvm-cov. Fully provisioned CI must have zero failures and zero skips.
-Retain later approved tests and use the live predecessor baseline plus each plan's additions.
+Current suite after 001–006: **143 tests** (live). Projected totals for the remaining plans:
+007 → **149**, 008 → **158**, 009 → **166**, 010 → **172** (the last three include 1, 2 and 3
+heavy tests). These totals are execution targets, not results of a new sequential rehearsal.
+Python tests need uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully
+provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
+live predecessor baseline plus each plan's additions.
 
 **Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
 files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps
@@ -116,9 +117,31 @@ Two planning findings changed other plans:
 
 Open decisions for the maintainer (the plans document them; neither blocks execution):
 - A plugin's repository root is the folder users install, and Omarchy's plugin directory has
-  turned plugins away for a root `AGENTS.md`. Generated plugins keep `AGENTS.md` and `CLAUDE.md`;
-  `omarchy plugin add <url>` works either way.
+  turned plugins away for a root `AGENTS.md` and for dev artifacts such as `.gstack/`. Generated
+  plugins keep `AGENTS.md`, `CLAUDE.md` and the `.gstack/package-json-path` pin that keeps
+  `manifest.json`'s version in step; `omarchy plugin add <url>` works either way.
 - The plugin directory also wants a root LICENSE and a manifest `author`; no pack chooses them.
+
+**Pre-landing review, 2026-09-26.** gstack `/ship` reviewed these plans (testing,
+maintainability and simplification specialists, a red team, a Claude adversarial pass, and Codex
+adversarial and structured passes). Each correction below was checked before it went in, and none
+changes a test count:
+- 010: the guard scans QML with its folders kept, and hands Omarchy's validator links as links.
+  Before, same-named files overwrote each other and a directory or dangling symlink was dropped,
+  so either could pass; both false passes reproduced with Omarchy's validator and scanner at
+  `c668141`, and both fail now. `dev-link.sh` waits until Omarchy lists the plugin before
+  enabling it (the rescan is asynchronous; `omarchy plugin add` waits the same way), and
+  `--unlink` passes `--yes` only for this checkout's own link. `omarchy-kit` moves a finished
+  clone into place: 3 of 4 concurrent cold runs failed before, none after. The manifest is
+  compared with `VERSION`'s npm form, and `tests/run` covers nested modules (an untested
+  `lib/*.js` passed before) and fails closed without a `test_` function.
+- 009: the event loop redraws on a resize. On Rust 1.98.1 every gate passes, and the new test
+  fails on the old loop. The pseudo-terminal is sized before the app starts. An included file
+  overridden by a pack takes the pack file's mode, and 008's omarchy-app test still expects the
+  gates once they move to `_rust-gates`.
+- 008: the `CHECK_CI` test no longer passes on GitHub's own `CI=true`, the harness unsets
+  `install.sh`'s overrides, `install.sh --help` works from any directory, and the guides say to
+  build as yourself before a system-wide `sudo … --no-build` install.
 
 The rehearsal counts below describe earlier plan versions and are historical evidence only.
 
@@ -185,9 +208,10 @@ above already account for all landed additions; do not add another 2 to them.
 - **006 → 007.** 007 reuses 006's mechanism, test helpers and `install-gitleaks` action unchanged.
 - **007 → 008.** `omarchy-app` copies the rust pack's five gate files byte for byte and uses 007's
   `rust_env`/`rust_ready` helpers and CI provisioning. Its `validate-name` calls the rust pack's.
-- **008 → 009, 010.** Both use 008's pack descriptions, `SELFTEST_EXCLUDE`/`SELFTEST_HEAVY`,
-  `CHECK_CI` and `heavy` CI job. 009 refactors 008's pack onto `_rust-gates`, and 010 adds Node
-  and Qt 6 to the `heavy` job.
+- **008 → 009, 010.** Both use 008's pack descriptions, `SELFTEST_EXCLUDE`/`SELFTEST_HEAVY` and
+  `heavy` CI job, and 009's guard uses its `CHECK_CI`. 009 refactors 008's pack onto
+  `_rust-gates`, and 010 adds Node and Qt 6 to the `heavy` job.
+- **009 → 010.** 010 builds on 009's `includes` support, `_*` hiding and test block.
 - The order is linear, 001 → 010 (see "How to run these plans").
 
 ## Shipping caveat (read before running gstack `/ship`)

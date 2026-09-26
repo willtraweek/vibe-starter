@@ -282,7 +282,8 @@ test_check_tells_guards_whether_ci_requires_tools() {
 echo "guard saw CHECK_CI=${CHECK_CI:-unset}"
 GUARD
   for setting in CI=true:1 CI=1:1 GITHUB_ACTIONS=true:1 CI=false:0 CI=no:0 CI=:0; do
-    run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks "${setting%:*}"
+    # CI= first: GitHub exports CI=true, which would otherwise answer for GITHUB_ACTIONS.
+    run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks CI= "${setting%:*}"
     assert_contains "$d.out" "guard saw CHECK_CI=${setting##*:}" || return 1
   done
 }
@@ -380,10 +381,13 @@ test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   assert_contains "$entry" "X-AppVersion=0.0.0" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$entry" \
     || fail "--print-desktop-entry differs from the installed entry" || return 1
+  : > "$p/bin/keep-me" && : > "$p/share/applications/other.desktop" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --uninstall) >/dev/null 2>&1 || fail "uninstall failed" || return 1
   for f in bin/demo_app share/applications/demo_app.desktop share/icons/hicolor/scalable/apps/demo_app.svg; do
     assert_absent "$p/$f" || return 1
   done
+  assert_exists "$p/bin/keep-me" || return 1
+  assert_exists "$p/share/applications/other.desktop" || return 1
   # The binary is found where CARGO_TARGET_DIR put it.
   mv "$d/target/release/demo_app" "$WORK/omarchy-app-install/elsewhere/release/demo_app" || return 1
   (cd "$d" && CARGO_TARGET_DIR="$WORK/omarchy-app-install/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
@@ -394,6 +398,9 @@ test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   assert_contains "$d.install" "is missing; build it first" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
+  (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \
+    || fail "--help from scripts/ exited $?: $(cat "$d.help")" || return 1
+  assert_contains "$d.help" "--print-desktop-entry" || return 1
   (cd "$d" && BINDIR='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc"
 }
@@ -521,10 +528,13 @@ In `scripts/template-selftest.sh`:
 
    ```bash
    unset CARGO_TARGET_DIR   # a test that builds picks its own (the heavy ones: SELFTEST_CARGO_TARGET_DIR)
+   unset PREFIX BINDIR APPDIR ICONDIR DESKTOP_FILE_VALIDATE_BIN   # install.sh and guard overrides
    ```
 
    An exported `CARGO_TARGET_DIR` would send every generated project's build to one directory,
-   where cargo-llvm-cov then reports two projects' files together.
+   where cargo-llvm-cov then reports two projects' files together. An exported `BINDIR` (or
+   `PREFIX`, `APPDIR`, `ICONDIR`) would send the install test's files into the caller's own
+   directories; tests set what they need.
 
 5. Replace `echo "selftest: $PASS passed, $FAIL failed, $SKIP skipped"` with:
 
@@ -1333,9 +1343,8 @@ X-AppVersion=@VERSION@
 #   ./scripts/install.sh --no-build             # install the binary cargo already built
 #   ./scripts/install.sh --uninstall            # remove exactly what install put there
 #   ./scripts/install.sh --print-desktop-entry  # print the entry install would write
-#   PREFIX=/usr/local sudo -E ./scripts/install.sh   # system-wide
+#   sudo PREFIX=/usr/local ./scripts/install.sh --no-build  # system-wide, after a build
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
 APP_ID="{{PACKAGE_NAME}}"
 PREFIX="${PREFIX:-$HOME/.local}"
@@ -1355,6 +1364,7 @@ for arg in "$@"; do
     *) echo "install.sh: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+cd "$(dirname "$0")/.."  # after --help, which reads this script by its path
 
 # Exec quotes the binary's path; these characters would need escaping there
 # (desktop entry spec), so refuse them rather than write a broken entry.
@@ -1562,8 +1572,8 @@ desktop shell, and the active theme in `~/.local/state/omarchy/current`.
   (`Super + Space`) lists
 - `~/.local/share/icons/hicolor/scalable/apps/{{PACKAGE_NAME}}.svg`
 
-`./scripts/install.sh --uninstall` removes exactly those three files. Set `PREFIX=/usr/local`
-(with sudo) to install system-wide.
+`./scripts/install.sh --uninstall` removes exactly those three files. To install system-wide,
+build as yourself, then run `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
 
 ## Keybinding and window rule
 
@@ -1832,11 +1842,14 @@ Stop and report back (do not improvise) if:
 ## Maintenance notes
 
 - **Bumping GPUI.** gpui-kit and gpui-omarchy move as a pair: find the gpui-omarchy release
-  that pins the gpui-kit you want (crates.io API), change both exact pins, and run the heavy
-  test. Watch the `gpui-pre-macros` release-profile workaround (both upstream apps carry it)
+  that pins the gpui-kit you want (crates.io API), change both exact pins and the versions that
+  `commands`' STACK line and `TEMPLATE.md`'s table name, and run the heavy test. Watch the `gpui-pre-macros` release-profile workaround (both upstream apps carry it)
   and the rust-version floor of the new dependency graph.
 - **Toolchain bumps** are shared with the rust pack: the byte-identity test makes you change
-  both `rust-toolchain.toml` files, and the pack's `rust-version` with them.
+  both `rust-toolchain.toml` files, and the pack's `rust-version` with them. The workflow's
+  `rustup toolchain install` and `SELFTEST_RUST_TOOLCHAIN` (both jobs), the `-ge 98` check in
+  `omarchy_app_heavy_ready` and the STACK lines name it too: `grep -rn '1\.98' .github scripts
+  template TEMPLATE.md`.
 - **Operator actions:** after the first green run, add the `heavy` check to master's ruleset
   next to `selftest`. Its cold run costs minutes on every pull request; cache hits bring it to
   about 2–4 minutes.

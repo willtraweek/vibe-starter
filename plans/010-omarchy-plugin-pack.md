@@ -19,8 +19,8 @@
 - **Risk**: MED. It brings a new language (QML with plain JavaScript) into the template, and its
   host checks fetch Omarchy's own scripts from GitHub at a pinned commit. It adds no Rust and
   doesn't touch `bootstrap`.
-- **Depends on**: 008 (pack descriptions, `CHECK_CI`, `SELFTEST_EXCLUDE`, the `heavy` job), 006
-  (the mechanism). It runs after 009 in the plan order but needs nothing from it.
+- **Depends on**: 008 (pack descriptions, `SELFTEST_EXCLUDE`, the `heavy` job), 009 (its
+  `includes` support, `_*` hiding and test block, which this plan builds on), 006 (the mechanism).
 - **Category**: direction
 - **Planned at**: commit `98063fc` with plans 007–009 applied in a rehearsal, 2026-09-25
 
@@ -87,7 +87,8 @@ After this plan, `./bootstrap --stack omarchy-plugin` creates a plugin that:
   manifest requires one, and a drift from `VERSION` would mislead. gstack 1.91's
   `bin/gstack-version-bump` writes the version into the file named in `.gstack/package-json-path`
   as `JSON.stringify(m, null, 2) + "\n"`; the pack ships that pin pointing at `manifest.json`,
-  and its guard requires `version == VERSION` and the same 2-space form (checked with
+  and its guard requires the manifest's `version` to equal `VERSION` (its first three parts,
+  the npm form gstack writes when `VERSION` has four) and the same 2-space form (checked with
   `jq --indent 2`, which prints manifests identically). Two `.gitignore` details:
   - In projects, the skeleton ignores `.gstack/`; the pack's `gitignore` block re-includes only
     the pin (`!/.gstack/`, `/.gstack/*`, `!/.gstack/package-json-path`, verified with
@@ -99,9 +100,11 @@ After this plan, `./bootstrap --stack omarchy-plugin` creates a plugin that:
   job takes about 30 s.
 - **The dev loop**: `scripts/dev-link.sh` links the checkout into
   `~/.config/omarchy/plugins/<id>`, runs `omarchy-shell shell rescanPlugins` and
-  `omarchy plugin enable <id> --section right`; `--reload` rescans after an edit (Omarchy's
-  watcher doesn't follow symlinked folders); `--unlink` runs `omarchy plugin remove`, which
-  unlinks a symlinked plugin.
+  `omarchy plugin enable <id> --section right` once Omarchy lists the plugin (the rescan
+  finishes in the background, so it waits as `omarchy plugin add` does); `--reload` rescans after
+  an edit (Omarchy's watcher doesn't follow symlinked folders); `--unlink` runs
+  `omarchy plugin remove --yes` only when the link points at this checkout, since `remove`
+  deletes a cloned plugin folder outright.
 - **The plugin id** is the package name (`demo_app`): the validator's
   `^[A-Za-z0-9][A-Za-z0-9._-]*$` and the directory's lowercase rule both accept it, and
   `validate-name` refuses `omarchy`. The guide says to prefix your handle before sharing.
@@ -110,7 +113,9 @@ After this plan, `./bootstrap --stack omarchy-plugin` creates a plugin that:
   turned plugins away for a root `AGENTS.md` (agent tools could read it inside a user's config).
   vibe-starter requires `AGENTS.md` and `CLAUDE.md` at the root. The pack keeps them, and the
   generated guide says to decide before submitting. `omarchy plugin add <url>` works either
-  way. The directory also wants a root LICENSE and an `author`; the pack chooses neither.
+  way. The same reviewers list `.gstack/` among the dev artifacts that get a tree blocked, and
+  the pack commits `.gstack/package-json-path` (the version decision above). The directory also
+  wants a root LICENSE and an `author`; the pack chooses neither.
 - **Out of scope**: a release workflow (tags are informational for plugins), a host-contract
   `qmllint` job against real Quickshell in an Arch container (a follow-up), and starter code for
   the other plugin kinds.
@@ -183,7 +188,8 @@ ls -A "\$1" > "$1.validated"
 STUB
   cat > "$1.kit/test/shell.d/qml-text-format-scan.py" <<STUB || return 1
 import os, sys
-open("$1.scanned", "w").write("\n".join(sorted(os.listdir(os.path.join(sys.argv[1], "shell")))))
+top = os.path.join(sys.argv[1], "shell")
+open("$1.scanned", "w").write("\n".join(sorted(os.path.relpath(os.path.join(r, f), top) for r, _, fs in os.walk(top) for f in fs)))
 STUB
   printf '#!/bin/sh\necho "%s"\n' "$1.kit" > "$1/scripts/omarchy-kit"
 }
@@ -244,6 +250,20 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   assert_not_contains "$d.validated" ".context" || return 1
   assert_contains "$d.scanned" "Widget.qml" || return 1
   assert_not_contains "$d.scanned" "tst_widget.qml" || return 1
+  # Same-named components in two folders are both scanned, and a link users
+  # would get reaches Omarchy's validator, which refuses every symlink.
+  mkdir -p "$d/bar" "$d/panel" || return 1
+  : > "$d/bar/Row.qml" && : > "$d/panel/Row.qml" && ln -s missing "$d/dangling" || return 1
+  (cd "$d" && git add -A && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "the guard failed: $(cat "$d.guard")" || return 1
+  assert_contains "$d.scanned" "bar/Row.qml" || return 1
+  assert_contains "$d.scanned" "panel/Row.qml" || return 1
+  assert_contains "$d.validated" "dangling" || return 1
+  (cd "$d" && git rm -rq --cached bar panel dangling && rm -rf bar panel dangling) || return 1
+  # gstack writes a four-part VERSION to manifest.json as its first three parts.
+  printf '0.0.0.1\n' > "$d/VERSION"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "a four-part VERSION failed the guard: $(cat "$d.guard")" || return 1
   printf '0.0.1\n' > "$d/VERSION"
   (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
@@ -251,7 +271,13 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   (cd "$d" && git checkout -q -- VERSION && jq -c . manifest.json > m.tmp && mv m.tmp manifest.json) || return 1
   (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.guard" "not in 2-space JSON form"
+  assert_contains "$d.guard" "not in 2-space JSON form" || return 1
+  # Omarchy's validator failing fails the guard, with its reason.
+  (cd "$d" && git checkout -q -- manifest.json) || return 1
+  printf '#!/bin/sh\necho "omarchy-plugin-validate: rejected" >&2\nexit 1\n' > "$d.kit/bin/omarchy-plugin-validate"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "omarchy-plugin-validate: rejected"
 }
 test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
   command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
@@ -262,6 +288,7 @@ test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
     cat > "$d.bin/$tool" <<STUB || return 1
 #!/bin/sh
 echo "$tool \$*" >> "$d.calls"
+if [ "\$*" = "plugin list --json" ]; then echo '[{"id": "demo_app"}]'; fi
 STUB
     chmod +x "$d.bin/$tool" || return 1
   done
@@ -269,16 +296,23 @@ STUB
     || fail "dev-link exited $?: $(cat "$d.link")" || return 1
   [ -L "$home/.config/omarchy/plugins/demo_app" ] || fail "no link in the plugin folder" || return 1
   [ "$home/.config/omarchy/plugins/demo_app" -ef "$d" ] || fail "the link points elsewhere" || return 1
-  [ "$(cat "$d.calls")" = "$(printf 'omarchy-shell shell rescanPlugins\nomarchy plugin enable demo_app --section right')" ] \
+  # Omarchy rescans in the background, so dev-link waits until it lists the plugin.
+  [ "$(cat "$d.calls")" = "$(printf 'omarchy-shell shell rescanPlugins\nomarchy plugin list --json\nomarchy plugin enable demo_app --section right')" ] \
     || fail "dev-link ran: $(cat "$d.calls")" || return 1
   (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >/dev/null 2>&1 \
     || fail "--unlink failed" || return 1
-  assert_contains "$d.calls" "omarchy plugin remove demo_app" || return 1
+  assert_contains "$d.calls" "omarchy plugin remove demo_app --yes" || return 1
   rm -f "$home/.config/omarchy/plugins/demo_app"
   mkdir -p "$home/.config/omarchy/plugins/demo_app" || return 1
   (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh) >"$d.link" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.link" "exists and is not a link"
+  assert_contains "$d.link" "exists and is not a link" || return 1
+  # --unlink never removes a real plugin folder: Omarchy's remove would delete it.
+  : > "$d.calls"
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >"$d.link" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.link" "is not a link to this checkout" || return 1
+  [ ! -s "$d.calls" ] || fail "--unlink called Omarchy: $(cat "$d.calls")"
 }
 test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
   # One pin drives every host check; a branch name would drift under CI.
@@ -360,13 +394,15 @@ CHECK_CMD=./scripts/check.sh
 TEST_CMD=./tests/run
 SHIP_GATE=./scripts/check.sh && ./tests/run
 STACK=An Omarchy 4 shell plugin: a QML bar widget for omarchy-shell (Quickshell) built from qs.Ui components, which follow the active Omarchy theme; logic in plain JavaScript under Node's test runner at 100% coverage; the widget under Qt 6's qmltestrunner against qs.Ui stand-ins; Omarchy's own plugin validator and Text-format scanner, pinned in .omarchy-ref.
-COVERAGE_ENFORCEMENT=./tests/run: Node's test runner holds the plain-JavaScript logic (Logic.js and any other root *.js) at 100% lines, branches and functions, and a test that loads every module stops one from hiding; QML has no coverage tool, so each QML component gets a qmltestrunner test; CI runs both, fail-closed
+COVERAGE_ENFORCEMENT=./tests/run: Node's test runner holds the plain-JavaScript logic (Logic.js and any other *.js outside tests/) at 100% lines, branches and functions, and a test that loads every module stops one from hiding; QML has no coverage tool, so each QML component gets a qmltestrunner test; CI runs both, fail-closed
 ```
 
 `gitignore`:
 
 ```text
 # --- Omarchy plugin ---
+# The tests use only Node's own runner; an installed package never ships.
+/node_modules/
 # gstack /ship keeps manifest.json's version in step with VERSION through this pin;
 # commit it, and keep the rest of .gstack/ local.
 !/.gstack/
@@ -597,8 +633,9 @@ and `omarchy plugin update` fast-forwards it, so the default branch is the relea
 - The Omarchy plugin directory (plugins.omarchy.org) lists plugins after review. It wants an
   `author` and a `description` in `manifest.json`, a root README and LICENSE, no piped
   `curl | sh` installers, and its reviewers have turned plugins away for a root `AGENTS.md`
-  (the repository is installed as the plugin folder, where agent tools could read it). This
-  project keeps `AGENTS.md` and `CLAUDE.md` for its own agents; decide before you submit.
+  (the repository is installed as the plugin folder, where agent tools could read it) and for
+  dev artifacts such as `.gstack/`. This project keeps `AGENTS.md` and `CLAUDE.md` for its own
+  agents and `.gstack/package-json-path` for gstack `/ship`; decide before you submit.
 ```
 
 `files/manifest.json`:
@@ -646,9 +683,10 @@ and `omarchy plugin update` fast-forwards it, so the default branch is the relea
 # on exactly what `omarchy plugin add` would clone.
 set -euo pipefail
 
-# 1. gstack /ship bumps VERSION and, through .gstack/package-json-path, writes the
-#    same version into manifest.json in its 2-space JSON form. Keep both true.
-version="$(tr -d '[:space:]' < VERSION)"
+# 1. gstack /ship bumps VERSION and, through .gstack/package-json-path, writes its
+#    npm form (the first three parts) into manifest.json in its 2-space JSON form.
+#    Keep both true.
+version="$(tr -d '[:space:]' < VERSION | cut -d. -f1-3)"
 manifest_version="$(jq -r .version manifest.json)"
 if [ "$manifest_version" != "$version" ]; then
   echo "  manifest.json has version $manifest_version but VERSION says $version" >&2
@@ -659,19 +697,22 @@ if ! jq --indent 2 . manifest.json | cmp -s - manifest.json; then
   exit 1
 fi
 
-# 2. The plugin as users get it: the files git would commit, nothing local.
+# 2. The plugin as users get it: the files git would commit, nothing local. Links
+#    stay links, so the validator sees (and refuses) them as users would get them.
 kit="$(./scripts/omarchy-kit)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/plugin" "$tmp/scan/shell"
 git ls-files -z --cached --others --exclude-standard \
-  | while IFS= read -r -d '' f; do if [ -f "$f" ]; then printf '%s\0' "$f"; fi; done \
+  | while IFS= read -r -d '' f; do if [ -f "$f" ] || [ -L "$f" ]; then printf '%s\0' "$f"; fi; done \
   | tar --null -T - -cf - | tar -xf - -C "$tmp/plugin"
 bash "$kit/bin/omarchy-plugin-validate" "$tmp/plugin"
 
 # 3. Every Text whose text isn't a literal declares textFormat (Omarchy's own
-#    scanner; the plugin directory's reviewers require it too). Tests are exempt.
-(cd "$tmp/plugin" && find . -name '*.qml' -not -path './tests/*' -exec cp {} "$tmp/scan/shell/" \;)
+#    scanner; the plugin directory's reviewers require it too). Tests are exempt;
+#    paths are kept, so same-named files in two folders are both scanned.
+(cd "$tmp/plugin" && find . -name '*.qml' -not -path './tests/*' -print0 | tar --null -T - -cf -) \
+  | tar -xf - -C "$tmp/scan/shell"
 findings="$(python3 "$kit/test/shell.d/qml-text-format-scan.py" "$tmp/scan")"
 if [ -n "$findings" ]; then
   printf '%s\n' "$findings" >&2
@@ -690,24 +731,40 @@ fi
 #   ./scripts/dev-link.sh --reload   # rescan after an edit (a link doesn't reload on save)
 #   ./scripts/dev-link.sh --unlink   # disable it and remove the link
 set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 cd "$(dirname "$0")/.."
 id="$(jq -r .id manifest.json)"
 dest="$HOME/.config/omarchy/plugins/$id"
 case "${1:-}" in
   "")
     command -v omarchy >/dev/null 2>&1 || { echo "dev-link.sh: omarchy not found; this needs an Omarchy 4 desktop" >&2; exit 1; }
-    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-      echo "dev-link.sh: $dest exists and is not a link; run 'omarchy plugin remove $id' first" >&2
+    if [ "$dest" -ef "$PWD" ]; then
+      :  # already linked, or cloned straight into the plugin folder
+    elif [ -e "$dest" ] && [ ! -L "$dest" ]; then
+      echo "dev-link.sh: $dest exists and is not a link; move it aside first ('omarchy plugin remove' deletes it)" >&2
       exit 1
+    else
+      mkdir -p "$(dirname "$dest")"
+      ln -sfn "$PWD" "$dest"
     fi
-    mkdir -p "$(dirname "$dest")"
-    ln -sfn "$PWD" "$dest"
     omarchy-shell shell rescanPlugins
+    # The rescan finishes in the background: wait until Omarchy lists the plugin,
+    # as `omarchy plugin add` does, or enabling it fails.
+    for (( attempt = 0; attempt < 40; attempt++ )); do
+      omarchy plugin list --json | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null && break
+      sleep 0.05
+    done
     omarchy plugin enable "$id" --section right
     echo "Linked $dest -> $PWD and enabled $id." ;;
   --reload) omarchy-shell shell rescanPlugins ;;
-  --unlink) omarchy plugin remove "$id" ;;
-  -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+  --unlink)
+    # --yes skips Omarchy's prompt, and its remove deletes a cloned plugin
+    # outright, so only ever remove this checkout's own link.
+    if [ ! -L "$dest" ] || [ ! "$dest" -ef "$PWD" ]; then
+      echo "dev-link.sh: $dest is not a link to this checkout" >&2
+      exit 1
+    fi
+    omarchy plugin remove "$id" --yes ;;
   *) echo "dev-link.sh: unknown argument: $1" >&2; exit 2 ;;
 esac
 ```
@@ -731,12 +788,19 @@ esac
 [ "${#ref}" -eq 40 ] || { echo "omarchy-kit: .omarchy-ref must be a full commit SHA" >&2; exit 1; }
 kit="${OMARCHY_KIT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-kit}/$ref"
 if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
-  rm -rf "$kit"
+  # Clone beside the cache and move the finished copy into place, so checks that
+  # start together never delete or half-read each other's clone.
   mkdir -p "$(dirname "$kit")"
-  git clone --quiet --filter=blob:none --no-checkout https://github.com/omacom/omarchy.git "$kit" >&2
-  git -C "$kit" sparse-checkout set --no-cone /bin/omarchy-plugin-validate \
+  new="$(mktemp -d "$kit.XXXXXX")"
+  trap 'rm -rf "$new"' EXIT
+  git clone --quiet --filter=blob:none --no-checkout https://github.com/omacom/omarchy.git "$new" >&2
+  git -C "$new" sparse-checkout set --no-cone /bin/omarchy-plugin-validate \
     /test/shell.d/qml-text-format-scan.py /shell/Commons/ /shell/Ui/ >&2
-  git -C "$kit" -c advice.detachedHead=false checkout --quiet "$ref" >&2
+  git -C "$new" -c advice.detachedHead=false checkout --quiet "$ref" >&2
+  if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+    rm -rf "$kit"
+    mv "$new" "$kit"
+  fi
 fi
 printf '%s\n' "$kit"
 ```
@@ -856,7 +920,7 @@ if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 8 ]; }; then
   exit 1
 fi
 node --test --experimental-test-coverage \
-  --test-coverage-include='*.js' --test-coverage-exclude='tests/**' \
+  --test-coverage-include='**/*.js' --test-coverage-exclude='tests/**' \
   --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 \
   'tests/unit/*.test.js'
 
@@ -866,14 +930,18 @@ runner="${QML_TEST_RUNNER:-/usr/lib/qt6/bin/qmltestrunner}"
 out="$(QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
   "$runner" -import tests/qml/imports -input tests/qml -o -,txt 2>&1)" || { printf '%s\n' "$out"; exit 1; }
 printf '%s\n' "$out"
-printf '%s\n' "$out" | grep -q 'Using QtTest library 6\.' || { echo "tests/run: not a Qt 6 runner" >&2; exit 1; }
-printf '%s\n' "$out" | grep -Eq '^Totals: [1-9][0-9]* passed, 0 failed' || { echo "tests/run: no QML tests ran" >&2; exit 1; }
+# Here-strings, not pipes: grep -q stops reading early, which pipefail would turn
+# into a failure once the output outgrows the pipe.
+grep -q 'Using QtTest library 6\.' <<<"$out" || { echo "tests/run: not a Qt 6 runner" >&2; exit 1; }
+grep -Eq '^Totals: [0-9]+ passed, 0 failed' <<<"$out" || { echo "tests/run: QML tests failed" >&2; exit 1; }
+# QtTest counts initTestCase and cleanupTestCase as passes: require a real test.
+grep -Eq '^PASS +: .*::test_' <<<"$out" || { echo "tests/run: no QML tests ran" >&2; exit 1; }
 ```
 
 `files/tests/unit/all-modules.test.js`:
 
 ```js
-// Loads every logic module at the root, so none can hide from the coverage
+// Loads every logic module outside tests/, so none can hide from the coverage
 // gate: Node reports only files that were loaded.
 const test = require("node:test")
 const assert = require("node:assert/strict")
@@ -882,10 +950,19 @@ const path = require("node:path")
 
 const root = path.join(__dirname, "..", "..")
 
-test("every root *.js module loads under Node", () => {
-  const modules = fs.readdirSync(root).filter((f) => f.endsWith(".js"))
-  assert.ok(modules.length > 0, "found no logic modules")
-  for (const f of modules) assert.equal(typeof require(path.join(root, f)), "object", f)
+function modules(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const file = path.join(dir, entry.name)
+    if (!entry.isDirectory()) return entry.name.endsWith(".js") ? [file] : []
+    const skip = entry.name.startsWith(".") || entry.name === "node_modules" || file === path.join(root, "tests")
+    return skip ? [] : modules(file)
+  })
+}
+
+test("every *.js module outside tests/ loads under Node", () => {
+  const found = modules(root)
+  assert.ok(found.length > 0, "found no logic modules")
+  for (const file of found) assert.equal(typeof require(file), "object", path.relative(root, file))
 })
 ```
 
@@ -968,7 +1045,8 @@ The heavy test clones Omarchy (sparse, blob-filtered) each run; it took seconds 
    bar widget, JavaScript logic at 100% coverage, Omarchy's own validator pinned).
 3. After the paragraph that follows the table (the one about exact pins), add: "A plugin's
    repository root is the folder users install. Omarchy's plugin directory has turned plugins
-   away for a root `AGENTS.md`; the generated guide explains the choice."
+   away for a root `AGENTS.md` or a committed `.gstack/`; the generated guide explains the
+   choice."
 4. In `### Verifying a change`, add the plugin's two extensionless scripts to the `shellcheck`
    command (as step 3 did for CI), and extend the heavy-tests paragraph: "The omarchy-plugin heavy
    test also needs Node 22.8+ and a Qt 6 `qmltestrunner` (`QML_TEST_RUNNER`)."
@@ -1004,11 +1082,12 @@ Six new test functions:
   and the gstack pin, and ignores the rest of `.gstack/`.
 - `test_stack_omarchy_plugin_rejects_the_omarchy_name`: exit 2, nothing changed.
 - `test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step`: with a stubbed kit, the
-  validator sees exactly the committable files (no `.context/`), the scanner sees the widget but
-  not the tests, and a version drift or a one-line manifest fails.
+  validator sees exactly the committable files (no `.context/`, links kept), the scanner sees the
+  widget and same-named files in two folders but not the tests, a four-part VERSION matches its
+  npm form, and a version drift, a one-line manifest or a failing validator fails.
 - `test_stack_omarchy_plugin_dev_link_links_rescans_and_enables`: stubbed `omarchy` and
-  `omarchy-shell`: the link, the rescan and the enable (right section), `--unlink`, and refusing
-  a real folder in the way.
+  `omarchy-shell`: the link, the rescan, the wait until Omarchy lists the plugin and the enable
+  (right section), `--unlink --yes`, and refusing a real folder in the way, for both.
 - `test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref`: a branch name in `.omarchy-ref` exits
   1 and clones nothing.
 - `test_heavy_stack_omarchy_plugin_project_is_green` (heavy job): the project's own `check.sh`
