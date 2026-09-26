@@ -102,6 +102,10 @@ offers. After this plan, a new Rust project:
     and llvm-tools, then installs cargo-llvm-cov. Only CI performs these installations.
   - The coverage test skips locally when cargo-llvm-cov or llvm-tools is missing. Generated
     project tests also need cargo, clippy, rustfmt and jq; verify their availability explicitly.
+- **Format after naming** (amended 2026-09-25 while planning 008). rustfmt lays lines out
+  by length, so the starter's layout depends on the package name: with a 52-character name
+  it failed `cargo fmt --check` in 5 places (`src/lib.rs`, `tests/cli.rs`). `after-bootstrap`
+  therefore runs `cargo fmt --all` (offline, no lockfile needed) before writing `Cargo.lock`.
 - **Left out on purpose** (see Maintenance notes):
   - cargo-deny: no dependencies yet, and it's symmetric with the Python pack, which has no
     dependency audit either.
@@ -407,12 +411,17 @@ esac
 
 ```sh
 #!/bin/sh
-# Runs once at the end of ./bootstrap --stack rust, from the project root. The
-# crate has no dependencies yet, so Cargo.lock can be written offline; commit it
-# so CI's --locked builds pass on the first push.
+# Runs once at the end of ./bootstrap --stack rust, from the project root.
+# rustfmt lays lines out by length, and the project's name just changed the
+# starter's lines: format them first, or `cargo fmt --check` fails for long
+# names. The crate has no dependencies yet, so Cargo.lock can be written
+# offline; commit it so CI's --locked builds pass on the first push.
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo not found: install Rust (https://rustup.rs), run 'cargo generate-lockfile', commit Cargo.lock."
-elif cargo generate-lockfile --offline --quiet; then
+  echo "cargo not found: install Rust (https://rustup.rs), run 'cargo fmt --all && cargo generate-lockfile', commit Cargo.lock."
+  exit 0
+fi
+cargo fmt --all || echo "cargo fmt failed: run 'cargo fmt --all' before your first commit."
+if cargo generate-lockfile --offline --quiet; then
   echo "Wrote Cargo.lock - commit it."
 else
   echo "cargo generate-lockfile failed: run it and commit Cargo.lock before your first push."
