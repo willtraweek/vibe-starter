@@ -28,11 +28,44 @@ describes (coverage floor, tier checker, CI steps, `.gitignore` section).
 **Why:** Every project repeats the same four manual checklist steps.
 
 **Context:** Planned in `plans/006-stack-packs-python.md` and `plans/007-stack-pack-rust.md`.
-Must stay opt-in to keep the spine stack-agnostic.
+Must stay opt-in to keep the spine stack-agnostic. Plans 008–010 add three Omarchy packs (an
+app, a terminal app and a shell plugin) on the same mechanism.
 
 **Effort:** L
 **Priority:** P2
 **Depends on:** None
+
+### Omarchy stack pack follow-ups from the plans' review
+
+**What:** Four gaps the pre-landing review of plans 008–010 left open, each done when its check
+holds:
+1. Decide the Rust packs' lockfile policy: ship a reviewed `Cargo.lock` per pack (its root
+   entry renamed to the project's package at bootstrap, re-resolved with `cargo update
+   --workspace`, refreshed with each pin bump) or record why they resolve fresh like the Python
+   pack. Done when `TEMPLATE.md`
+   states the policy (and, if adopted, the heavy tests build `--locked` against it) and the heavy
+   job's cache key changes when the dependency set does.
+2. Test the rest of what generated Rust projects promise: their `ci.yml` steps, a `--release`
+   build (which `install.sh` needs), doctests, and GPUI window tests that neither read nor watch
+   the developer's `$HOME` theme. Done when a test exercises each.
+3. Harden `install.sh`: find the binary through cargo's configured target dir, stop reading
+   generic `APPDIR`/`BINDIR`/`ICONDIR` from the environment (AppImage exports `APPDIR`), never
+   silently replace an unrelated `~/.local/bin/<name>`, and clear `CDPATH` before `cd` there and
+   in the Python pack's scripts. Done when a test covers each.
+4. Make `omarchy-kit` require `.omarchy-ref` to be a commit in an upstream Omarchy release, not
+   just any SHA the upstream URL serves (a fork's commit can be fetched that way). Done when it
+   refuses such a commit and a test covers it.
+
+**Why:** Each is a real gap in a generated project, but none blocks executing the plans.
+
+**Context:** Found by gstack `/ship`'s review of the Omarchy plans (see `plans/README.md` →
+"Pre-landing review, 2026-09-26"). The Python pack resolves its tools fresh on purpose (see the
+v0.1.0 follow-ups below), so item 1 starts with that policy call. Items 1–3 touch plans 008 and
+009, item 4 plan 010.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** Plans 008–010 landing
 
 ### Make the markdown pass editorconfig-checker
 
