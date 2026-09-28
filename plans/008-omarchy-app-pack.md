@@ -409,7 +409,7 @@ test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   assert_exit 2 "$rc"
 }
 test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci() {
-  local d="$WORK/omarchy-app-guard/demo-app" rc
+  local d="$WORK/omarchy-app-guard/demo-app" rc lit f
   omarchy_app_project "$d" || return 1
   # The starter passes; a missing validator is a notice locally...
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
@@ -450,6 +450,14 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
       *) fail "an Omarchy guard outside an Omarchy pack: $f" || return 1 ;;
     esac
   done
+  # ...and a plain rust project's own guards, the Rust gates included, accept
+  # colour and gradient text (needs a Rust toolchain, as the rust pack's tests do).
+  if [ -z "$(rust_ready)" ]; then
+    bootstrap_rust "$d.rust" || return 1
+    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
+    (cd "$d.rust" && for g in scripts/check.d/*.sh; do rust_env bash "$g" || exit 1; done) >"$d.rust.guard" 2>&1 \
+      || fail "a plain rust project refused colour text: $(tail -20 "$d.rust.guard")" || return 1
+  fi
   # The validator gets exactly the entry install.sh writes.
   cat > "$d.stub/validate" <<STUB || return 1
 #!/bin/sh
@@ -1844,8 +1852,9 @@ Eight new test functions, one heavy test, and one adapted predecessor test:
   missing binary exits 1; bad arguments or a `BINDIR` with `"` exit 2.
 - `test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci`:
   every fixed-colour spelling and a gradient fail, with the location, and theme-derived colours
-  pass; only Omarchy packs carry the guards; a missing validator is a local notice but a CI
-  failure; the validator gets exactly install.sh's entry.
+  pass; only Omarchy packs carry the guards, and a plain rust project's guards accept colour
+  and gradient text; a missing validator is a local notice but a CI failure; the validator gets
+  exactly install.sh's entry.
 - `test_stack_omarchy_app_shares_the_rust_packs_gates`: the five shared files are byte-identical.
 - `test_heavy_stack_omarchy_app_project_is_green` (heavy job): a real bootstrap (hook formats
   and locks), then the project's own `check.sh`, `coverage.sh` and ratchet, then a broken
