@@ -330,14 +330,15 @@ test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
     || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
   for lit in 'Color::Rgb(0x12, 0x34, 0x56)' 'Color::Indexed(208)' 'Rgb(0x12, 0x34, 0x56)' \
     'Color::from_u32(0x0012_3456)' 'Color::from([0x12, 0x34, 0x56])' '"#123456".parse::<Color>().unwrap()' \
-    '"#123456".parse::<ratatui::style::Color>().unwrap()'; do
+    '"#123456".parse::<ratatui::style::Color>().unwrap()' '"#123456".parse::<::ratatui::style::Color>().unwrap()'; do
     printf 'use ratatui::style::Color;\npub const X: Color = %s;\n' "$lit" > "$d/src/tint.rs"
     (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
     assert_exit 1 "$rc" || return 1
     assert_contains "$d.guard" "src/tint.rs:2:" || return 1
   done
-  # The 16 named colours pass, and so does a type whose name ends in Color.
-  printf 'use ratatui::style::{Color, Style};\npub const X: Style = Style::new().fg(Color::Blue).bg(Color::Reset);\npub fn accent(t: &Theme) -> ThemeColor { ThemeColor::from(t.accent) }\n' > "$d/src/tint.rs"
+  # The 16 named colours pass, and so do a type whose name ends in Color and a
+  # helper whose name ends in parse.
+  printf 'use ratatui::style::{Color, Style};\npub const X: Style = Style::new().fg(Color::Blue).bg(Color::Reset);\npub fn accent(t: &Theme) -> ThemeColor { ThemeColor::from(t.accent) }\npub fn load(s: &str) -> Color { reparse::<Color>(s) }\n' > "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
     || fail "named colours failed the guard: $(cat "$d.guard")" || return 1
   rm -f "$d/src/tint.rs"
@@ -870,7 +871,7 @@ set -euo pipefail
 # Omarchy rewrites the terminal's 16 ANSI colours on `omarchy theme set`; RGB and
 # 256-colour values would stay put. The check reads text, not types
 # ((r, g, b).into() gets past it), so DESIGN.md's rule still holds. See src/view.rs.
-if grep -rnE '\b(Rgb|Indexed)\(|\bColor::(from_u32|from_hsl|from_hsluv|from_str|from)\(|parse::<([A-Za-z_][A-Za-z0-9_]*::)*Color>' src; then
+if grep -rnE '\b(Rgb|Indexed)\(|\bColor::(from_u32|from_hsl|from_hsluv|from_str|from)\(|\bparse::<(::)?([A-Za-z_][A-Za-z0-9_]*::)*Color>' src; then
   echo "  RGB or 256-colour values in src/ (above): use the 16 named colours (DESIGN.md)" >&2
   exit 1
 fi
