@@ -3,6 +3,25 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.1.1] - 2026-09-28
+
+### Added
+- Three implementation plans for Omarchy stack packs, chosen by what the app should do: an app
+  in its own window (Rust with GPUI and gpui-omarchy, plan 008), a keyboard-driven terminal app
+  (Rust with ratatui, plan 009), and a shell plugin for the bar (QML, checked by Omarchy's own
+  plugin validator at a pinned commit, plan 010). The packs don't exist yet: each plan is ready
+  to hand to an agent, one pull request at a time, after plan 007.
+- Each plan's code was built and gated in a rehearsal of the template, and its pre-landing review
+  is recorded in the plan index. New projects from these packs follow the Omarchy theme: colour
+  guards (in the Omarchy packs only) refuse fixed colours and gradients, a plugin's setup step
+  never loads it into the desktop, and projects named like a starter module (`app`, `cli`)
+  still compile.
+
+### Changed
+- Plan 007 (the plain Rust pack) now formats the starter after naming it, keeps the project's
+  name out of doc comments so names like `MyApp` or `my_tool` pass clippy, and lets a first pull
+  request pass the coverage ratchet when its base predates the pack. It adds three tests.
+
 ## [0.1.0] - 2026-09-25
 
 ### Added
