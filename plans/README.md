@@ -151,6 +151,11 @@ adversarial and structured passes). Each correction below was checked before it 
 - 008 and 009: the starters name their own crate `::{{PACKAGE_NAME}}::…`. Before, a project named
   like one of their modules or imports (`app`, `cli`; `cli`, `event`, `io`, `view`) passed
   `validate-name` and then failed to compile; each heavy test now builds those names.
+- 008 and 009 (colour guards, Omarchy packs only): omarchy-app's guard refuses GPUI's
+  fixed-colour constructors (named colours, `opaque_grey`, `transparent_*`, `Rgba::try_from`) and
+  `linear_gradient(`, since Omarchy surfaces are flat; omarchy-tui's refuses colours made from
+  numbers or strings. Theme-derived colours pass, struct literals stay a `DESIGN.md` rule, and a
+  test keeps these guards out of every non-Omarchy pack.
 - 010: the plugin's `INSTALL_CMD`, which AGENTS.md's setup step runs, is `./scripts/omarchy-kit`
   (it fetches Omarchy's pinned tools, with no desktop side effects). `./scripts/dev-link.sh`,
   which loads the checkout into the live bar, is `DEV_CMD`, run on purpose.

@@ -89,9 +89,11 @@ After this plan:
   `~/.config/omarchy/current`), watches it with inotify through `notify`, and survives
   Omarchy's `rm -rf` + `mv` theme swap. Required keys: `background`, `foreground`, `accent`, and
   `red`/`yellow`/`green` (or ANSI `color1..3`). Any failure falls back to Tokyo Night as a
-  whole. The pack's `scripts/check.d/omarchy.sh` refuses `rgb(`, `rgba(` and `hsla(` in `src/`,
-  so colours can only come from the theme's roles (`cx.omarchy()`), and its `DESIGN.md`
-  replaces the skeleton's with Omarchy's design rules.
+  whole. The pack's `scripts/check.d/omarchy.sh` refuses GPUI's fixed-colour constructors
+  (`rgb(`, `white()` and the rest) and `linear_gradient(` in `src/`, so colours come from the
+  theme's roles (`cx.omarchy()`) and surfaces stay flat. The check reads text, not types; the
+  pack's `DESIGN.md`, which replaces the skeleton's with Omarchy's design rules, says so. Only
+  the Omarchy packs carry these guards, and a test keeps it that way.
 - **Testable by construction.** Verified in an `ubuntu:24.04` container on Rust 1.98.1:
   - `#[gpui_kit::test]` runs a seeded test platform with no renderer: window tests draw frames,
     press keys and click, with no display, xvfb or GPU. 14 starter tests pass.
@@ -417,12 +419,37 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
   (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "required in CI" || return 1
-  # A colour literal fails, and the guard says where.
-  printf 'pub fn tint() -> gpui_kit::Hsla {\n    gpui_kit::rgb(0x12_34_56).into()\n}\n' > "$d/src/tint.rs"
+  # Every fixed-colour spelling fails, and the guard says where (never the
+  # signature line, which names Hsla too)...
+  for lit in 'gpui_kit::rgb(0x12_34_56)' 'gpui_kit::rgba(0x1234_56ff)' 'gpui_kit::hsla(0.1, 0.2, 0.3, 1.0)' \
+    'gpui_kit::white()' 'gpui_kit::Hsla::black()' 'gpui_kit::red()' 'gpui_kit::opaque_grey(0.5, 1.0)' \
+    'gpui_kit::transparent_black()' 'gpui_kit::Rgba::try_from("#123456").unwrap()'; do
+    printf 'pub fn tint() -> gpui_kit::Hsla {\n    %s.into()\n}\n' "$lit" > "$d/src/tint.rs"
+    (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.guard" "colour literals" || return 1
+    assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+    assert_not_contains "$d.guard" "src/tint.rs:1:" || return 1
+  done
+  # ...and so does a gradient, whatever its colours: Omarchy surfaces are flat.
+  printf 'pub fn fill(stops: [gpui_kit::LinearColorStop; 2]) -> gpui_kit::Background {\n    gpui_kit::linear_gradient(90.0, stops[0], stops[1])\n}\n' > "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+  assert_contains "$d.guard" "Omarchy surfaces are flat" || return 1
+  # Colours from the theme's roles pass, and so does a helper named like a colour.
+  printf 'pub fn tint(cx: &gpui_kit::App) -> gpui_kit::Hsla {\n    redraw_hint(cx.omarchy().accent.opacity(0.5))\n}\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "theme-derived colours failed the guard: $(cat "$d.guard")" || return 1
   rm -f "$d/src/tint.rs"
+  # The Omarchy guards ship only with Omarchy packs: no other pack, and not the
+  # shared Rust gates, refuses colours or gradients.
+  for f in "$REPO"/template/stacks/*/files/scripts/check.d/omarchy*.sh; do
+    [ -e "$f" ] || continue
+    case "$f" in
+      "$REPO"/template/stacks/omarchy-*) ;;
+      *) fail "an Omarchy guard outside an Omarchy pack: $f" || return 1 ;;
+    esac
+  done
   # The validator gets exactly the entry install.sh writes.
   cat > "$d.stub/validate" <<STUB || return 1
 #!/bin/sh
@@ -1424,13 +1451,20 @@ esac
 ```bash
 #!/usr/bin/env bash
 # Omarchy guards (from ./bootstrap --stack omarchy-app): colours come from the
-# Omarchy theme, never literals in src/, and the desktop entry is valid.
+# Omarchy theme, never literals or gradients in src/, and the desktop entry is valid.
 set -euo pipefail
 
-# gpui-omarchy's Theme (cx.omarchy()) follows `omarchy theme set` live; a
-# literal colour would stay put when the theme changes. See DESIGN.md.
-if grep -rnE '\b(rgb|rgba|hsla)\(' src; then
+# gpui-omarchy's Theme (cx.omarchy()) follows `omarchy theme set` live; a colour
+# built from fixed values would stay put when the theme changes. The check reads
+# text, not types (an Hsla struct literal gets past it), so DESIGN.md's rule
+# still holds.
+if grep -rnE '\b(rgb|rgba|hsla|black|white|red|green|blue|yellow|opaque_grey|transparent_black|transparent_white)\(|\bRgba::try_from\(' src; then
   echo "  colour literals in src/ (above): use the theme's roles, cx.omarchy() (DESIGN.md)" >&2
+  exit 1
+fi
+# Omarchy surfaces are flat: no gradients, whatever their colours (DESIGN.md).
+if grep -rnE '\blinear_gradient\(' src; then
+  echo "  gradients in src/ (above): Omarchy surfaces are flat (DESIGN.md)" >&2
   exit 1
 fi
 
@@ -1534,7 +1568,10 @@ dark, it should look like it shipped with Omarchy.
 Never write a colour. Use the active theme's roles through `cx.omarchy()`: `background`,
 `surface`, `inset`, `foreground`, `secondary`, `bright`, `accent`, `on_accent`, `selection`,
 `border`, `danger`, `warning` and `success`. Derive a tint from a role (`.opacity(...)`) rather
-than inventing a hue. `scripts/check.d/omarchy.sh` refuses `rgb(`, `rgba(` and `hsla(` in `src/`.
+than inventing a hue. `scripts/check.d/omarchy.sh` refuses GPUI's fixed-colour constructors in
+`src/` (`rgb(`, `rgba(`, `hsla(`, `white()` and the other named colours, `opaque_grey()`,
+`transparent_*()`, `Rgba::try_from`) and any `linear_gradient(`. It reads text, not types, so a
+struct literal such as `Hsla { h, s, l, a }` gets past it; the rule above still holds.
 
 ## Typography
 The theme's `font` (the system UI face) for text and its `mono_font` (fontconfig's monospace,
@@ -1806,8 +1843,9 @@ Eight new test functions, one heavy test, and one adapted predecessor test:
   `--print-desktop-entry` matches the installed entry; `CARGO_TARGET_DIR` is honoured; a
   missing binary exits 1; bad arguments or a `BINDIR` with `"` exit 2.
 - `test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci`:
-  literals fail, with the location; a missing validator is a local notice but a CI failure;
-  the validator gets exactly install.sh's entry.
+  every fixed-colour spelling and a gradient fail, with the location, and theme-derived colours
+  pass; only Omarchy packs carry the guards; a missing validator is a local notice but a CI
+  failure; the validator gets exactly install.sh's entry.
 - `test_stack_omarchy_app_shares_the_rust_packs_gates`: the five shared files are byte-identical.
 - `test_heavy_stack_omarchy_app_project_is_green` (heavy job): a real bootstrap (hook formats
   and locks), then the project's own `check.sh`, `coverage.sh` and ratchet, then a broken

@@ -50,8 +50,8 @@ After this plan:
 
 - `./bootstrap --stack omarchy-tui` creates a terminal app that:
   - draws with ratatui in the terminal's own 16 colours, so it follows `omarchy theme set`
-    (a named test checks every cell of the screen, and a guard refuses `Color::Rgb(` and
-    `Color::Indexed(` in `src/`);
+    (a named test checks every cell of the screen, and a guard refuses `Color::Rgb(`,
+    `Color::Indexed(` and colours made from numbers or strings in `src/`);
   - has pure logic, a CLI contract, and an event loop that tests drive with scripted keys
     into ratatui's `TestBackend`, at 90% line and region coverage with per-tier floors;
   - installs a launcher entry that opens it in a floating Omarchy terminal;
@@ -77,9 +77,10 @@ After this plan:
   test repeats the essentials with Python's `pty` module: it waits for the first frame, sends two
   presses and `q`, and checks the exit status and that the alternate screen is left.
 - **Theme colours are the terminal's.** crossterm writes `Color::Blue` as palette index 4
-  (`38;5;4`), which is one of the 16 colours Omarchy's themes set; `Color::Rgb` and
-  `Color::Indexed` bypass the theme, so the guard refuses them and `tests/view.rs` checks every
-  cell (a named invariant).
+  (`38;5;4`), which is one of the 16 colours Omarchy's themes set; `Color::Rgb`,
+  `Color::Indexed` and colours made from numbers or strings (`Color::from_u32`,
+  `Color::from([r, g, b])`, a parsed `"#…"`) bypass the theme, so the guard refuses them and
+  `tests/view.rs` checks every cell (a named invariant).
 - **The title fits the name.** A fixed-width box cut long project names; the box is now as wide
   as the title (at least 36 columns), verified with a 46-character name.
 - **Same launcher conventions as Omarchy.** `Exec=xdg-terminal-exec --app-id=TUI.float -e
@@ -327,12 +328,17 @@ test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
   omarchy_tui_project "$d" || return 1
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
     || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
-  for lit in 'Color::Rgb(0x12, 0x34, 0x56)' 'Color::Indexed(208)'; do
+  for lit in 'Color::Rgb(0x12, 0x34, 0x56)' 'Color::Indexed(208)' 'Rgb(0x12, 0x34, 0x56)' \
+    'Color::from_u32(0x0012_3456)' 'Color::from([0x12, 0x34, 0x56])' '"#123456".parse::<Color>().unwrap()'; do
     printf 'use ratatui::style::Color;\npub const X: Color = %s;\n' "$lit" > "$d/src/tint.rs"
     (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
     assert_exit 1 "$rc" || return 1
     assert_contains "$d.guard" "src/tint.rs:2:" || return 1
   done
+  # The 16 named colours pass.
+  printf 'use ratatui::style::{Color, Style};\npub const X: Style = Style::new().fg(Color::Blue).bg(Color::Reset);\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "named colours failed the guard: $(cat "$d.guard")" || return 1
   rm -f "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
@@ -752,8 +758,11 @@ one accent colour.
 
 ## Color
 Only the terminal's own colours: the 16 named ANSI colours (`Color::Blue`, `Color::Red`, ...)
-and `Color::Reset` for its default foreground and background. Never `Color::Rgb` or
-`Color::Indexed`: they ignore the theme, and `scripts/check.d/omarchy.sh` refuses them. Pick
+and `Color::Reset` for its default foreground and background. Never `Color::Rgb`,
+`Color::Indexed` or a colour made from a number or a string (`Color::from_u32`,
+`Color::from([r, g, b])`, a parsed `"#…"`): they ignore the theme, and
+`scripts/check.d/omarchy.sh` refuses them. It reads text, not types, so `(r, g, b).into()` gets
+past it; the rule still holds. Pick
 one named colour as the accent (the starter uses blue), red for danger, yellow for warnings and
 green for success.
 
@@ -857,10 +866,11 @@ X-AppVersion=@VERSION@
 # entry is valid.
 set -euo pipefail
 
-# Omarchy rewrites the terminal's 16 ANSI colours on `omarchy theme set`;
-# Color::Rgb and Color::Indexed would stay put. See src/view.rs and DESIGN.md.
-if grep -rnE 'Color::(Rgb|Indexed)\(' src; then
-  echo "  RGB or 256-colour literals in src/ (above): use the 16 named colours (DESIGN.md)" >&2
+# Omarchy rewrites the terminal's 16 ANSI colours on `omarchy theme set`; RGB and
+# 256-colour values would stay put. The check reads text, not types
+# ((r, g, b).into() gets past it), so DESIGN.md's rule still holds. See src/view.rs.
+if grep -rnE '\b(Rgb|Indexed)\(|Color::(from_u32|from_hsl|from_hsluv|from_str|from)\(|parse::<Color>' src; then
+  echo "  RGB or 256-colour values in src/ (above): use the 16 named colours (DESIGN.md)" >&2
   exit 1
 fi
 
@@ -1512,7 +1522,8 @@ Nine new test functions and two changes:
   executable.
 - `test_omarchy_packs_share_one_install_script`: the two `install.sh` copies are identical.
 - `test_stack_omarchy_tui_bootstrap_installs_the_pack`, `…_rejects_unusable_names_before_writes`,
-  `…_guard_refuses_rgb_and_256_colour_literals`: as for omarchy-app.
+  `…_guard_refuses_rgb_and_256_colour_literals`: as for omarchy-app (RGB, 256-colour and
+  number- or string-made colours fail; the 16 named colours pass).
 - `test_heavy_stack_omarchy_tui_project_is_green` (heavy job): real bootstrap, `check.sh`,
   `coverage.sh`, ratchet, then the real binary in a 24×80 pseudo-terminal: it enters the
   alternate screen, `q` exits 0, and it leaves the alternate screen. Projects named `app`,
