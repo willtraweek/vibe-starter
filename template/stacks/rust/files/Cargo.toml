@@ -1,0 +1,37 @@
+[package]
+name = "{{PACKAGE_NAME}}"
+# The real version is the root VERSION file (gstack /ship bumps it), compiled in
+# by src/lib.rs. This one stays 0.0.0 so Cargo.lock never churns.
+version = "0.0.0"
+edition = "2024"
+# Oldest Rust this code builds with (edition 2024 needs 1.85). Raise it when you
+# use newer features; rust-toolchain.toml pins the compiler you develop with.
+rust-version = "1.85"
+description = "{{PROJECT_NAME}}"
+publish = false
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+
+# Per-tier coverage gates (TESTING.md), enforced by scripts/coverage_tiers.sh.
+# `minimum` is enforced and only ever rises; `target` is the doctrine's aim.
+[package.metadata.coverage_tiers.pure_logic]
+title = "Pure logic & utilities"
+target = 100.0
+minimum = 100.0
+include = []
+
+[package.metadata.coverage_tiers.api_surface]
+title = "API / contract surface"
+target = 100.0
+minimum = 100.0
+include = ["src/lib.rs", "src/main.rs"]

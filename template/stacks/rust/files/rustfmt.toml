@@ -1,0 +1,4 @@
+# `cargo fmt` reads the edition from Cargo.toml; plain `rustfmt` (editors, hooks)
+# needs it here.
+edition = "2024"
+style_edition = "2024"

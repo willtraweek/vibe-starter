@@ -1,0 +1,10 @@
+# KEY=value lines. ./bootstrap --stack rust replaces {{KEY}} and {{KEY: description}}
+# placeholders in the project's docs with these values.
+INSTALL_CMD=cargo build --locked
+DEV_CMD=cargo run --locked -- --help
+BUILD_CMD=cargo build --locked --release
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=cargo test --locked
+SHIP_GATE=./scripts/check.sh && ./scripts/coverage.sh
+STACK=Rust 1.98 (edition 2024, pinned in rust-toolchain.toml); clippy (pedantic, warnings are errors); rustfmt; cargo test; cargo-llvm-cov.
+COVERAGE_ENFORCEMENT=./scripts/coverage.sh: cargo llvm-cov with the 90% line and region floors (regions stand in for branches on stable Rust), then the per-tier gates of scripts/coverage_tiers.sh; CI runs it, fail-closed
