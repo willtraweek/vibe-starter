@@ -2834,6 +2834,234 @@ PYPROBE
   assert_contains "$d.tiers.out" "need 0 <= minimum <= target <= 100"
 }
 
+# --- tests: rust stack pack (plan 007) ----------------------------------------
+rust_env() {  # Without --install, rustup run cannot provision a missing toolchain.
+  stack_env rustup run "${SELFTEST_RUST_TOOLCHAIN:-stable}" "$@"
+}
+rust_ready() {  # A named local skip; fully provisioned CI must have none.
+  command -v rustup >/dev/null 2>&1 || { echo "rustup not installed"; return; }
+  command -v cargo >/dev/null 2>&1 || { echo "cargo not installed"; return; }
+  command -v jq >/dev/null 2>&1 || { echo "jq not installed"; return; }
+  rust_env cargo --version >/dev/null 2>&1 || { echo "test toolchain is not installed"; return; }
+  rust_env cargo clippy --version >/dev/null 2>&1 || { echo "clippy missing for test toolchain"; return; }
+  rust_env cargo fmt --version >/dev/null 2>&1 || echo "rustfmt missing for test toolchain"
+}
+bootstrap_rust() {
+  fresh_copy "$1"
+  (cd "$1" && HOME="$WORK/home" rust_env ./bootstrap --name "Demo App" --stack rust --yes </dev/null >"$1.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")" || return 1
+  assert_exists "$1/Cargo.lock" || return 1
+  (cd "$1" && git add -A && git commit -qm init) || fail "commit failed"
+}
+rs_tiers() {
+  local dir="$1"; shift
+  (cd "$dir" && rust_env ./scripts/coverage_tiers.sh "$@" >"$dir.tiers.out" 2>&1)
+}
+rs_report() {  # Known-valid positive control, mutated independently by each probe.
+  jq -n --arg root "$(cd "$1" && pwd -P)" '
+    {type:"llvm.coverage.json.export",data:[{files:["src/lib.rs","src/main.rs"] |
+      map({filename:($root+"/"+.),summary:{lines:{count:10,covered:10},regions:{count:4,covered:4}}})}]}' > "$1/coverage.json"
+}
+rs_expect_bad_report() {
+  local dir="$1" filter="$2" rc
+  rs_report "$dir" || return 1
+  jq "$filter" "$dir/coverage.json" > "$dir/bad.json" || return 1
+  rs_tiers "$dir" --check bad.json; rc=$?
+  assert_exit 1 "$rc" || return 1
+  rs_tiers "$dir" --report bad.json; rc=$?
+  assert_exit 1 "$rc"
+}
+test_stack_rust_project_is_green_on_first_run() {
+  local d="$WORK/stack-rust/demo-app" why before_toolchains
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  before_toolchains="$(rust_env rustup toolchain list)" || return 1
+  bootstrap_rust "$d" || return 1
+  assert_contains "$d/Cargo.toml" 'name = "demo_app"' || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_contains "$d/.bootstrapped" "with the rust stack pack" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
+  (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
+    && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
+    || fail "new project's checks/tests failed: $(tail -25 "$d.gate.out")" || return 1
+  (cd "$d" && rust_env cargo run --locked -q -- --version) | grep -qx "demo_app $(cat "$d/VERSION")" \
+    || fail "--version does not print VERSION" || return 1
+  # Even diagnostics run under the installed override inside the pinned project.
+  [ "$(cd "$d" && rust_env rustup toolchain list)" = "$before_toolchains" ] \
+    || fail "verification changed installed toolchains"
+}
+test_stack_rust_coverage_gate_passes() {
+  local d="$WORK/stack-rust-cov/demo-app" why
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
+  rust_env rustup component list --installed | grep -q '^llvm-tools' || { skip "llvm-tools not installed"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
+    || fail "coverage.sh failed: $(tail -25 "$d.cov.out")"
+}
+test_stack_rust_coverage_tiers_fail_closed() {
+  local d="$WORK/stack-rust-tiers/demo-app" why rc filter
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  rs_report "$d" || return 1
+  rs_tiers "$d" --check coverage.json || fail "valid measurements failed" || return 1
+  rs_tiers "$d" --report coverage.json || return 1
+  assert_contains "$d.tiers.out" "n/a (empty tier)" || return 1
+  for filter in \
+    '.data[0].files[0].summary.lines.covered = 5' \
+    '.data[0].files[0].summary.regions.covered = 2' \
+    '.data[0].files |= .[0:1]' \
+    '.data[0].files[].summary = {}' \
+    '.data[0].files[].summary.lines = {count:0,covered:0}' \
+    '.data[0].files[].summary.regions = {count:0,covered:0}' \
+    '.data[0].files[0].summary.lines.covered = -1' \
+    '.data[0].files[0].summary.regions.covered = 5' \
+    '.data[0].files[0].summary.lines.count = "10"' \
+    '.data[0].files[0].summary.lines.count = 10.5' \
+    '.data[0].files[0].summary.lines = {count:1e999,covered:1e999}' \
+    '.data[0].files[0].summary.lines = {count:1e308,covered:1e308}' \
+    '.data[0].files += [.data[0].files[0]]' \
+    '.data[0].files += [(.data[0].files[0] | .filename = "src/lib.rs")]' \
+    '.data = []' \
+    'del(.type)'; do
+    rs_expect_bad_report "$d" "$filter" || return 1
+  done
+  printf '{' > "$d/bad.json"
+  rs_tiers "$d" --check bad.json; rc=$?
+  assert_exit 1 "$rc" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/missing.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "is not a file" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -pi -e 's|include = \[\]|include = "src/lib.rs"|' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.pure_logic\].*//s' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc"
+}
+test_stack_rust_ratchet_preserves_membership() {
+  local d="$WORK/stack-rust-ratchet/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  rs_tiers "$d" --ratchet HEAD || fail "unchanged ratchet failed" || return 1
+  perl -pi -e 's|include = \["src/lib.rs", "src/main.rs"\]|include = ["src/lib.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "member removed" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -pi -e 's/minimum = 100.0/minimum = 90.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "minimum lowered" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.api_surface\].*//s' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  printf '// extra module\n' > "$d/src/extra.rs"
+  perl -pi -e 's|include = \[\]|include = ["src/extra.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD || fail "adding membership failed" || return 1
+  # A lower committed baseline permits an increase without confusing it with removal.
+  perl -pi -e 's/minimum = 100.0/minimum = 90.0/g' "$d/Cargo.toml"
+  (cd "$d" && git add Cargo.toml src/extra.rs && git commit -qm 'ratchet fixture') || return 1
+  perl -pi -e 's/target = 100.0/target = 95.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "target lowered" || return 1
+  perl -pi -e 's/target = 95.0/target = 100.0/g; s/minimum = 90.0/minimum = 100.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD || fail "raising floors failed"
+}
+test_stack_rust_rejects_workspaces() {
+  local d="$WORK/stack-rust-workspace/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  mkdir -p "$d/another/src"
+  printf '[package]\nname = "another"\nversion = "0.0.0"\nedition = "2024"\n' > "$d/another/Cargo.toml"
+  printf '// member\n' > "$d/another/src/lib.rs"
+  printf '\n[workspace]\nmembers = ["another"]\n' >> "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "only one root package" || return 1
+  printf '[workspace]\nmembers = ["another"]\nresolver = "3"\n' > "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "only one root package"
+}
+test_stack_rust_reserved_name_fails_before_writes() {
+  local d="$WORK/stack-rust-name/demo-app" name before rc
+  for name in Async Self Gen Test Std; do
+    fresh_copy "$d"
+    before="$(tree_fingerprint "$d")"
+    (cd "$d" && ./bootstrap --name "$name" --stack rust --yes >"$d.out" 2>&1); rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "reserved Rust package name" || return 1
+    [ "$(tree_fingerprint "$d")" = "$before" ] || fail "reserved name mutated the tree" || return 1
+    rm -rf "$d"
+  done
+}
+test_stack_rust_packs_keep_names_out_of_doc_comments() {
+  # clippy's pedantic doc_markdown (warnings are errors) rejects a name like MyApp
+  # or my_tool in a doc comment, so no Rust pack puts the project's name in one.
+  local hits
+  hits="$(cd "$REPO" && grep -rnE '^[[:space:]]*//[/!].*\{\{(PROJECT_NAME|PACKAGE_NAME)\}\}' \
+    --include='*.rs' template/stacks || true)"
+  [ -z "$hits" ] || fail "a project name in a Rust doc comment: $hits"
+}
+test_stack_rust_after_bootstrap_formats_before_locking() {
+  # The name changes the starter's line lengths, so the hook formats before it
+  # locks, and without cargo it names both steps. The stub cargo fails and logs
+  # its calls, so no toolchain or network is needed.
+  local d="$WORK/stack-rust-hook/demo-app" rc
+  mkdir -p "$d.stub" "$d.empty" || return 1
+  cat > "$d.stub/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$d.cargo-calls"
+exit 101
+STUB
+  chmod +x "$d.stub/cargo" || return 1
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --offline --quiet')" ] \
+    || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  (cd "$d.empty" && PATH="$d.empty" /bin/sh "$REPO/template/stacks/rust/after-bootstrap") >"$d.hook" 2>&1; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.hook" "run 'cargo fmt --all && cargo generate-lockfile'"
+}
+test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
+  # A project's first PR into a protected default branch compares against the
+  # template commit: no Cargo.toml, or one without tiers, is nothing to ratchet,
+  # as for the python pack. An unknown ref, an unreadable tree or unreadable
+  # metadata still fails.
+  local d="$WORK/stack-rust-ratchet-nobase/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w README.md)" | git mktree)")" \
+    && git branch -f broken "$(git commit-tree -m broken "$(printf '100644 blob %s\tCargo.toml\n' "$(printf 'not [valid toml\n' | git hash-object -w --stdin)" | git mktree)")" \
+    && git branch -f unreadable "$(git commit-tree -m unreadable "$(printf '100644 blob %s\tCargo.toml\n' 0123456789abcdef0123456789abcdef01234567 | git mktree --missing)")") \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet prepack || fail "a base without Cargo.toml failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no Cargo.toml at prepack; nothing to ratchet against" || return 1
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\..*//s' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'no tiers' && git branch -f notiers && git reset -q --hard HEAD~1) \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet notiers || fail "a base without tiers failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no coverage tiers at notiers; nothing to ratchet against" || return 1
+  rs_tiers "$d" --ratchet no-such-ref; rc=$?
+  assert_exit 1 "$rc" || return 1
+  rs_tiers "$d" --ratchet broken; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tiers" || return 1
+  rs_tiers "$d" --ratchet unreadable; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tree"
+}
+
 # --- runner -------------------------------------------------------------------
 if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
