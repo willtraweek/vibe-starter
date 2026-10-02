@@ -63,7 +63,8 @@ go in `files/scripts/check.d/<name>.sh`; `scripts/check.sh` runs every `scripts/
 The self-test runs each real pack end to end: bootstrap a project, then run that project's own
 checks and tests.
 
-Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floors).
+Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floors) and `rust`
+(pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov with 90% line and region floors).
 
 ## Note
 
