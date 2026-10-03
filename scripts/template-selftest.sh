@@ -2844,7 +2844,13 @@ rust_ready() {  # A named local skip; fully provisioned CI must have none.
   command -v jq >/dev/null 2>&1 || { echo "jq not installed"; return; }
   rust_env cargo --version >/dev/null 2>&1 || { echo "test toolchain is not installed"; return; }
   rust_env cargo clippy --version >/dev/null 2>&1 || { echo "clippy missing for test toolchain"; return; }
-  rust_env cargo fmt --version >/dev/null 2>&1 || echo "rustfmt missing for test toolchain"
+  rust_env cargo fmt --version >/dev/null 2>&1 || { echo "rustfmt missing for test toolchain"; return; }
+  # The starter declares the pinned toolchain as its rust-version, so an older
+  # compiler refuses to build it: name that, as the Omarchy packs' helpers do.
+  local need have
+  need="$(sed -n 's/^rust-version = "1\.\([0-9][0-9]*\)"$/\1/p' "$REPO/template/stacks/rust/files/Cargo.toml")"
+  have="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
+  [ "${have:-0}" -ge "${need:-0}" ] || echo "the test toolchain is older than the pack's rust-version 1.$need (set SELFTEST_RUST_TOOLCHAIN to the channel rust-toolchain.toml pins)"
 }
 bootstrap_rust() {
   fresh_copy "$1"
@@ -3376,6 +3382,7 @@ test_stack_rust_coverage_gate_reruns_from_a_clean_slate() {
   local d="$WORK/stack-rust-cov-rerun/demo-app" why rc
   why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
   rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
+  rust_env rustup component list --installed | grep -q '^llvm-tools' || { skip "llvm-tools not installed"; return; }
   bootstrap_rust "$d" || return 1
   (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
     || fail "the first coverage run failed: $(tail -20 "$d.cov.out")" || return 1
