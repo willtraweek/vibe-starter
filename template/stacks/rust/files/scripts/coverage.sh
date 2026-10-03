@@ -9,6 +9,9 @@ if ! cargo llvm-cov --version >/dev/null 2>&1; then
   echo "cargo-llvm-cov is not installed: cargo install --locked cargo-llvm-cov" >&2
   exit 1
 fi
+# --no-report keeps the profiles of earlier runs and the reports below would
+# merge them, so a deleted test could still count. Start from a clean slate.
+cargo llvm-cov clean --workspace
 cargo llvm-cov --locked --all-features --no-report
 cargo llvm-cov report --fail-under-lines 90 --fail-under-regions 90
 cargo llvm-cov report --json --summary-only --output-path coverage.json

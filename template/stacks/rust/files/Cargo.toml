@@ -4,9 +4,10 @@ name = "{{PACKAGE_NAME}}"
 # by src/lib.rs. This one stays 0.0.0 so Cargo.lock never churns.
 version = "0.0.0"
 edition = "2024"
-# Oldest Rust this code builds with (edition 2024 needs 1.85). Raise it when you
-# use newer features; rust-toolchain.toml pins the compiler you develop with.
-rust-version = "1.85"
+# Declare the pinned toolchain (rust-toolchain.toml), the only one CI builds
+# with, and bump the two together: a lower value makes Cargo's MSRV-aware
+# resolver hold dependencies back for a compiler nothing here tests.
+rust-version = "1.98"
 description = "{{PROJECT_NAME}}"
 publish = false
 
@@ -24,6 +25,9 @@ todo = "warn"
 
 # Per-tier coverage gates (TESTING.md), enforced by scripts/coverage_tiers.sh.
 # `minimum` is enforced and only ever rises; `target` is the doctrine's aim.
+# Coverage of one function does not add up across test binaries: a function
+# covered partly by an inline #[cfg(test)] test and partly from tests/ still
+# counts as partly covered. Cover each function fully from one of them.
 [package.metadata.coverage_tiers.pure_logic]
 title = "Pure logic & utilities"
 target = 100.0

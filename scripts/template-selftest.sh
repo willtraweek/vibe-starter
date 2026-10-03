@@ -2888,6 +2888,10 @@ test_stack_rust_project_is_green_on_first_run() {
     || fail "new project's checks/tests failed: $(tail -25 "$d.gate.out")" || return 1
   (cd "$d" && rust_env cargo run --locked -q -- --version) | grep -qx "demo_app $(cat "$d/VERSION")" \
     || fail "--version does not print VERSION" || return 1
+  # git commits the lockfile CI's --locked steps need and ignores the build output.
+  git -C "$d" ls-files --error-unmatch -- Cargo.lock >/dev/null 2>&1 || fail "Cargo.lock is not committed" || return 1
+  [ -z "$(cd "$d" && git status --porcelain)" ] \
+    || fail "the first run left files git would commit: $(cd "$d" && git status --porcelain | head -5)" || return 1
   # Even diagnostics run under the installed override inside the pinned project.
   [ "$(cd "$d" && rust_env rustup toolchain list)" = "$before_toolchains" ] \
     || fail "verification changed installed toolchains"
@@ -2942,7 +2946,60 @@ test_stack_rust_coverage_tiers_fail_closed() {
   (cd "$d" && git checkout -q -- Cargo.toml)
   perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.pure_logic\].*//s' "$d/Cargo.toml"
   rs_tiers "$d" --validate; rc=$?
-  assert_exit 1 "$rc"
+  assert_exit 1 "$rc" || return 1
+  # Extended by the /ship coverage audit.
+  # Value: protects=coverage_tiers.sh rejects each schema rule by itself (ranges,
+  # types, tier keys, non-canonical, duplicate or empty membership) and misuse
+  # with exit 2; fails_when=a jq schema clause or the path_ok pattern is loosened,
+  # the argument-count check is dropped, or a missing report stops naming the
+  # fix; why_new=only a string include and a missing file were fed in: the other
+  # clauses, the usage branch and the missing-report branch had no test; seam=none
+  # Every row is otherwise valid TOML naming files that exist, so only the rule
+  # under test can reject it.
+  local edit
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  while IFS= read -r edit; do
+    perl -pi -e "$edit" "$d/Cargo.toml" || return 1
+    ! (cd "$d" && git diff --quiet -- Cargo.toml) || fail "the Cargo.toml edit did not apply: $edit" || return 1
+    rs_tiers "$d" --validate; rc=$?
+    (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+    assert_exit 1 "$rc" || { echo "    accepted: $edit"; return 1; }
+    assert_contains "$d.tiers.out" "invalid tier schema, empty membership, or duplicate membership" \
+      || { echo "    for: $edit"; return 1; }
+  done <<'CASES'
+s|include = \[\]|include = ["src/lib.rs"]|
+s|"src/lib.rs", "src/main.rs"|"src/lib.rs", "src/lib.rs"|
+s|"src/lib.rs", "src/main.rs"\]|]|
+s|"src/lib.rs", |"./src/lib.rs", |
+s|"src/lib.rs", |"src//lib.rs", |
+s|"src/lib.rs", |"src/../src/lib.rs", |
+s|"src/lib.rs", |"/etc/passwd", |
+s|target = 100.0|target = 99.0|
+s|target = 100.0|target = 101.0|
+s|minimum = 100.0|minimum = -1.0|
+s|minimum = 100.0|minimum = "100"|
+s|title = "API / contract surface"|title = 5|
+s|coverage_tiers\.pure_logic|coverage_tiers.Pure-Logic|
+CASES
+  rs_tiers "$d"; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.tiers.out" "usage: " || return 1
+  rs_tiers "$d" --ratchet; rc=$?
+  assert_exit 2 "$rc" || return 1
+  rs_tiers "$d" --validate extra; rc=$?
+  assert_exit 2 "$rc" || return 1
+  # --check and --report without a name read coverage.json; with none written,
+  # the failure says how to make one.
+  rs_report "$d" || return 1
+  rs_tiers "$d" --check || fail "--check did not read coverage.json: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "coverage-tiers: 2 tier(s) ok" || return 1
+  rs_tiers "$d" --report || fail "--report did not read coverage.json: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "| Tier | Lines | Regions | Minimum | Target |" || return 1
+  assert_contains "$d.tiers.out" "| API / contract surface | 100 | 100 | " || return 1
+  rm -f "$d/coverage.json"
+  rs_tiers "$d" --check; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "coverage.json not found (run scripts/coverage.sh)"
 }
 test_stack_rust_ratchet_preserves_membership() {
   local d="$WORK/stack-rust-ratchet/demo-app" why rc
@@ -2974,7 +3031,29 @@ test_stack_rust_ratchet_preserves_membership() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "target lowered" || return 1
   perl -pi -e 's/target = 95.0/target = 100.0/g; s/minimum = 90.0/minimum = 100.0/g' "$d/Cargo.toml"
-  rs_tiers "$d" --ratchet HEAD || fail "raising floors failed"
+  rs_tiers "$d" --ratchet HEAD || fail "raising floors failed" || return 1
+  # Extended by the /ship coverage audit.
+  # Value: protects=the ratchet names a tier removed since the base and refuses a
+  # base whose tiers are invalid; fails_when=the removed-tier branch or the base
+  # validation is dropped or reworded into a pass; why_new=the removal above
+  # leaves no members, so validate rejects it before the ratchet compares
+  # anything, and an invalid base had no test; seam=none
+  # Dropping the tier that is not the only one with members keeps the config
+  # valid, so the ratchet is what objects.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.pure_logic\].*?(?=\n\[package\.metadata\.coverage_tiers\.api_surface\])//s' "$d/Cargo.toml"
+  assert_not_contains "$d/Cargo.toml" "pure_logic" || return 1
+  assert_contains "$d/Cargo.toml" "coverage_tiers.api_surface" || return 1
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "pure_logic: tier removed since the base" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -pi -e 's/minimum = 90.0/minimum = 101.0/' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'invalid tiers' && git checkout -q HEAD~1 -- Cargo.toml) \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "invalid base tiers"
 }
 test_stack_rust_rejects_workspaces() {
   local d="$WORK/stack-rust-workspace/demo-app" why rc
@@ -2987,17 +3066,30 @@ test_stack_rust_rejects_workspaces() {
   rs_tiers "$d" --validate; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "only one root package" || return 1
+  # A plain path dependency is a second crate too: its code would escape the lints
+  # and coverage, which see only the root package.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\nanother = { path = "another" }\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'another = { path = "another" }' || return 1
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
   printf '[workspace]\nmembers = ["another"]\nresolver = "3"\n' > "$d/Cargo.toml"
   rs_tiers "$d" --validate; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "only one root package"
 }
 test_stack_rust_reserved_name_fails_before_writes() {
-  local d="$WORK/stack-rust-name/demo-app" name before rc
+  local d="$WORK/stack-rust-name/demo-app" stub="$WORK/stack-rust-name/stub" name before rc
+  # If validate-name ever let a name through, bootstrap would go on to its hook:
+  # a failing stub cargo and run_bootstrap's sandboxed HOME keep that run away
+  # from real toolchains and the real ~/.gstack.
+  mkdir -p "$stub" || return 1
+  printf '#!/bin/sh\nexit 101\n' > "$stub/cargo" && chmod +x "$stub/cargo" || return 1
   for name in Async Self Gen Test Std; do
     fresh_copy "$d"
     before="$(tree_fingerprint "$d")"
-    (cd "$d" && ./bootstrap --name "$name" --stack rust --yes >"$d.out" 2>&1); rc=$?
+    PATH="$stub:$(printenv PATH)" run_bootstrap "$d" --name "$name" --stack rust --yes; rc=$?
     assert_exit 2 "$rc" || return 1
     assert_contains "$d.out" "reserved Rust package name" || return 1
     [ "$(tree_fingerprint "$d")" = "$before" ] || fail "reserved name mutated the tree" || return 1
@@ -3029,6 +3121,10 @@ STUB
     || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
   [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --offline --quiet')" ] \
     || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  # Both steps failed, and the hook says so instead of claiming a lockfile.
+  assert_contains "$d.out" "cargo fmt failed: run 'cargo fmt --all' before your first commit." || return 1
+  assert_contains "$d.out" "cargo generate-lockfile failed: run it and commit Cargo.lock before your first push." || return 1
+  assert_not_contains "$d.out" "Wrote Cargo.lock" || return 1
   (cd "$d.empty" && PATH="$d.empty" /bin/sh "$REPO/template/stacks/rust/after-bootstrap") >"$d.hook" 2>&1; rc=$?
   assert_exit 0 "$rc" || return 1
   assert_contains "$d.hook" "run 'cargo fmt --all && cargo generate-lockfile'"
@@ -3060,6 +3156,233 @@ test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
   rs_tiers "$d" --ratchet unreadable; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.tiers.out" "cannot read base tree"
+}
+test_stack_rust_guard_fails_closed() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=the rust guard fails on a rustfmt diff, a rustc or clippy
+  # warning, a missing Cargo.lock, a bad tier config and no cargo, and check.sh
+  # runs it; fails_when=-D warnings, --all-targets, --locked, a set -e step or
+  # the --validate call is dropped from scripts/check.d/rust.sh, or the pack stops
+  # shipping the guard there; why_new=only the passing run exercised the guard, so a guard
+  # that checked nothing passed every test; seam=none
+  local d="$WORK/stack-rust-guard/demo-app" why rc want bad
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1 \
+    || fail "the guard failed on a fresh project: $(tail -20 "$d.guard.out")" || return 1
+  # Each snippet trips exactly one tool: rustfmt, a rustc lint, then clippy pedantic.
+  while IFS='|' read -r want bad; do
+    printf '%b' "$bad" >> "$d/src/lib.rs"
+    (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+    (cd "$d" && git checkout -q -- src/lib.rs) || return 1
+    [ "$rc" -ne 0 ] || fail "the guard passed src/lib.rs ending in: $bad" || return 1
+    assert_contains "$d.guard.out" "$want" || return 1
+  done <<'CASES'
+Diff in|\n/// Spare.\npub fn  spare() {}\n
+missing documentation|\npub fn spare() {}\n
+must_use|\n/// Spare.\npub fn spare() -> u8 {\n    1\n}\n
+CASES
+  # --all-targets: a warning in tests/ fails the guard too.
+  printf '\nfn spare() {}\n' >> "$d/tests/cli.rs"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- tests/cli.rs) || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed a warning in tests/cli.rs" || return 1
+  assert_contains "$d.guard.out" "is never used" || return 1
+  mv "$d/Cargo.lock" "$d.lock" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  mv "$d.lock" "$d/Cargo.lock" || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed without Cargo.lock" || return 1
+  assert_contains "$d.guard.out" "Cargo.lock" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/missing.rs"]|' "$d/Cargo.toml"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "include 'src/missing.rs' is not a file" || return 1
+  mkdir -p "$d.empty" || return 1
+  (cd "$d" && env PATH="$d.empty" /bin/bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "cargo is not installed" || return 1
+  printf '\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent GITLEAKS_BIN=/nonexistent CI=false \
+    ./scripts/check.sh) >"$d.check.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.check.out" "- rust: running scripts/check.d/rust.sh..." || return 1
+  assert_contains "$d.check.out" "missing documentation" || return 1
+  assert_not_contains "$d.check.out" "OK: checks passed."
+}
+test_stack_rust_coverage_gate_fails_closed() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=scripts/coverage.sh exits 1 with an install hint when
+  # cargo-llvm-cov is missing, clears earlier coverage data before the run,
+  # stops at a failing test run or a missed 90% floor, and ends on the tier gate
+  # over the report it just wrote; fails_when=the tool guard becomes a skip, the
+  # clean step is dropped, a floor is lowered, a step's failure is swallowed or
+  # the tier gate stops reading coverage.json; why_new=the one coverage.sh test
+  # needs the real tool, skips without it and covers only a passing run; seam=none
+  # A stub cargo fails at the step named in fail-at and logs every call, so this
+  # needs no toolchain and behaves the same where cargo-llvm-cov is installed.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local root="$WORK/stack-rust-cov-closed" d="$WORK/stack-rust-cov-closed/demo-app" rc fail_at stopped real
+  mkdir -p "$root/bin" || return 1
+  cat > "$root/bin/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$root/calls"
+case "\$*" in *"\$(cat "$root/fail-at")"*) exit 101 ;; esac
+case "\$*" in
+  metadata*) cat "$root/metadata.json" ;;
+  *"--output-path coverage.json"*) cp "$root/report.json" coverage.json ;;
+esac
+STUB
+  chmod +x "$root/bin/cargo" || return 1
+  echo "no step" > "$root/fail-at"
+  fresh_copy "$d" || return 1
+  PATH="$root/bin:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  echo "llvm-cov --version" > "$root/fail-at"
+  : > "$root/calls"
+  (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "cargo-llvm-cov is not installed: cargo install --locked cargo-llvm-cov" || return 1
+  [ "$(cat "$root/calls")" = "cargo llvm-cov --version" ] \
+    || fail "coverage.sh went on without the tool: $(cat "$root/calls")" || return 1
+  while IFS='|' read -r fail_at stopped; do
+    printf '%s\n' "$fail_at" > "$root/fail-at"
+    : > "$root/calls"
+    (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || fail "coverage.sh passed with '$fail_at' failing" || return 1
+    assert_contains "$root/calls" "$fail_at" || return 1
+    assert_not_contains "$root/calls" "$stopped" || return 1
+  done <<'CASES'
+llvm-cov clean --workspace|--no-report
+--no-report|--fail-under
+--fail-under-lines 90 --fail-under-regions 90|--output-path
+CASES
+  # With every cargo step passing, the tier gate reads the report coverage.sh just
+  # wrote: 95% of the api_surface lines clears the 90% floor, not the tier's 100%.
+  real="$(cd "$d" && pwd -P)" || return 1
+  jq -n --arg r "$real" '{packages: [{id: "demo", manifest_path: ($r + "/Cargo.toml"), dependencies: [],
+    metadata: {coverage_tiers: {api_surface: {minimum: 100, target: 100, include: ["src/lib.rs", "src/main.rs"]}}}}],
+    workspace_members: ["demo"], workspace_root: $r}' > "$root/metadata.json" || return 1
+  jq -n --arg r "$real" '{type: "llvm.coverage.json.export", data: [{files: [
+    {filename: ($r + "/src/lib.rs"), summary: {lines: {count: 10, covered: 9}, regions: {count: 4, covered: 4}}},
+    {filename: ($r + "/src/main.rs"), summary: {lines: {count: 10, covered: 10}, regions: {count: 4, covered: 4}}}]}]}' \
+    > "$root/report.json" || return 1
+  echo "no step" > "$root/fail-at"
+  : > "$root/calls"
+  (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "api_surface: lines coverage 95% is below its minimum 100%" || return 1
+  # Old coverage data is cleared before the run, never after it.
+  if [ "$(sed -n 2p "$root/calls")" != "cargo llvm-cov clean --workspace" ] \
+    || ! sed -n 3p "$root/calls" | grep -q -- '--no-report'; then
+    fail "coverage.sh does not clear old coverage data before the run: $(cat "$root/calls")"
+  fi
+}
+test_stack_rust_ci_ratchet_step_on_a_shallow_pr_checkout() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=the new project's ci.yml ratchet step works on a shallow
+  # pull-request checkout: it passes an added tier member and fails a removed
+  # one; fails_when=the step's fetch, ref or script arguments drift, the script
+  # loses its exec bit in git, or git archive cannot read the depth-1 base;
+  # why_new=the ratchet tests call the script against local refs, and nothing ran
+  # the workflow's own step the way GitHub does; seam=none
+  local root="$WORK/stack-rust-ci" d="$WORK/stack-rust-ci/demo-app" why ratchet pr ci rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  ratchet="$(sed -n '/name: Coverage tiers never slip/,$p' "$d/.github/workflows/ci.yml" | sed '1,/run: |/d' | sed 's/^ *//')"
+  [ -n "$ratchet" ] || fail "cannot find ci.yml's ratchet step" || return 1
+  git init -q --bare "$root/origin.git" || return 1
+  (cd "$d" && git branch -M main && git push -q "$root/origin.git" main && git checkout -q -b pr1) \
+    || fail "pushing main failed" || return 1
+  printf '//! Extra.\n' > "$d/src/extra.rs"
+  perl -pi -e 's|include = \[\]|include = ["src/extra.rs"]|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'include = ["src/extra.rs"]' || return 1
+  (cd "$d" && git add -A && git commit -qm pr1 && git push -q "$root/origin.git" pr1 \
+    && git checkout -q -b pr2 main) || fail "pushing pr1 failed" || return 1
+  perl -pi -e 's|include = \["src/lib.rs", "src/main.rs"\]|include = ["src/lib.rs"]|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'include = ["src/lib.rs"]' || return 1
+  (cd "$d" && git commit -qam pr2 && git push -q "$root/origin.git" pr2) || fail "pushing pr2 failed" || return 1
+  for pr in 1 2; do
+    ci="$root/pr$pr"
+    mkdir -p "$ci" || return 1
+    (cd "$ci" && git init -q && git remote add origin "file://$root/origin.git" \
+      && git fetch -q --depth=1 origin "+refs/heads/pr$pr:refs/remotes/pull/$pr/merge" \
+      && git checkout -q "refs/remotes/pull/$pr/merge") || fail "checking out PR $pr failed" || return 1
+    (cd "$ci" && rust_env env CI=true GITHUB_ACTIONS=true GITHUB_BASE_REF=main \
+      bash -eo pipefail -c "$ratchet") >"$ci.ratchet.out" 2>&1; rc=$?
+    if [ "$pr" = 1 ]; then
+      assert_exit 0 "$rc" || { cat "$ci.ratchet.out"; return 1; }
+      assert_contains "$ci.ratchet.out" "coverage-tiers: 2 tier(s) ok" || return 1
+    else
+      assert_exit 1 "$rc" || { cat "$ci.ratchet.out"; return 1; }
+      assert_contains "$ci.ratchet.out" "api_surface: member removed since the base: src/main.rs" || return 1
+    fi
+  done
+}
+test_stack_rust_template_ci_tests_the_pinned_toolchain() {
+  # Value: protects=template CI tests the rust packs on the compiler their
+  # rust-toolchain.toml pins, and the pack names that version; fails_when=a pin is
+  # bumped in one place only (rust_env's rustup run overrides the toolchain file,
+  # so the suite would stay green on the old compiler); why_new=nothing read the
+  # pins together; seam=none
+  local f pin n=0 wf="$REPO/.github/workflows/template-selftest.yml"
+  for f in "$REPO"/template/stacks/*/files/rust-toolchain.toml; do
+    [ -f "$f" ] || continue
+    n=$((n + 1))
+    pin="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' "$f")"
+    [ -n "$pin" ] || fail "no channel in ${f#"$REPO"/}" || return 1
+    assert_contains "$wf" "rustup toolchain install $pin " || return 1
+    assert_contains "$wf" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || return 1
+    assert_contains "$REPO/template/stacks/rust/commands" "STACK=Rust ${pin%.*} " || return 1
+  done
+  [ "$n" -gt 0 ] || fail "no pack pins a Rust toolchain" || return 1
+  # Each pack declares that compiler as its rust-version: a lower one makes Cargo
+  # hold dependencies back for a compiler nothing tests.
+  for f in "$REPO"/template/stacks/*/files/Cargo.toml; do
+    grep -q '^rust-version' "$f" || continue
+    assert_contains "$f" "rust-version = \"${pin%.*}\"" || return 1
+  done
+}
+test_stack_rust_long_name_passes_guards_and_tests() {
+  # Value: protects=a long project name still passes the new project's guard and
+  # tests right after bootstrap; fails_when=the hook stops formatting the starter
+  # once the name is substituted; why_new=the hook test checks a stub cargo's
+  # call order, and the green test uses the 8-character demo_app; seam=none
+  local d="$WORK/stack-rust-long/proj" why
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  fresh_copy "$d" || return 1
+  mkdir -p "$WORK/home" || return 1
+  (cd "$d" && HOME="$WORK/home" rust_env ./bootstrap --name "Acme Example Inventory Reconciliation Service Version Two Ok" \
+    --stack rust --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh && rust_env cargo test --locked -q) >"$d.gate.out" 2>&1 \
+    || fail "the rust guards or tests failed for a long name: $(tail -25 "$d.gate.out")"
+}
+test_stack_rust_ratchet_ignores_files_missing_from_the_base() {
+  # A base that lists a member it never committed must not block the pull request
+  # that adds the file: like the python pack's ratchet, only the base's schema counts.
+  local d="$WORK/stack-rust-ratchet-basefiles/demo-app" why
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/new.rs"]|' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'base lists src/new.rs without the file') || return 1
+  printf '//! New.\n' > "$d/src/new.rs"
+  (cd "$d" && git add src/new.rs && git commit -qm 'add src/new.rs') || return 1
+  rs_tiers "$d" --ratchet HEAD~1 || fail "a pull request completing the base failed the ratchet: $(cat "$d.tiers.out")"
+}
+test_stack_rust_coverage_gate_reruns_from_a_clean_slate() {
+  # Regression test. `cargo llvm-cov --no-report` keeps earlier runs' profiles, so
+  # without a clean step a second run merged the first one's coverage: a project
+  # could delete its tests and still pass the 90% floors and the 100% tiers.
+  local d="$WORK/stack-rust-cov-rerun/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
+    || fail "the first coverage run failed: $(tail -20 "$d.cov.out")" || return 1
+  rm "$d/tests/cli.rs" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_not_contains "$d.cov.out" "tier(s) ok"
 }
 
 # --- runner -------------------------------------------------------------------
