@@ -17,7 +17,8 @@ jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
     # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
-    # job cap). It ships bash, git, perl, GNU tar and curl; the tools are pinned below.
+    # job cap). It ships bash, git, perl, GNU tar, curl and jq (the rust tests need
+    # it); the other tools are pinned below.
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7

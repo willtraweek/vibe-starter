@@ -94,6 +94,8 @@ project starts from. Keep them apart:
 ```sh
 ./scripts/template-selftest.sh             # every test
 ./scripts/template-selftest.sh bootstrap   # only tests whose name contains "bootstrap"
+SELFTEST_RUST_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' template/stacks/rust/files/rust-toolchain.toml)" \
+  ./scripts/template-selftest.sh           # every test, the Rust ones on CI's pinned toolchain
 shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh \
   template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap \
   template/stacks/*/validate-name          # CI lints first, with shellcheck 0.11.0
@@ -101,10 +103,14 @@ shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh \
 
 The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
 `scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
-that need gitleaks or uv are skipped locally when it is missing; CI installs both and treats
-skips as failures. The Python pack tests download Python 3.14 and a few PyPI packages into your
-normal uv cache on first run. CI runs it via `.github/workflows/template-selftest.yml`, which
-only runs on `willtraweek/vibe-starter`.
+that need a missing tool are skipped locally: gitleaks; uv for the Python pack; rustup with
+clippy and rustfmt, and jq, for the Rust pack, plus cargo-llvm-cov and llvm-tools for its
+coverage test. CI installs them all and treats skips as failures. The Rust tests use your default
+stable toolchain unless `SELFTEST_RUST_TOOLCHAIN` names another, and most of them skip on one
+older than the pack's pinned channel; the third command above runs them on that channel. The
+Python pack tests download Python 3.14 and a few PyPI packages into your normal uv cache on first
+run. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
+`willtraweek/vibe-starter`.
 
 ### Shipping with gstack
 

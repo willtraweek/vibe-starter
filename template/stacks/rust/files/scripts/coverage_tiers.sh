@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fail() { echo "coverage-tiers: FAIL $*" >&2; exit 1; }
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
-command -v jq >/dev/null 2>&1 || fail "jq is required"
+command -v jq >/dev/null 2>&1 || fail "jq is required: https://jqlang.org/download/"
 
 tiers_of() {  # Read the package at this exact manifest, never .packages[0].
   local manifest root metadata
@@ -17,8 +17,8 @@ tiers_of() {  # Read the package at this exact manifest, never .packages[0].
   jq -ce --arg manifest "$manifest" --arg root "$root" '
     [.packages[] | select(.manifest_path == $manifest)] as $p |
     if ($p | length) != 1 or .workspace_root != $root
-       or (.workspace_members | length) != 1 or .workspace_members[0] != $p[0].id
-       or any($p[0].dependencies[]; .path != null)
+      or (.workspace_members | length) != 1 or .workspace_members[0] != $p[0].id
+      or any($p[0].dependencies[]; .path != null)
     then error("only one root package is supported; workspaces and local path dependencies require a gate migration")
     else $p[0].metadata.coverage_tiers end' <<<"$metadata"
 }
@@ -54,11 +54,11 @@ measure() {  # Fail before printing any rows for malformed/missing measurements.
       (.count > 0 and .covered >= 0 and .covered <= .count) and
       (.count == (.count | floor) and .covered == (.covered | floor));
     if .type != "llvm.coverage.json.export" or (.data | type) != "array" or (.data | length) != 1
-       or (.data[0].files | type) != "array" or (.data[0].files | length) == 0
+      or (.data[0].files | type) != "array" or (.data[0].files | length) == 0
     then error("invalid coverage report schema") else . end |
     .data[0].files as $entries |
     if (all($entries[]; (.filename | type) == "string") | not)
-       or ([$entries[].filename | ltrimstr($root)] | length != (unique | length))
+      or ([$entries[].filename | ltrimstr($root)] | length != (unique | length))
     then error("invalid or duplicate report filenames") else . end |
     [$entries[] | {key: (.filename | ltrimstr($root)), value: .summary}] | from_entries as $files |
     [$tiers | to_entries[] | .key as $k | .value as $tier |
@@ -68,8 +68,8 @@ measure() {  # Fail before printing any rows for malformed/missing measurements.
         then error("\($k): invalid or zero-count measurements for \($path)")
         else $files[$path] end] as $s |
       {key: $k, title: ($tier.title // $k), minimum: $tier.minimum, target: $tier.target,
-       lines: (if ($s | length) == 0 then null else 100 * ([$s[].lines.covered] | add) / ([$s[].lines.count] | add) end),
-       regions: (if ($s | length) == 0 then null else 100 * ([$s[].regions.covered] | add) / ([$s[].regions.count] | add) end)}]
+        lines: (if ($s | length) == 0 then null else 100 * ([$s[].lines.covered] | add) / ([$s[].lines.count] | add) end),
+        regions: (if ($s | length) == 0 then null else 100 * ([$s[].regions.covered] | add) / ([$s[].regions.count] | add) end)}]
   ' "$2"
 }
 
@@ -117,8 +117,8 @@ case "$mode" in
       if $new[$k] == null then "\($k): tier removed since the base"
       else
         (.value as $old | ["minimum", "target"][] as $field |
-         if $new[$k][$field] < $old[$field]
-         then "\($k): \($field) lowered from \($old[$field]) to \($new[$k][$field])" else empty end),
+          if $new[$k][$field] < $old[$field]
+          then "\($k): \($field) lowered from \($old[$field]) to \($new[$k][$field])" else empty end),
         ((.value.include - $new[$k].include)[] | "\($k): member removed since the base: \(.)")
       end' <<<"$old")"
     [ -z "$errors" ] || fail "$errors" ;;

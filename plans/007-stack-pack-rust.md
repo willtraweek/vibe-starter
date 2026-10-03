@@ -1077,8 +1077,12 @@ Stop and report back (do not improvise) if:
 ## Maintenance notes
 
 - **Toolchain bumps.** Change `channel` in `template/stacks/rust/files/rust-toolchain.toml` on
-  purpose, fix any new clippy lints the new version raises, and keep
-  `rust-version` at the oldest Rust the code really needs.
+  purpose, together with `rust-version` in the pack's `Cargo.toml` (it names the pinned minor,
+  so Cargo's MSRV-aware resolver never holds dependencies back for an untested compiler), the
+  `rustup toolchain install` and `SELFTEST_RUST_TOOLCHAIN` pins in
+  `.github/workflows/template-selftest.yml`, and the STACK line in `template/stacks/rust/commands`.
+  `test_stack_rust_template_ci_tests_the_pinned_toolchain` fails until all of them agree. Then
+  fix any new clippy lints the new version raises.
 - **When a project takes its first dependency:**
   - Add cargo-deny: `deny.toml` covering advisories, licenses (`private = { ignore = true }`
     because of `publish = false`), bans and sources.

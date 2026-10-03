@@ -1,5 +1,6 @@
 # Pinned so local builds and CI use the same compiler and clippy (a new release's
-# lints can otherwise fail `-D warnings` with no commit). Bump it on purpose.
+# lints can otherwise fail `-D warnings` with no commit). Bump it on purpose,
+# together with rust-version in Cargo.toml.
 [toolchain]
 channel = "1.98.1"
 components = ["clippy", "rustfmt", "llvm-tools-preview"]

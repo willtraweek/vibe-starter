@@ -2846,7 +2846,7 @@ rust_ready() {  # A named local skip; fully provisioned CI must have none.
   rust_env cargo clippy --version >/dev/null 2>&1 || { echo "clippy missing for test toolchain"; return; }
   rust_env cargo fmt --version >/dev/null 2>&1 || { echo "rustfmt missing for test toolchain"; return; }
   # The starter declares the pinned toolchain as its rust-version, so an older
-  # compiler refuses to build it: name that, as the Omarchy packs' helpers do.
+  # compiler refuses to build it: a named skip, not a failure.
   local need have
   need="$(sed -n 's/^rust-version = "1\.\([0-9][0-9]*\)"$/\1/p' "$REPO/template/stacks/rust/files/Cargo.toml")"
   have="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
@@ -2878,7 +2878,7 @@ rs_expect_bad_report() {
   assert_exit 1 "$rc"
 }
 test_stack_rust_project_is_green_on_first_run() {
-  local d="$WORK/stack-rust/demo-app" why before_toolchains
+  local d="$WORK/stack-rust/demo-app" why before_toolchains key f
   why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
   before_toolchains="$(rust_env rustup toolchain list)" || return 1
   bootstrap_rust "$d" || return 1
@@ -2889,6 +2889,11 @@ test_stack_rust_project_is_green_on_first_run() {
   assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
   assert_contains "$d/CLAUDE.md" "Tests: \`cargo test --locked\`" || return 1
   assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
+  # Every pack's keys, so a key misspelled in one pack is caught by the other's.
+  for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO"/template/stacks/*/commands | LC_ALL=C sort -u) \
+    PROJECT_NAME YEAR; do
+    assert_tree_lacks "$d" "{{$key" || return 1
+  done
   (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
     && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
     || fail "new project's checks/tests failed: $(tail -25 "$d.gate.out")" || return 1
@@ -2896,20 +2901,57 @@ test_stack_rust_project_is_green_on_first_run() {
     || fail "--version does not print VERSION" || return 1
   # git commits the lockfile CI's --locked steps need and ignores the build output.
   git -C "$d" ls-files --error-unmatch -- Cargo.lock >/dev/null 2>&1 || fail "Cargo.lock is not committed" || return 1
+  git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/rust/files \
+    | sed 's|^template/stacks/rust/files/||' > "$d.files" || return 1
+  [ -s "$d.files" ] || fail "cannot list the pack's files" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.files"
+  for f in coverage.json lcov.info default.profraw; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the coverage output $f" || return 1
+  done
   [ -z "$(cd "$d" && git status --porcelain)" ] \
     || fail "the first run left files git would commit: $(cd "$d" && git status --porcelain | head -5)" || return 1
+  # gstack /ship bumps VERSION to four parts; the next build reports the new one.
+  printf '0.1.0.0\n' > "$d/VERSION"
+  (cd "$d" && rust_env cargo run --locked -q -- --version) | grep -qx "demo_app 0.1.0.0" \
+    || fail "--version does not follow a VERSION bump" || return 1
+  (cd "$d" && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
+    || fail "the tests failed after a VERSION bump: $(tail -25 "$d.gate.out")" || return 1
   # Even diagnostics run under the installed override inside the pinned project.
   [ "$(cd "$d" && rust_env rustup toolchain list)" = "$before_toolchains" ] \
     || fail "verification changed installed toolchains"
 }
 test_stack_rust_coverage_gate_passes() {
-  local d="$WORK/stack-rust-cov/demo-app" why
+  # The starter passes the real gate, which then fails when it should. One project
+  # serves every case: each instrumented build is slow on the 1-vCPU CI runner.
+  local d="$WORK/stack-rust-cov/demo-app" why rc
   why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
   rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
   rust_env rustup component list --installed | grep -q '^llvm-tools' || { skip "llvm-tools not installed"; return; }
   bootstrap_rust "$d" || return 1
   (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
-    || fail "coverage.sh failed: $(tail -25 "$d.cov.out")"
+    || fail "coverage.sh failed: $(tail -25 "$d.cov.out")" || return 1
+  # Regression test. `cargo llvm-cov --no-report` keeps earlier runs' profiles, so
+  # without a clean step a second run merged the first one's coverage: a project
+  # could delete its tests and still pass the 90% floors and the 100% tiers.
+  rm "$d/tests/cli.rs" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- tests/cli.rs) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_not_contains "$d.cov.out" "tier(s) ok" || return 1
+  # --all-features: untested code behind a Cargo feature counts against the gates.
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\n\n[features]\nextra = []\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" "extra = []" || return 1
+  printf '\n/// Spare.\n#[cfg(feature = "extra")]\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml src/lib.rs) || return 1
+  assert_exit 1 "$rc" || { tail -20 "$d.cov.out"; return 1; }
+  # Every step is --locked: without Cargo.lock the gate fails and writes none.
+  rm "$d/Cargo.lock" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "coverage.sh passed without Cargo.lock" || return 1
+  assert_absent "$d/Cargo.lock"
 }
 test_stack_rust_coverage_tiers_fail_closed() {
   local d="$WORK/stack-rust-tiers/demo-app" why rc filter
@@ -3167,16 +3209,19 @@ test_stack_rust_guard_fails_closed() {
   # Generated by the /ship coverage audit.
   # Value: protects=the rust guard fails on a rustfmt diff, a rustc or clippy
   # warning, a missing Cargo.lock, a bad tier config and no cargo, and check.sh
-  # runs it; fails_when=-D warnings, --all-targets, --locked, a set -e step or
-  # the --validate call is dropped from scripts/check.d/rust.sh, or the pack stops
-  # shipping the guard there; why_new=only the passing run exercised the guard, so a guard
-  # that checked nothing passed every test; seam=none
+  # runs it; fails_when=-D warnings, --all-targets, --all-features, --locked, a
+  # set -e step or the --validate call is dropped from scripts/check.d/rust.sh, a
+  # lint leaves Cargo.toml's [lints] or unsafe_code drops below forbid, or the pack
+  # stops shipping the guard there; why_new=only the passing run exercised the
+  # guard, so a guard that checked nothing passed every test; seam=none
   local d="$WORK/stack-rust-guard/demo-app" why rc want bad
   why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
   bootstrap_rust "$d" || return 1
   (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1 \
     || fail "the guard failed on a fresh project: $(tail -20 "$d.guard.out")" || return 1
-  # Each snippet trips exactly one tool: rustfmt, a rustc lint, then clippy pedantic.
+  # Each snippet trips one check: rustfmt, then rustc's missing_docs and the
+  # unsafe_code forbid (an #[allow] cannot lift it), then clippy's pedantic,
+  # dbg_macro and todo.
   while IFS='|' read -r want bad; do
     printf '%b' "$bad" >> "$d/src/lib.rs"
     (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
@@ -3186,7 +3231,10 @@ test_stack_rust_guard_fails_closed() {
   done <<'CASES'
 Diff in|\n/// Spare.\npub fn  spare() {}\n
 missing documentation|\npub fn spare() {}\n
+incompatible with previous forbid|\n/// Spare.\n#[allow(unsafe_code)]\npub fn spare() {\n    unsafe {}\n}\n
 must_use|\n/// Spare.\npub fn spare() -> u8 {\n    1\n}\n
+dbg_macro|\n/// Spare.\npub fn spare() {\n    dbg!(1);\n}\n
+clippy::todo|\n/// Spare.\npub fn spare() {\n    todo!();\n}\n
 CASES
   # --all-targets: a warning in tests/ fails the guard too.
   printf '\nfn spare() {}\n' >> "$d/tests/cli.rs"
@@ -3194,6 +3242,14 @@ CASES
   (cd "$d" && git checkout -q -- tests/cli.rs) || return 1
   [ "$rc" -ne 0 ] || fail "the guard passed a warning in tests/cli.rs" || return 1
   assert_contains "$d.guard.out" "is never used" || return 1
+  # --all-features: code behind a Cargo feature is linted too.
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\n\n[features]\nextra = []\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" "extra = []" || return 1
+  printf '\n#[cfg(feature = "extra")]\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml src/lib.rs) || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed undocumented code behind a feature" || return 1
+  assert_contains "$d.guard.out" "missing documentation" || return 1
   mv "$d/Cargo.lock" "$d.lock" || return 1
   (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
   mv "$d.lock" "$d/Cargo.lock" || return 1
@@ -3223,8 +3279,8 @@ test_stack_rust_coverage_gate_fails_closed() {
   # stops at a failing test run or a missed 90% floor, and ends on the tier gate
   # over the report it just wrote; fails_when=the tool guard becomes a skip, the
   # clean step is dropped, a floor is lowered, a step's failure is swallowed or
-  # the tier gate stops reading coverage.json; why_new=the one coverage.sh test
-  # needs the real tool, skips without it and covers only a passing run; seam=none
+  # the tier gate stops reading coverage.json; why_new=the real-tool coverage test
+  # skips without cargo-llvm-cov and cannot fail each step in turn; seam=none
   # A stub cargo fails at the step named in fail-at and logs every call, so this
   # needs no toolchain and behaves the same where cargo-llvm-cov is installed.
   command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
@@ -3259,7 +3315,7 @@ STUB
     assert_contains "$root/calls" "$fail_at" || return 1
     assert_not_contains "$root/calls" "$stopped" || return 1
   done <<'CASES'
-llvm-cov clean --workspace|--no-report
+llvm-cov clean --locked --workspace|--no-report
 --no-report|--fail-under
 --fail-under-lines 90 --fail-under-regions 90|--output-path
 CASES
@@ -3278,8 +3334,9 @@ CASES
   (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.cov.out" "api_surface: lines coverage 95% is below its minimum 100%" || return 1
-  # Old coverage data is cleared before the run, never after it.
-  if [ "$(sed -n 2p "$root/calls")" != "cargo llvm-cov clean --workspace" ] \
+  # Old coverage data is cleared before the run, never after it, and --locked so
+  # that even this step cannot write Cargo.lock.
+  if [ "$(sed -n 2p "$root/calls")" != "cargo llvm-cov clean --locked --workspace" ] \
     || ! sed -n 3p "$root/calls" | grep -q -- '--no-report'; then
     fail "coverage.sh does not clear old coverage data before the run: $(cat "$root/calls")"
   fi
@@ -3326,12 +3383,13 @@ test_stack_rust_ci_ratchet_step_on_a_shallow_pr_checkout() {
   done
 }
 test_stack_rust_template_ci_tests_the_pinned_toolchain() {
-  # Value: protects=template CI tests the rust packs on the compiler their
-  # rust-toolchain.toml pins, and the pack names that version; fails_when=a pin is
-  # bumped in one place only (rust_env's rustup run overrides the toolchain file,
-  # so the suite would stay green on the old compiler); why_new=nothing read the
-  # pins together; seam=none
-  local f pin n=0 wf="$REPO/.github/workflows/template-selftest.yml"
+  # Value: protects=template CI tests the rust packs on the compiler, components
+  # and cargo-llvm-cov their files pin, and the pack names that version;
+  # fails_when=a pin is bumped in one place only, or a component leaves
+  # rust-toolchain.toml (rust_env's rustup run overrides the toolchain file and
+  # template CI installs components by hand, so the suite would stay green);
+  # why_new=nothing read the pins together; seam=none
+  local f pin comps c tool n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
   for f in "$REPO"/template/stacks/*/files/rust-toolchain.toml; do
     [ -f "$f" ] || continue
     n=$((n + 1))
@@ -3340,14 +3398,44 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
     assert_contains "$wf" "rustup toolchain install $pin " || return 1
     assert_contains "$wf" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || return 1
     assert_contains "$REPO/template/stacks/rust/commands" "STACK=Rust ${pin%.*} " || return 1
+    # A new project's CI gets only the components its toolchain file lists.
+    comps="$(sed -n "s/^ *run: rustup toolchain install $pin .*--component \([^ ]*\).*/\1/p" "$wf")"
+    [ -n "$comps" ] || fail "template CI installs no components for $pin" || return 1
+    for c in $(printf '%s\n' "$comps" | tr ',' ' '); do
+      assert_contains "$f" "\"$c\"" || return 1
+    done
   done
   [ "$n" -gt 0 ] || fail "no pack pins a Rust toolchain" || return 1
+  for f in "$REPO"/template/stacks/*/files/.github/workflows/ci.yml; do
+    tool="$(sed -n 's/^ *tool: \(cargo-llvm-cov@[^ ]*\)$/\1/p' "$f")"
+    [ -n "$tool" ] || continue
+    m=$((m + 1))
+    assert_contains "$wf" "tool: $tool" || return 1
+  done
+  [ "$m" -gt 0 ] || fail "no pack pins cargo-llvm-cov" || return 1
   # Each pack declares that compiler as its rust-version: a lower one makes Cargo
   # hold dependencies back for a compiler nothing tests.
   for f in "$REPO"/template/stacks/*/files/Cargo.toml; do
     grep -q '^rust-version' "$f" || continue
     assert_contains "$f" "rust-version = \"${pin%.*}\"" || return 1
   done
+}
+test_stack_rust_ship_gate_runs_every_ci_gate() {
+  # Value: protects=AGENTS.md's SHIP_GATE runs each gate the new project's CI
+  # runs; fails_when=a CI gate step is added or changed without SHIP_GATE (the
+  # doctest drift the first review fixed); why_new=nothing compared them; seam=none
+  local gate step n=0
+  gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/rust/commands")"
+  [ -n "$gate" ] || fail "no SHIP_GATE in the rust pack" || return 1
+  while IFS= read -r step; do
+    n=$((n + 1))
+    case " && $gate && " in
+      *" && $step && "*) ;;
+      *) fail "SHIP_GATE lacks the CI step: $step" || return 1 ;;
+    esac
+  done < <(sed -n 's/^ *run: \(\.\/scripts\/.*\)$/\1/p; s/^ *run: \(cargo .*\)$/\1/p' \
+    "$REPO/template/stacks/rust/files/.github/workflows/ci.yml")
+  [ "$n" -gt 0 ] || fail "no gate steps found in the pack's ci.yml"
 }
 test_stack_rust_long_name_passes_guards_and_tests() {
   # Value: protects=a long project name still passes the new project's guard and
@@ -3374,22 +3462,6 @@ test_stack_rust_ratchet_ignores_files_missing_from_the_base() {
   printf '//! New.\n' > "$d/src/new.rs"
   (cd "$d" && git add src/new.rs && git commit -qm 'add src/new.rs') || return 1
   rs_tiers "$d" --ratchet HEAD~1 || fail "a pull request completing the base failed the ratchet: $(cat "$d.tiers.out")"
-}
-test_stack_rust_coverage_gate_reruns_from_a_clean_slate() {
-  # Regression test. `cargo llvm-cov --no-report` keeps earlier runs' profiles, so
-  # without a clean step a second run merged the first one's coverage: a project
-  # could delete its tests and still pass the 90% floors and the 100% tiers.
-  local d="$WORK/stack-rust-cov-rerun/demo-app" why rc
-  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
-  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
-  rust_env rustup component list --installed | grep -q '^llvm-tools' || { skip "llvm-tools not installed"; return; }
-  bootstrap_rust "$d" || return 1
-  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
-    || fail "the first coverage run failed: $(tail -20 "$d.cov.out")" || return 1
-  rm "$d/tests/cli.rs" || return 1
-  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
-  assert_exit 1 "$rc" || return 1
-  assert_not_contains "$d.cov.out" "tier(s) ok"
 }
 
 # --- runner -------------------------------------------------------------------

@@ -21,7 +21,9 @@ Fill these in as soon as a stack exists so agents and workflow skills can discov
 
 <!-- template-only:start -->
 **Testing the template itself:** the test command is `./scripts/template-selftest.sh` and the
-checks are `./scripts/check.sh`. gstack's `/ship` reads this block. `./bootstrap` removes it.
+checks are `./scripts/check.sh`. Set `SELFTEST_RUST_TOOLCHAIN` to the channel that
+`template/stacks/rust/files/rust-toolchain.toml` pins, or most Rust tests skip on an older default
+toolchain (see `TEMPLATE.md`). gstack's `/ship` reads this block. `./bootstrap` removes it.
 <!-- template-only:end -->
 
 ## Why Tiers, Not One Number
