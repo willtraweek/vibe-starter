@@ -47,8 +47,10 @@ offers. After this plan, a new Rust project:
   Release dates and tool versions below are planning snapshots; do not upgrade them as part of this revision.
   - With `channel = "stable"`, a new release's clippy lints could fail `-D warnings` with no
     commit. Pinning makes local and CI identical; the cost is a deliberate bump every six weeks.
-  - `rust-version` (the minimum supported Rust version) is `1.85`, the minimum for edition
-    2024. That's honest for this code and lets older local toolchains build it.
+  - `rust-version` is `1.98`, the pinned toolchain's minor (changed 2026-10-03 in the
+    pre-landing review; this plan first chose `1.85`, edition 2024's minimum). A lower value
+    makes Cargo's MSRV-aware resolver hold dependencies back for a compiler nothing here
+    tests, so the two are bumped together.
 - **Lints.** Everything goes in the `[lints]` table:
   - `unsafe_code = "forbid"` and `missing_docs = "warn"`.
   - `unexpected_cfgs` declares `cfg(coverage)`/`cfg(coverage_nightly)`, which cargo-llvm-cov
@@ -505,9 +507,10 @@ name = "{{PACKAGE_NAME}}"
 # by src/lib.rs. This one stays 0.0.0 so Cargo.lock never churns.
 version = "0.0.0"
 edition = "2024"
-# Oldest Rust this code builds with (edition 2024 needs 1.85). Raise it when you
-# use newer features; rust-toolchain.toml pins the compiler you develop with.
-rust-version = "1.85"
+# Declare the pinned toolchain (rust-toolchain.toml), the only one CI builds
+# with, and bump the two together: a lower value makes Cargo's MSRV-aware
+# resolver hold dependencies back for a compiler nothing here tests.
+rust-version = "1.98"
 description = "{{PROJECT_NAME}}"
 publish = false
 

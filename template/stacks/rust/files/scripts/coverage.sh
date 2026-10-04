@@ -4,7 +4,7 @@
 # branch coverage yet (cargo-llvm-cov --branch is nightly-only), so region
 # coverage stands in for it.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 if ! cargo llvm-cov --version >/dev/null 2>&1; then
   echo "cargo-llvm-cov is not installed: cargo install --locked cargo-llvm-cov" >&2
   exit 1

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Line/region tier gates for one root package. Multi-package and virtual Cargo
-# workspaces, and local path dependencies (a second crate the lints and coverage
-# never see), need a reviewed extension of both coverage collection and this gate.
+# workspaces, and local path dependencies or crates patched in by path (a second
+# crate the lints and coverage never see), need a reviewed extension of both
+# coverage collection and this gate.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 fail() { echo "coverage-tiers: FAIL $*" >&2; exit 1; }
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required: https://jqlang.org/download/"
@@ -79,6 +80,12 @@ case "$mode:$#" in
   *) echo "usage: $0 --validate | --check [report] | --report [report] | --ratchet REF" >&2; exit 2 ;;
 esac
 tiers="$(tiers_of Cargo.toml)" || fail "cannot load tiers for the root package"
+# Cargo.lock lists every crate the build compiles. Only the root package comes from
+# this checkout (no source line); a crate patched in by path, from Cargo.toml or
+# .cargo/config.toml, is another. The ratchet's base is not checked.
+[ -f Cargo.lock ] || fail "Cargo.lock not found (run cargo generate-lockfile and commit it)"
+[ "$(awk '/^\[/ { pkg = ($0 == "[[package]]"); n += pkg; next } pkg && /^source = / { s++ } END { print n - s }' Cargo.lock)" -le 1 ] \
+  || fail "only one root package is supported; local path dependencies require a gate migration (Cargo.lock builds another crate from this checkout)"
 validate "$tiers"
 case "$mode" in
   --validate) ;;

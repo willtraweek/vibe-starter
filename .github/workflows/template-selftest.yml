@@ -41,6 +41,9 @@ jobs:
             --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: Lint shell scripts
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
+
       - name: Install uv (for the python stack-pack tests)
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -66,9 +69,6 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1
           fallback: none
-
-      - name: Lint shell scripts
-        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
 
       - name: Template self-test
         env:
