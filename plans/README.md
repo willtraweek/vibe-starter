@@ -207,8 +207,9 @@ build on that release without waiting for it to be 24 hours old, and the plan wa
 - the plan's multi-line commands became helper scripts, because a pasted block did not stop at a
   failed line under zsh;
 - the lockfile is resolved with only the train exempt from pnpm's 24-hour rule, in a scratch copy.
-  The pack's own policy file is unchanged, so hosted CI for the pack stays red until the train is
-  a day old (2026-10-02 21:16 UTC).
+  The pack's own policy file is unchanged, so hosted CI for the pack would have stayed red until
+  the train was a day old (2026-10-02 21:16 UTC); a run after that resolves under the pack's own
+  policy.
 
 Evidence (research notes, prototypes and the rehearsal trees are in the planning workspace's
 `.context/`, not committed):
@@ -228,6 +229,17 @@ Open for the maintainer (none blocks execution):
 - whether to turn Foldkit's token-protected DevTools relay on by default;
 - a skeleton "Health Stack" section in CLAUDE.md, so gstack `/health` stops calling a bare
   `tsc` in every stack pack's projects.
+
+**Before plan 011 runs or ships.** Its commits `98b35eb` and `b185770` are local and unpushed.
+Whether the pack is rebuilt from this plan or its implementation branch is rebased, the starting
+tree is master after plans 007–010 land, and `contracts.sh` is the check. Plan 007 as shipped
+(PR #19) rewrote TEMPLATE.md's skipped-locally line, so `contracts.sh` will then report
+`DIFFERS  TEMPLATE.md: the skipped-locally line`. That DIFFERS is expected, but allowing it is
+not a repair: step 4.3's replacement and step 4's verify grep use the same old line, so re-anchor
+the check, the replacement and the grep on 007's new sentence first. The plan's pre-landing
+review (2026-10-04) left findings in its embedded pack and helpers, tracked in #20. Each needs a
+disposition in the pack's implementation PR, with `pack.sha256` and `helpers.sha256`
+regenerated, before row 011 is marked DONE.
 
 **Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
 container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
@@ -319,7 +331,9 @@ not a fresh inspection of this machine.
      existing instruction file rather than create `CLAUDE.md`;
    - the sibling scan should compare real paths (the quirk above).
 4. **pnpm 12 for plan 011** (its lockfile generation and heavy tests run pnpm). Done on
-   2026-10-02: pnpm 12.8.1 is installed. Any 12.x works, because the pack pins 12.6.0 and pnpm
+   2026-10-02: pnpm 12.8.1 is installed, in `~/Library/pnpm/bin`. Only interactive shells put
+   that directory on `PATH` (`~/.zshrc`), so export it for non-interactive agent shells too, or
+   plan 011's preflight step 3 stops. Any 12.x works, because the pack pins 12.6.0 and pnpm
    switches itself to it (`devEngines.packageManager.onFail: download`).
 
 ## Findings → plans
