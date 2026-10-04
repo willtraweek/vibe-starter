@@ -429,9 +429,9 @@ JavaScript packs (2026-09-25):
   rules off.
 - **Routing in the starter.** Its link Commands can't reach 100% in unit tests (`LoadExternal`
   navigates), so routing is left to Foldkit's docs.
-- **Turning pnpm's age rule off (`minimumReleaseAge=0`) to resolve the lockfile on release day.**
-  It would let any hours-old transitive dependency into the shipped lockfile. Only the train is
-  exempt, and only in the scratch copy that resolves it.
+- **Turning pnpm's age rule off (`minimumReleaseAge=0`) to resolve the lockfile on release day
+  (2026-10-02).** It would let any hours-old transitive dependency into the shipped lockfile.
+  Only the train is exempt, and only in the scratch copy that resolves it.
 
 Earlier plans:
 
