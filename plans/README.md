@@ -232,17 +232,18 @@ Open for the maintainer (none blocks execution):
 
 **Before plan 011 runs or ships.** Its pre-landing review (2026-10-04) left findings in the
 embedded pack and helpers, tracked in #20.
-- The commits it names, `98b35eb` and `b185770`, are local and unpushed: plans 009 and 010 on
-  the tree it was written against. Its own implementation, including the rehearsed lockfile, is
+- The local commits it names, `98b35eb` and `b185770`, are unpushed: plans 009 and 010 on the
+  tree it was written against. Its own implementation, including the rehearsed lockfile, is
   on the unpushed branch `willtraweek/foldkit-stack-pack`.
 - Run `contracts.sh` on master once plans 007–010 have landed, before rebuilding the pack from
   this plan or rebasing that branch. On a tree where step 1 is already applied, it only says so
   and checks nothing.
 - Plan 007 as shipped (PR #19) rewrote TEMPLATE.md's skipped-locally line, so `contracts.sh`
   will report `DIFFERS  TEMPLATE.md: the skipped-locally line`. That DIFFERS is expected, but
-  allowing it is not a repair: step 4.3's replacement and step 4's verify grep use the same old
-  line. Re-anchor all three on 007's new sentence and regenerate `helpers.sha256`, which covers
-  `contracts.sh`.
+  allowing it is not a repair: step 4.3 replaces that same old line, and step 4's verify grep
+  expects step 4.3's new text. Re-anchor `contracts.sh`, the Current state bullet and step 4.3
+  on 007's new sentence, update the verify grep to match (#20 item 1), and regenerate
+  `helpers.sha256`, which covers `contracts.sh`.
 - The branch's own index edits (row 011 DONE, an older "stays red" line) predate this section;
   keep master's text when rebasing.
 - Every finding in #20 needs a disposition in the pack's implementation PR, with `pack.sha256`
@@ -338,10 +339,11 @@ not a fresh inspection of this machine.
      existing instruction file rather than create `CLAUDE.md`;
    - the sibling scan should compare real paths (the quirk above).
 4. **pnpm 12 for plan 011** (its lockfile generation and heavy tests run pnpm). Done on
-   2026-10-02: pnpm 12.8.1 is installed, in `~/Library/pnpm/bin`. Only interactive shells put
-   that directory on `PATH` (`~/.zshrc`), so export it for non-interactive agent shells too, or
-   plan 011's preflight step 3 stops. Any 12.x works, because the pack pins 12.6.0 and pnpm
-   switches itself to it (`devEngines.packageManager.onFail: download`).
+   2026-10-02: pnpm 12.8.1 is installed, in `~/Library/pnpm/bin` (put on `PATH` by `~/.zshrc`).
+   Agent shells use the `PATH` their host app started with, so a host started before that
+   install may not see pnpm: restart it, then check that `pnpm --version` prints 12.x in an
+   agent shell, or plan 011's preflight step 3 stops. Any 12.x works, because the pack pins
+   12.6.0 and pnpm switches itself to it (`devEngines.packageManager.onFail: download`).
 
 ## Findings → plans
 
