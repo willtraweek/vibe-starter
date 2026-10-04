@@ -2981,7 +2981,9 @@ test_stack_rust_coverage_tiers_fail_closed() {
     '.data[0].files += [.data[0].files[0]]' \
     '.data[0].files += [(.data[0].files[0] | .filename = "src/lib.rs")]' \
     '.data = []' \
-    'del(.type)'; do
+    'del(.type)' \
+    '., .' \
+    '(.data[0].files[0].summary.lines = {count:0,covered:0}), .'; do
     rs_expect_bad_report "$d" "$filter" || return 1
   done
   # With the minimums at 0 only the counter checks can reject these: a negative or
@@ -3152,10 +3154,67 @@ test_stack_rust_rejects_workspaces() {
     rs_tiers "$d" --validate; rc=$?
     assert_exit 1 "$rc" || return 1
     assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+    # Valid TOML for the second crate's entry that a strict text scan would miss:
+    # a CRLF ending, a spaced header, a quoted header with a comment.
+    cp "$d/Cargo.lock" "$d.patched.lock" || return 1
+    for form in 's/\[\[package\]\]\nname = "another"/[[package]]\r\nname = "another"/' \
+      's/\[\[package\]\]\nname = "another"/[[ package ]]\nname = "another"/' \
+      's/\[\[package\]\]\nname = "another"/[["package"]] # local\nname = "another"/'; do
+      perl -0pi -e "$form" "$d/Cargo.lock" || return 1
+      cmp -s "$d/Cargo.lock" "$d.patched.lock" && { fail "the lockfile edit did not apply: $form"; return 1; }
+      rs_tiers "$d" --validate; rc=$?
+      cp "$d.patched.lock" "$d/Cargo.lock" || return 1
+      assert_exit 1 "$rc" || return 1
+      assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+    done
     (cd "$d" && git checkout -q -- Cargo.lock) && rm -rf "$d/.cargo" || return 1
     perl -0pi -e 's|\n\[patch\.crates-io\]\nanother = \{ path = "another" \}\n||' "$d/Cargo.toml"
   done
+  # Cargo.lock lists every platform's crates: a crate patched in for Windows only
+  # counts on any host.
   (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  printf "\n[target.'cfg(windows)'.dependencies]\nanother = \"0.0.0\"\n\n[patch.crates-io]\nanother = { path = \"another\" }\n" >> "$d/Cargo.toml"
+  (cd "$d" && rust_env cargo generate-lockfile --offline -q) >"$d.lock.out" 2>&1 \
+    || fail "cannot lock the Windows-only [patch] fixture: $(tail -5 "$d.lock.out")" || return 1
+  rs_tiers "$d" --validate; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml Cargo.lock) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+  # A `paths` override never reaches Cargo.lock, so the project's cargo config may
+  # set neither it nor an include (which could set it), at its root: with a BOM,
+  # in the extensionless file, or ahead of 70 KB more config.
+  mkdir -p "$d/.cargo" || return 1
+  while IFS='|' read -r file config pad; do
+    printf '%b\n' "$config" > "$d/.cargo/$file" || return 1
+    printf '# more config\n' > "$d/.cargo/more.toml" || return 1
+    [ -z "$pad" ] || awk 'BEGIN { for (i = 0; i < 3000; i++) print "# padding padding padding" }' >> "$d/.cargo/$file"
+    rs_tiers "$d" --validate; rc=$?
+    rm -f "$d/.cargo/config.toml" "$d/.cargo/config" || return 1
+    assert_exit 1 "$rc" || { echo "    for .cargo/$file: $config"; return 1; }
+    assert_contains "$d.tiers.out" "overrides crates with paths or includes other config" || return 1
+  done <<'CONFIGS'
+config.toml|paths = ["another"]|
+config.toml|include = ["more.toml"]|
+config.toml|[[include]]\npath = "more.toml"|
+config.toml|\0357\0273\0277paths = ["another"]|
+config|paths = ["another"]|
+config.toml|paths = ["another"]|pad
+CONFIGS
+  # The same key inside a table is something else (here an alias): no false failure.
+  printf '[alias]\npaths = "tree --edges normal"\n' > "$d/.cargo/config.toml" || return 1
+  rs_tiers "$d" --validate || fail "a paths alias failed the gate: $(cat "$d.tiers.out")" || return 1
+  rm -rf "$d/.cargo" || return 1
+  # Registry and git crates and an unused patch come from elsewhere: only the root
+  # counts. An empty lockfile names no root at all.
+  cp "$d/Cargo.lock" "$d.lock" || return 1
+  printf '\n[[package]]\nname = "regdep"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "%064d"\n\n[[package]]\nname = "gitdep"\nversion = "0.1.0"\nsource = "git+https://example.invalid/gitdep#%040d"\n\n[[patch.unused]]\nname = "unuseddep"\nversion = "0.2.0"\n' 0 0 >> "$d/Cargo.lock"
+  rs_tiers "$d" --validate; rc=$?
+  : > "$d/Cargo.lock"
+  rs_tiers "$d" --validate >/dev/null; rc2=$?
+  cp "$d.lock" "$d/Cargo.lock" || return 1
+  assert_exit 0 "$rc" || { cat "$d.tiers.out"; return 1; }
+  assert_exit 1 "$rc2" || return 1
+  assert_contains "$d.tiers.out" "Cargo.lock lists no package from this checkout" || return 1
   rs_tiers "$d" --validate || fail "the root package alone failed: $(cat "$d.tiers.out")" || return 1
   mv "$d/Cargo.lock" "$d.lock" || return 1
   rs_tiers "$d" --validate; rc=$?

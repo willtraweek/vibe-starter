@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Line/region tier gates for one root package. Multi-package and virtual Cargo
-# workspaces, and local path dependencies or crates patched in by path (a second
-# crate the lints and coverage never see), need a reviewed extension of both
-# coverage collection and this gate.
+# workspaces, and local path dependencies or crates patched or overridden by path
+# (a second crate the lints and coverage never see), need a reviewed extension of
+# both coverage collection and this gate.
 set -euo pipefail
 CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 fail() { echo "coverage-tiers: FAIL $*" >&2; exit 1; }
@@ -47,13 +47,14 @@ validate() {  # The schema, then every member must be a file in this tree.
 }
 
 measure() {  # Fail before printing any rows for malformed/missing measurements.
-  jq -ce --arg root "$(pwd -P)/" --argjson tiers "$1" '
+  jq -ces --arg root "$(pwd -P)/" --argjson tiers "$1" '
     def counter_ok:
       type == "object" and (.count | type == "number" and isfinite) and
       (.covered | type == "number" and isfinite) and
       (.count <= 9007199254740991) and
       (.count > 0 and .covered >= 0 and .covered <= .count) and
       (.count == (.count | floor) and .covered == (.covered | floor));
+    if length != 1 then error("the coverage report must be one JSON document") else .[0] end |
     if .type != "llvm.coverage.json.export" or (.data | type) != "array" or (.data | length) != 1
       or (.data[0].files | type) != "array" or (.data[0].files | length) == 0
     then error("invalid coverage report schema") else . end |
@@ -80,12 +81,36 @@ case "$mode:$#" in
   *) echo "usage: $0 --validate | --check [report] | --report [report] | --ratchet REF" >&2; exit 2 ;;
 esac
 tiers="$(tiers_of Cargo.toml)" || fail "cannot load tiers for the root package"
-# Cargo.lock lists every crate the build compiles. Only the root package comes from
-# this checkout (no source line); a crate patched in by path, from Cargo.toml or
-# .cargo/config.toml, is another. The ratchet's base is not checked.
+# Only the root package may come from this checkout. Cargo.lock lists every crate
+# for every platform; one with no source, such as a [patch] by path, comes from here
+# (vendored registry crates keep their registry source: they pass by design). The
+# scan reads TOML loosely (CRLF, spaced or quoted headers, comments). A `paths`
+# override never reaches Cargo.lock, so the project's cargo config may set neither
+# it nor an `include` of other config. The ratchet's base is not checked.
 [ -f Cargo.lock ] || fail "Cargo.lock not found (run cargo generate-lockfile and commit it)"
-[ "$(awk '/^\[/ { pkg = ($0 == "[[package]]"); n += pkg; next } pkg && /^source = / { s++ } END { print n - s }' Cargo.lock)" -le 1 ] \
-  || fail "only one root package is supported; local path dependencies require a gate migration (Cargo.lock builds another crate from this checkout)"
+local_crates="$(awk '{ sub(/\r$/, "") }
+  /^[ \t]*\[/ { h = $0; sub(/#.*/, "", h); gsub(/[ \t"\047]/, "", h); pkg = (h == "[[package]]"); n += pkg; next }
+  pkg && /^[ \t]*["\047]?source["\047]?[ \t]*=/ { s++ }
+  END { print n - s }' Cargo.lock)"
+case "$local_crates" in
+  1) ;;
+  0) fail "Cargo.lock lists no package from this checkout (regenerate it with cargo generate-lockfile)" ;;
+  *) fail "only one root package is supported; local path dependencies require a gate migration ($local_crates crates in Cargo.lock come from this checkout)" ;;
+esac
+for config in .cargo/config.toml .cargo/config; do
+  [ -f "$config" ] || continue
+  # Root keys only (before the first table): 0 = clean, 3 = paths or include found.
+  rc=0
+  LC_ALL=C awk 'BEGIN { root = 1 } NR == 1 { sub(/^\357\273\277/, "") } { sub(/\r$/, "") }
+    /^[ \t]*\[/ { h = $0; sub(/#.*/, "", h); gsub(/[ \t"\047]/, "", h); if (h == "[[include]]") bad = 1; root = 0; next }
+    root && /^[ \t]*["\047]?(paths|include)["\047]?[ \t]*=/ { bad = 1 }
+    END { exit bad ? 3 : 0 }' "$config" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) fail "only one root package is supported; local path dependencies require a gate migration ($config overrides crates with paths or includes other config)" ;;
+    *) fail "cannot read $config" ;;
+  esac
+done
 validate "$tiers"
 case "$mode" in
   --validate) ;;

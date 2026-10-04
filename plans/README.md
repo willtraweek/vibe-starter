@@ -20,15 +20,15 @@ has it in its initial commit (see `TEMPLATE.md`).
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (28 tests: the plan's 10 + 12 from review + 6 from /ship; suite: 108 passed, 0 failed, 0 skipped) |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | DONE (35 tests: the plan's 8 + 5 from review + 22 from /ship; suite: 143 passed, 0 failed, 0 skipped) |
-| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | DONE (16 tests: the plan's 9 + 7 from /ship's coverage audit and review; local suite on the pinned 1.98.1 with cargo-llvm-cov 0.9.1 and CI=true: 159 passed, 0 failed, 0 skipped; hosted CI not yet run) |
+| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | DONE (17 tests: the plan's 9 + 8 from /ship's coverage audit and review; local suite on the pinned 1.98.1 with cargo-llvm-cov 0.9.1 and CI=true: 160 passed, 0 failed, 0 skipped; hosted CI not yet run) |
 | [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | TODO |
 | [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | TODO |
 | [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
-Current suite after 001–007: **159 tests** (live). The remaining plans add 9, 8 and 6 tests:
-008 → **168**, 009 → **176**, 010 → **182** (1, 2 and 3 of them heavy). These totals are
+Current suite after 001–007: **160 tests** (live). The remaining plans add 9, 8 and 6 tests:
+008 → **169**, 009 → **177**, 010 → **183** (1, 2 and 3 of them heavy). These totals are
 execution targets, not results of a new sequential rehearsal. Python tests need uv. Most Rust
 tests skip locally unless the test toolchain (`SELFTEST_RUST_TOOLCHAIN`, else the default stable)
 is at least as new as the packs' pinned channel, and the coverage test also needs cargo-llvm-cov.
