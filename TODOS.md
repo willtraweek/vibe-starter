@@ -20,21 +20,6 @@ deferred an automatic generator ("Approach C").
 **Priority:** P2
 **Depends on:** None
 
-### Opt-in stack packs (Python, Rust)
-
-**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
-describes (coverage floor, tier checker, CI steps, `.gitignore` section).
-
-**Why:** Every project repeats the same four manual checklist steps.
-
-**Context:** Planned in `plans/006-stack-packs-python.md` and `plans/007-stack-pack-rust.md`.
-Must stay opt-in to keep the spine stack-agnostic. Plans 008–010 add three Omarchy packs (an
-app, a terminal app and a shell plugin) on the same mechanism.
-
-**Effort:** L
-**Priority:** P2
-**Depends on:** None
-
 ### Omarchy stack pack follow-ups from the plans' review
 
 **What:** Four gaps the pre-landing review of plans 008–010 left open, each done when its check
@@ -100,3 +85,17 @@ warning we want.
 **Depends on:** None
 
 ## Completed
+
+### Opt-in stack packs (Python, Rust)
+
+**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
+describes (coverage floor, tier checker, CI steps, `.gitignore` section).
+
+**Why:** Every project repeats the same four manual checklist steps.
+
+**Context:** Python shipped in v0.1.0 (plan 006) and Rust in v0.2.0 (plan 007), both opt-in so
+the spine stays stack-agnostic. Plans 008–010 add three Omarchy packs on the same mechanism.
+
+**Effort:** L
+**Priority:** P2
+**Completed:** v0.2.0 (2026-10-04)

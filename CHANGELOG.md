@@ -3,6 +3,30 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.2.0] - 2026-10-04
+
+### Added
+- `./bootstrap --stack rust` starts a Rust project ready to ship: Rust 1.98 pinned in
+  `rust-toolchain.toml` (edition 2024), clippy pedantic with warnings as errors, rustfmt, and a
+  small command-line starter whose `--version` reads the `VERSION` file gstack `/ship` bumps. It
+  has live CI from its first push, a committed `Cargo.lock`, and every command placeholder in its
+  docs filled in. Names Rust or Cargo can't use are rejected before anything changes.
+- New Rust projects enforce the testing doctrine's coverage gates. `./scripts/coverage.sh` runs
+  cargo-llvm-cov with 90% line and region floors (regions stand in for branches on stable Rust),
+  then per-tier minimums, starting from a clean slate each run so deleted tests can't still
+  count. CI's ratchet stops a pull request from lowering a tier's minimum or dropping a file from
+  its tier, and AGENTS.md's ship gate runs the same checks, coverage and doctests as CI.
+- The gates refuse code they would never see: workspaces, local path dependencies, crates patched
+  in by path, and `paths` or `include` in the project's cargo config. They never write
+  `Cargo.lock` and check the right project even when run with `CDPATH` set.
+
+### Changed
+- The template's own CI installs the pinned Rust toolchain and cargo-llvm-cov and runs the Rust
+  pack's tests on them, after linting the shell scripts first. `TEMPLATE.md` explains how to run
+  those tests locally with `SELFTEST_RUST_TOOLCHAIN`.
+- `.editorconfig` uses four-space indentation for Rust files.
+- Template maintenance: 17 new self-tests (160 in total), and the plan index marks plan 007 done.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added
