@@ -54,7 +54,8 @@ Without `--stack`, the project stays stack-agnostic, exactly as before. A pack i
 - `validate-name` (optional): runs before any file is written, as
   `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects unusable names with a nonzero exit
   (Python: keywords, names the standard library, uv or the pack's tools already use, and names
-  over 60 characters).
+  over 60 characters; Rust: keywords, the standard library's crate names, and names that clash
+  with Cargo's build directories).
 - `after-bootstrap` (optional): runs once at the end, for example to write the lockfile.
 
 A pack's `files/.github/workflows/ci.yml` replaces `ci.yml.example`, activating the new project's
