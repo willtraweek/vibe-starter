@@ -6,6 +6,10 @@ added by the improve skill on 2026-09-25 against `98063fc`. Execute in the order
 executor: read the plan fully before starting, honor its STOP conditions, and update your row when
 done.
 
+Plan 011 (the `foldkit` stack pack) was added by the improve skill on 2026-09-25 and rewritten
+on 2026-10-02 against `b185770`, once plans 007–010 had been implemented on local branches (not
+yet merged) and Foldkit had released on stable Effect 4.0.0.
+
 These plans are for maintaining the **template itself**. After plan 001 lands, `./bootstrap`
 deletes `plans/` from new projects' working trees; a repo made with **Use this template** still
 has it in its initial commit (see `TEMPLATE.md`).
@@ -24,6 +28,7 @@ has it in its initial commit (see `TEMPLATE.md`).
 | [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | TODO |
 | [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | TODO |
 | [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | TODO |
+| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -33,6 +38,7 @@ heavy tests). These totals are execution targets, not results of a new sequentia
 Python tests need uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully
 provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
 live predecessor baseline plus each plan's additions.
+Plan 011 adds 9 more: 5 in `selftest` and 4 heavy.
 
 **Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
 files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps
@@ -183,6 +189,66 @@ changelog references in 004, corrected 006's filtered test count, and aligned 00
 with its Rust toolchain pin. Targeted checks cover these corrections; the full sequential
 rehearsal totals above precede them and are not a new execution of the updated plans.
 
+**Plan 011: the foldkit stack pack, 2026-09-25, rewritten 2026-10-02.** The maintainer asked for a
+JavaScript frontend pack built on Effect and, after research and prototypes of three stacks, chose
+Foldkit (the Elm architecture on Effect v4) as the first. A React 19.3 + Effect v4 data-layer pack
+is later backlog, chosen by what the app does; plan 011 adds it to `TODOS.md`. Five guardrails
+were agreed:
+- exact pins, with the Foldkit + Effect train moving only through the self-test;
+- Foldkit vendored at the pinned tag for agents;
+- Foldkit kept out of `src/domain` and `src/api`;
+- the DevTools relay off, with its MCP server pinned to the local bin;
+- the spine's lint config, Commands in their own file, and function coverage gates.
+
+The plan first waited for a Foldkit release on Effect 4.0.0-rc.117 or later. Effect 4.0.0 shipped
+on 2026-10-01, and Foldkit 0.165.0 followed the same day. On 2026-10-02 the maintainer chose to
+build on that release without waiting for it to be 24 hours old, and the plan was rewritten:
+- the pack is created directly on that train, with no separate train-move step;
+- the plan's multi-line commands became helper scripts, because a pasted block did not stop at a
+  failed line under zsh;
+- the lockfile is resolved with only the train exempt from pnpm's 24-hour rule, in a scratch copy.
+  The pack's own policy file is unchanged, so hosted CI for the pack would have stayed red until
+  the train was a day old (2026-10-02 21:16 UTC); after that, the shipped lockfile passes the
+  pack's own policy.
+
+Evidence (research notes, prototypes and the rehearsal trees are in the planning workspace's
+`.context/`, not committed):
+- The pack was rehearsed four times: twice on `98063fc` plus stand-ins (Foldkit 0.163.0), once to
+  move the train to Foldkit 0.165.0 and Effect 4.0.0, and once on the local branches implementing
+  plans 007–009 (`98b35eb`). There 171 light tests passed (166 before; the one skip is
+  cargo-llvm-cov, which that machine lacks) and the 4 heavy tests passed.
+- A new project's full gate was green: checks with gitleaks, 100% coverage, a Playwright
+  journey, and the build (103 kB gzip).
+- The plan's helper scripts were replayed on a fresh clone of the local branches implementing
+  plans 007–010 before execution.
+- No GitHub Actions run has happened for it.
+
+Open for the maintainer (none blocks execution):
+- whether to exempt the train from the 24-hour rule for good (`minimumReleaseAgeExclude` in the
+  pack's `pnpm-workspace.yaml`), so a same-day train move keeps CI green;
+- whether to turn Foldkit's token-protected DevTools relay on by default;
+- a skeleton "Health Stack" section in CLAUDE.md, so gstack `/health` stops calling a bare
+  `tsc` in every stack pack's projects.
+
+**Before plan 011 runs or ships.** Its pre-landing review (2026-10-04) left findings in the
+embedded pack and helpers, tracked in #20.
+- The local commits it names, `98b35eb` and `b185770`, are unpushed: plans 009 and 010 on the
+  tree it was written against. Its own implementation, including the rehearsed lockfile, is
+  on the unpushed branch `willtraweek/foldkit-stack-pack`.
+- Run `contracts.sh` on master once plans 007–010 have landed, before rebuilding the pack from
+  this plan or rebasing that branch. On a tree where step 1 is already applied, it only says so
+  and checks nothing.
+- Plan 007 as shipped (PR #19) rewrote TEMPLATE.md's skipped-locally line, so `contracts.sh`
+  will report `DIFFERS  TEMPLATE.md: the skipped-locally line`. That DIFFERS is expected, but
+  allowing it is not a repair: step 4.3 replaces that same old line, and step 4's verify grep
+  expects step 4.3's new text. Re-anchor `contracts.sh`, the Current state bullet and step 4.3
+  on 007's new sentence, update the verify grep to match (#20 item 1), and regenerate
+  `helpers.sha256`, which covers `contracts.sh`.
+- The branch's own index edits (row 011 DONE, an older "stays red" line) predate this section;
+  keep master's text when rebasing.
+- Every finding in #20 needs a disposition in the pack's implementation PR, with `pack.sha256`
+  and `helpers.sha256` regenerated, before row 011 is marked DONE.
+
 **Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
 container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
 shellcheck 0.11.0; the image's shellcheck 0.9.0 flagged the original plan 004's harness code. Plans 005–007
@@ -230,7 +296,10 @@ above already account for all landed additions; do not add another 2 to them.
   `heavy` CI job, and 009's guard uses its `CHECK_CI`. 009 refactors 008's pack onto
   `_rust-gates`, and 010 adds Node and Qt 6 to the `heavy` job.
 - **009 → 010.** 010 builds on 009's `includes` support, `_*` hiding and test block.
-- The order is linear, 001 → 010 (see "How to run these plans").
+- **006, 008, 010 → 011.** 011 uses 006's pack mechanism unchanged; 008's pack descriptions,
+  `CHECK_CI`, `SELFTEST_EXCLUDE`/`SELFTEST_HEAVY` and `heavy` job; and 010's Node step in that
+  job. It has no `includes`, so 009 only precedes it.
+- The order is linear, 001 → 011 (see "How to run these plans").
 
 ## Shipping caveat (read before running gstack `/ship`)
 
@@ -269,6 +338,12 @@ not a fresh inspection of this machine.
    - `/health`, `/setup-deploy`, `/design-consultation` and `/setup-gbrain` should write to the
      existing instruction file rather than create `CLAUDE.md`;
    - the sibling scan should compare real paths (the quirk above).
+4. **pnpm 12 for plan 011** (its lockfile generation and heavy tests run pnpm). Done on
+   2026-10-02: pnpm 12.8.1 is installed, in `~/Library/pnpm/bin` (put on `PATH` by `~/.zshrc`).
+   Agent shells use the `PATH` their host app started with, so a host started before that
+   install may not see pnpm: restart it, then check that `pnpm --version` prints 12.x in an
+   agent shell, or plan 011's preflight step 3 stops. Any 12.x works, because the pack pins
+   12.6.0 and pnpm switches itself to it (`devEngines.packageManager.onFail: download`).
 
 ## Findings → plans
 
@@ -297,6 +372,7 @@ by host and keep the shared test command in `TESTING.md`.
 | G7 | `/ship` step 7 re-runs individual tests and reverts "failing" ones; a coverage floor wired into every `pytest` run would make a passing single test "fail" | Med | 006 (the floor lives in `scripts/coverage.sh`, not in plain `pytest`) |
 | D2 | Opt-in stack packs: you asked for Python (Astral: uv, ruff, ty) and Rust defaults | — | 006, 007 |
 | D3 | Omarchy apps and plugins as stacks, chosen by what the app should do | — | 008, 009, 010 |
+| D4 | A JavaScript frontend pack built on Effect: Foldkit first (chosen 2026-09-25), React + an Effect v4 data layer later | — | 011 (React: `TODOS.md`) |
 | F11 | The rust pack's starter fails `cargo fmt --check` for long package names | Med | 007 (amended) |
 | F12 | The rust pack's starter fails clippy's `doc_markdown` for names like `MyApp` or `my_tool` | High | 007 (amended) |
 | F13 | The Rust ratchet fails a first pull request whose base predates the pack | High | 007 (amended) |
@@ -328,6 +404,34 @@ Omarchy stack packs (2026-09-25):
   directory, and Omarchy's own apps print snippets instead.
 - A 90% coverage floor on QML: no QML coverage tool exists; the plugin pack holds its JavaScript at
   100% and tests each QML component instead.
+
+JavaScript packs (2026-09-25):
+- **Effect v3 (3.22) for the pack.** `@effect/vitest` 0.30 ties it to Vitest 3.2, and so to Vite
+  7. Its core runtime costs 35.8 kB gzip, against v4's 7.3 kB. A v3 → v4 migration would follow.
+- **React 19.3 + an Effect v4 data layer (Atom) as the first pack.** Prototyped green, at +50.6 kB
+  gzip over plain React + Router. Kept as the second pack (backlog), for apps that want React's
+  ecosystem.
+- **Plain React + TanStack Query + Zod, no Effect.** All stable and the smallest, but it holds
+  trust boundaries only by convention. Not planned.
+- **Vitest's own thresholds as tier gates.** A glob that matches no file, a Jest-style `global:`
+  key and a misspelled metric key all exit 0. A Node tier checker enforces the tiers instead.
+- **Other tools.**
+  - ESLint + typescript-eslint: it pins TypeScript to 6.
+  - Biome: weaker floating-promise detection.
+  - `bun test`: no branch coverage.
+  - Vite+: a release candidate at planning time.
+  - `effect-tsgo patch --oxlint`: it binds Oxlint's version to the patcher's support matrix.
+- **A committed `git subtree` of Foldkit's repository** (FOLDKIT.md's suggestion). About 54 MB per
+  project, 40 MB of it Foldkit's own copy of Effect, plus Foldkit's maintainer agent files.
+  Vendored by script into a gitignored directory instead.
+- **`create-foldkit-app` as the pack's scaffolder.** It always runs `npm install` with lifecycle
+  scripts, wires the DevTools MCP through unpinned `npx -y`, and turns Oxlint's correctness
+  rules off.
+- **Routing in the starter.** Its link Commands can't reach 100% in unit tests (`LoadExternal`
+  navigates), so routing is left to Foldkit's docs.
+- **Turning pnpm's age rule off (`minimumReleaseAge=0`) to resolve the lockfile on release day
+  (2026-10-02).** It would let any hours-old transitive dependency into the shipped lockfile.
+  Only the train is exempt, and only in the scratch copy that resolves it.
 
 Earlier plans:
 

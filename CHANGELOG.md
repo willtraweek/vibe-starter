@@ -3,6 +3,18 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.2.1] - 2026-10-04
+
+### Added
+- An implementation plan for a `foldkit` stack pack (plan 011): a browser app on Foldkit, the Elm
+  architecture on Effect v4, with TypeScript 7 and the Effect language service's checks, Vite 8,
+  Vitest 5 tests that click the real view without a browser, a Playwright journey, and pnpm 12
+  with a shipped lockfile. The pack doesn't exist yet: the plan runs after plans 007–010, one
+  pull request at a time.
+- The plan index records why Foldkit came first (a React + Effect pack stays on the backlog), the
+  guardrails agreed for it, the alternatives rejected, the pnpm 12 install it needs, and what to
+  check before the plan runs or ships.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added
