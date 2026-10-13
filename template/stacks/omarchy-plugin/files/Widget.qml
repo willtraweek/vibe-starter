@@ -18,7 +18,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: Logic.barText(root.setting("label", "Pressed"), root.count)
+    text: Logic.barText(root.setting("label", "Pressed"), root.count, root.vertical)
     tooltipText: Logic.tooltip(root.count)
     onPressed: function(mouseButton) {
       root.count = Logic.next(root.count, mouseButton === Qt.RightButton ? "reset" : "count")

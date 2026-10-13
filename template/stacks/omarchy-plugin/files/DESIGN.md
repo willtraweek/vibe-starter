@@ -20,7 +20,8 @@ Every `Text` whose text isn't a literal sets `textFormat: Text.PlainText`: Omarc
 
 ## Spacing & layout
 `Style.space(px)` and `Style.spacing.*`, which scale with `omarchy display text size`; bar
-geometry from `Style.bar.*`. Work in both bar orientations (`vertical`).
+geometry from `Style.bar.*`. Work in both bar orientations (`vertical`): a vertical bar fixes a
+widget's width to its `barSize`, so show less there (the starter shows only its count).
 
 ## Motion
 The shell's own; add none.

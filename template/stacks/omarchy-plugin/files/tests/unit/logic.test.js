@@ -17,8 +17,15 @@ test("an unknown action leaves the count alone", () => {
   assert.equal(Logic.next(7, "wheel"), 7)
 })
 
-test("the bar text is the label and the count", () => {
-  assert.equal(Logic.barText("Pressed", 3), "Pressed 3")
+test("on a horizontal bar the text is the label and the count", () => {
+  assert.equal(Logic.barText("Pressed", 3, false), "Pressed 3")
+})
+
+test("on a vertical bar the text is only the count, which fits its width", () => {
+  // Regression test. A vertical bar fixes the button's width to the bar's
+  // (barSize, about 28px), and "Pressed 3" overflowed it.
+  assert.equal(Logic.barText("Pressed", 3, true), "3")
+  assert.equal(Logic.barText("Pressed", Logic.MAX_COUNT, true), "999")
 })
 
 test("the tooltip says how many presses", () => {
