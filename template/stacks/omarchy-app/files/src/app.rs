@@ -125,19 +125,21 @@ impl Focusable for MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = cx.omarchy().background;
-        div()
-            .id("main-window")
-            .track_focus(&self.focus)
-            .key_context(KEY_CONTEXT)
-            .on_action(cx.listener(|this, _: &Increment, _, cx| this.increment(cx)))
-            .on_action(cx.listener(|this, _: &Reset, _, cx| this.reset(cx)))
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(background)
-            .child(
-                focus_scope("controls").child(
+        // GPUI dispatches a key along the path from the window's root to the
+        // focused element, so the focus scope (Tab and Shift+Tab) must enclose
+        // the root the window focuses, not sit inside it.
+        focus_scope("main-window").size_full().child(
+            div()
+                .track_focus(&self.focus)
+                .key_context(KEY_CONTEXT)
+                .on_action(cx.listener(|this, _: &Increment, _, cx| this.increment(cx)))
+                .on_action(cx.listener(|this, _: &Reset, _, cx| this.reset(cx)))
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(background)
+                .child(
                     panel("{{PROJECT_NAME}}", cx)
                         .child(self.counter.label())
                         .child(
@@ -159,6 +161,6 @@ impl Render for MainWindow {
                                 .child("quit"),
                         ),
                 ),
-            )
+        )
     }
 }
