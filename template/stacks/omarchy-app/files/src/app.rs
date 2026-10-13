@@ -32,6 +32,8 @@ actions!(
 pub fn init(cx: &mut App) {
     gpui_omarchy::init(cx);
     cx.bind_keys([
+        // Enter runs the primary action (DESIGN.md), wherever the focus is.
+        KeyBinding::new("enter", Increment, Some(KEY_CONTEXT)),
         KeyBinding::new("space", Increment, Some(KEY_CONTEXT)),
         KeyBinding::new("r", Reset, Some(KEY_CONTEXT)),
         KeyBinding::new("q", Quit, Some(KEY_CONTEXT)),
@@ -125,19 +127,21 @@ impl Focusable for MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = cx.omarchy().background;
-        div()
-            .id("main-window")
-            .track_focus(&self.focus)
-            .key_context(KEY_CONTEXT)
-            .on_action(cx.listener(|this, _: &Increment, _, cx| this.increment(cx)))
-            .on_action(cx.listener(|this, _: &Reset, _, cx| this.reset(cx)))
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(background)
-            .child(
-                focus_scope("controls").child(
+        // GPUI dispatches a key along the path from the window's root to the
+        // focused element, so the focus scope (Tab and Shift+Tab) must enclose
+        // the root the window focuses, not sit inside it.
+        focus_scope("main-window").size_full().child(
+            div()
+                .track_focus(&self.focus)
+                .key_context(KEY_CONTEXT)
+                .on_action(cx.listener(|this, _: &Increment, _, cx| this.increment(cx)))
+                .on_action(cx.listener(|this, _: &Reset, _, cx| this.reset(cx)))
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(background)
+                .child(
                     panel("{{PROJECT_NAME}}", cx)
                         .child(self.counter.label())
                         .child(
@@ -151,6 +155,7 @@ impl Render for MainWindow {
                                 .flex()
                                 .items_center()
                                 .gap(rems(0.5))
+                                .child(keycap("enter", cx))
                                 .child(keycap("space", cx))
                                 .child("press")
                                 .child(keycap("r", cx))
@@ -159,6 +164,6 @@ impl Render for MainWindow {
                                 .child("quit"),
                         ),
                 ),
-            )
+        )
     }
 }

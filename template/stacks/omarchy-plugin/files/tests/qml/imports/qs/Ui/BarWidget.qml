@@ -8,6 +8,11 @@ Item {
   property string moduleName: ""
   property var settings: ({})
 
+  // Bar geometry, lifted off the host bar as the real one does; its fallback
+  // barSize is Style.bar.sizeHorizontal, 26 unless the theme changes it.
+  readonly property bool vertical: bar ? bar.vertical : false
+  readonly property int barSize: bar ? bar.barSize : 26
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value

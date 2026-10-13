@@ -12,15 +12,25 @@ desktop shell, and the active theme in `~/.local/state/omarchy/current`.
 
 ## Install it for yourself
 
-`./scripts/install.sh` builds a release binary and installs, under `~/.local` (no root):
+`./scripts/install.sh` builds a release binary and installs the one cargo reports building
+(wherever `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` put it), under `~/.local`
+(no root):
 
 - `~/.local/bin/{{PACKAGE_NAME}}`
 - `~/.local/share/applications/{{PACKAGE_NAME}}.desktop`, which the Omarchy launcher
   (`Super + Space`) lists
 - `~/.local/share/icons/hicolor/scalable/apps/{{PACKAGE_NAME}}.svg`
 
-`./scripts/install.sh --uninstall` removes exactly those three files. To install system-wide,
-build as yourself, then run `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
+`./scripts/install.sh --uninstall` removes exactly those three files. Neither replaces nor
+removes a `~/.local/bin/{{PACKAGE_NAME}}` that came without this app's desktop entry: that one
+is another tool's. `PREFIX`, an absolute path, moves all three; nothing else in the environment
+does.
+
+To install system-wide, build as yourself, then run
+`sudo PREFIX=/usr/local ./scripts/install.sh --no-build`. `--no-build` takes
+`target/release/{{PACKAGE_NAME}}` (or the one under `$CARGO_TARGET_DIR`) and refuses it unless
+its `--version` names this `VERSION`. That is all it can check: an older build of the same
+version still gets through, while the default build installs exactly what cargo just built.
 
 ## Keybinding and window rule
 

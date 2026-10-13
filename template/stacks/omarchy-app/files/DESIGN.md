@@ -16,8 +16,12 @@ Never write a colour. Use the active theme's roles through `cx.omarchy()`: `back
 `border`, `danger`, `warning` and `success`. Derive a tint from a role (`.opacity(...)`) rather
 than inventing a hue. `scripts/check.d/omarchy.sh` refuses GPUI's fixed-colour constructors in
 `src/` (`rgb(`, `rgba(`, `hsla(`, `white()` and the other named colours, `opaque_grey()`,
-`transparent_*()`, `Rgba::try_from`) and any `linear_gradient(`. It reads text, not types, so a
-struct literal such as `Hsla { h, s, l, a }` gets past it; the rule above still holds.
+`transparent_*()`, `Rgba::try_from`), and what would break the flat surfaces below: gradients
+and pattern fills (`linear_gradient(`, `pattern_slash(`, `checkerboard(`), shadows (`shadow(`,
+`shadow_sm()` and the other sizes, `BoxShadow`; `shadow_none()` passes), pill radii
+(`rounded_lg()` and larger, on any side) and a see-through window
+(`WindowBackgroundAppearance::Transparent` or `Blurred`). It reads text, not types, so a struct
+literal such as `Hsla { h, s, l, a }` gets past it; the rules still hold.
 
 ## Typography
 The theme's `font` (the system UI face) for text and its `mono_font` (fontconfig's monospace,

@@ -11,7 +11,10 @@ function next(count, action) {
   return count
 }
 
-function barText(label, count) {
+// A vertical bar fixes the button's width to the bar's (barSize), which fits
+// the count but not the label in front of it.
+function barText(label, count, vertical) {
+  if (vertical) return String(count)
   return label + " " + count
 }
 

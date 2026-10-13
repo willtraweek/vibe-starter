@@ -2,7 +2,10 @@
 //! frames and real key presses, with no display or GPU.
 
 use ::{{PACKAGE_NAME}}::app::{self, MainWindow};
-use gpui_kit::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui_kit::{
+    Entity, Focusable as _, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, TestAppContext,
+    VisualTestContext,
+};
 use gpui_omarchy::Theme;
 
 fn open(cx: &mut TestAppContext) -> (Entity<MainWindow>, &mut VisualTestContext) {
@@ -22,6 +25,23 @@ fn count(view: &Entity<MainWindow>, cx: &mut VisualTestContext) -> u32 {
     view.read_with(cx, |view, _| view.counter().count())
 }
 
+/// Presses and releases `key` as the platform reports them: a focused button
+/// clicks on the release, which `simulate_keystrokes` never sends.
+fn press(cx: &mut VisualTestContext, key: &str) {
+    let keystroke = Keystroke::parse(key).expect("a valid keystroke");
+    cx.simulate_event(KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    cx.simulate_event(KeyUpEvent { keystroke });
+}
+
+/// Whether the keyboard is still on the window's root, where `open` put it.
+fn root_focused(view: &Entity<MainWindow>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window))
+}
+
 #[gpui_kit::test]
 fn space_counts_and_r_resets(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
@@ -33,10 +53,30 @@ fn space_counts_and_r_resets(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn enter_runs_the_primary_action(cx: &mut TestAppContext) {
+    // Regression test. Press is ButtonVariant::Primary, which DESIGN.md keeps for
+    // what Enter does, yet Enter did nothing until Tab reached the button.
+    let (view, cx) = open(cx);
+    press(cx, "enter");
+    assert_eq!(count(&view, cx), 1);
+}
+
+#[gpui_kit::test]
 fn clicking_the_button_counts(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
     let bounds = cx.debug_bounds("press").expect("the press button is drawn");
     cx.simulate_click(bounds.center(), Modifiers::default());
+    assert_eq!(count(&view, cx), 1);
+}
+
+#[gpui_kit::test]
+fn tab_reaches_press_and_enter_presses_it_once(cx: &mut TestAppContext) {
+    // Regression test. The focus scope sat inside the focused root, off the path
+    // GPUI dispatches keys along, so Tab never left the root.
+    let (view, cx) = open(cx);
+    press(cx, "tab");
+    assert!(!root_focused(&view, cx), "Tab moves the keyboard to Press");
+    press(cx, "enter");
     assert_eq!(count(&view, cx), 1);
 }
 
@@ -51,7 +91,7 @@ fn the_window_draws_in_dark_and_light_themes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn starting_opens_one_focused_window_under_the_app_id(cx: &mut TestAppContext) {
+fn starting_opens_one_focused_window(cx: &mut TestAppContext) {
     cx.update(app::start);
     let windows = cx.windows();
     assert_eq!(windows.len(), 1);
@@ -60,11 +100,17 @@ fn starting_opens_one_focused_window_under_the_app_id(cx: &mut TestAppContext) {
         .expect("the main window");
     let focused = window
         .update(cx, |view, window, cx| {
-            gpui_kit::Focusable::focus_handle(view, cx).is_focused(window)
+            view.focus_handle(cx).is_focused(window)
         })
         .expect("the window is open");
     assert!(focused);
-    // Hyprland window rules and the desktop entry match this class.
+}
+
+#[test]
+fn window_options_carry_the_app_id() {
+    // Hyprland window rules and the desktop entry match this class. GPUI's test
+    // window ignores the app id it is opened with, so this checks the options
+    // `open_window` passes, not the window.
     assert_eq!(
         app::window_options().app_id.as_deref(),
         Some(::{{PACKAGE_NAME}}::APP_ID)

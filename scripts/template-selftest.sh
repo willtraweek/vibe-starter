@@ -3796,14 +3796,22 @@ test_stack_omarchy_app_rejects_unusable_names_before_writes() {
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "'$name' changed files before its rejection" || return 1
   done
 }
+stub_app_binary() {  # $1 = path: a stand-in release binary whose --version prints $2
+  mkdir -p "$(dirname "$1")" || return 1
+  cat > "$1" <<STUB || return 1
+#!/bin/sh
+[ "\$1" = --version ] && echo "$2"
+STUB
+  chmod +x "$1"
+}
 test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   # install.sh puts exactly three files under PREFIX and removes exactly those;
-  # the stub stands in for the release binary, so nothing is compiled.
-  local d="$WORK/omarchy-app-install/demo-app" p="$WORK/omarchy-app-install/prefix" rc f entry
+  # stubs stand in for cargo and the release binary, so nothing is compiled.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local w="$WORK/omarchy-app-install" d="$WORK/omarchy-app-install/demo-app" p="$WORK/omarchy-app-install/prefix" rc f entry
   omarchy_app_project "$d" || return 1
-  mkdir -p "$d/target/release" "$WORK/omarchy-app-install/elsewhere/release" || return 1
-  printf '#!/bin/sh\necho demo_app\n' > "$d/target/release/demo_app"
-  chmod +x "$d/target/release/demo_app" || return 1
+  mkdir -p "$w/elsewhere/release" || return 1
+  stub_app_binary "$d/target/release/demo_app" "demo_app 0.0.0" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1 \
     || fail "install exited $?: $(cat "$d.install")" || return 1
   entry="$p/share/applications/demo_app.desktop"
@@ -3820,21 +3828,77 @@ test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   done
   assert_exists "$p/bin/keep-me" || return 1
   assert_exists "$p/share/applications/other.desktop" || return 1
-  # The binary is found where CARGO_TARGET_DIR put it.
-  mv "$d/target/release/demo_app" "$WORK/omarchy-app-install/elsewhere/release/demo_app" || return 1
-  (cd "$d" && CARGO_TARGET_DIR="$WORK/omarchy-app-install/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
+  # With --no-build, the binary is found where CARGO_TARGET_DIR put it.
+  mv "$d/target/release/demo_app" "$w/elsewhere/release/demo_app" || return 1
+  (cd "$d" && CARGO_TARGET_DIR="$w/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
     >"$d.install" 2>&1 || fail "install with CARGO_TARGET_DIR exited $?: $(cat "$d.install")" || return 1
   assert_exists "$p/bin/demo_app" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.install" "is missing; build it first" || return 1
+  # Regression test. install.sh guessed target/release/<app id>, but cargo's
+  # build.target-dir, CARGO_BUILD_TARGET_DIR and build.target move the binary,
+  # and sudo drops CARGO_TARGET_DIR: it now installs the one cargo reports.
+  stub_app_binary "$w/built/demo_app" "demo_app 0.0.0" && echo '# the one cargo built' >> "$w/built/demo_app" || return 1
+  mkdir -p "$w/bin" || return 1
+  cat > "$w/bin/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" > "$w/cargo.args"
+echo '{"reason":"compiler-artifact","target":{"kind":["lib"],"name":"demo_app"},"executable":null}'
+echo '{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"demo_app"},"executable":"$w/built/demo_app"}'
+echo '{"reason":"build-finished","success":true}'
+STUB
+  chmod +x "$w/bin/cargo" || return 1
+  (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX="$p" ./scripts/install.sh) >"$d.install" 2>&1 \
+    || fail "install with a build exited $?: $(cat "$d.install")" || return 1
+  assert_contains "$w/cargo.args" "cargo build --locked --release --message-format=json-render-diagnostics" || return 1
+  cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "install did not take the binary cargo reported" || return 1
+  # Regression test. A binary built before the last VERSION bump installed under
+  # the new version's entry: its --version must name this app at this VERSION.
+  cp "$d/VERSION" "$d.VERSION" && printf '0.0.1\n' > "$d/VERSION" || return 1
+  for f in "" --no-build; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" CARGO_TARGET_DIR="$w/elsewhere" PREFIX="$p" ./scripts/install.sh ${f:+"$f"}) \
+      >"$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "reports 'demo_app 0.0.0', not 'demo_app 0.0.1': rebuild it" || return 1
+  done
+  cp "$d.VERSION" "$d/VERSION" || return 1
+  assert_contains "$entry" "X-AppVersion=0.0.0" || return 1
+  cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "a refused install changed the installed binary" || return 1
+  # Regression test. BINDIR, APPDIR and ICONDIR came from the environment, and
+  # every AppImage exports APPDIR to its children: only PREFIX moves the install.
+  (cd "$d" && BINDIR="$w/env" APPDIR="$w/env" ICONDIR="$w/env" PATH="$w/bin:$(printenv PATH)" PREFIX="$p" \
+    ./scripts/install.sh) >"$d.install" 2>&1 || fail "install with BINDIR, APPDIR and ICONDIR set exited $?: $(cat "$d.install")" || return 1
+  (cd "$d" && BINDIR="$w/env" PREFIX="$p" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$entry" \
+    || fail "BINDIR in the environment changed the desktop entry" || return 1
+  assert_absent "$w/env" || return 1
+  # Regression test. A relative PREFIX resolved against the project, not the
+  # caller, and wrote a relative Exec=: it is refused before anything is written.
+  for f in "" --print-desktop-entry; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX=rel ./scripts/install.sh ${f:+"$f"}) >"$d.install" 2>&1; rc=$?
+    assert_exit 2 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "PREFIX must be an absolute path: rel" || return 1
+  done
+  assert_absent "$d/rel" || return 1
+  # Regression test. install.sh replaced any <prefix>/bin/<app id>, and
+  # --uninstall removed it. One without this app's desktop entry is another
+  # tool's: both now leave it alone, and say so.
+  mkdir -p "$w/other/bin" && printf 'another tool\n' > "$w/other/bin/demo_app" || return 1
+  for f in "" --no-build --uninstall; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX="$w/other" ./scripts/install.sh ${f:+"$f"}) >"$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "is not one this script installed (no $w/other/share/applications/demo_app.desktop)" || return 1
+    [ "$(cat "$w/other/bin/demo_app")" = "another tool" ] || fail "install.sh $f replaced or removed another tool's binary" || return 1
+  done
+  assert_absent "$w/other/share" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \
     || fail "--help from scripts/ exited $?: $(cat "$d.help")" || return 1
   assert_contains "$d.help" "--print-desktop-entry" || return 1
-  (cd "$d" && BINDIR='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >/dev/null 2>&1; rc=$?
-  assert_exit 2 "$rc"
+  (cd "$d" && PREFIX='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >"$d.install" 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.install" "unsupported character in PREFIX"
 }
 test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci() {
   local d="$WORK/omarchy-app-guard/demo-app" rc lit f
@@ -3865,10 +3929,36 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "Omarchy surfaces are flat" || return 1
+  # Regression test. DESIGN.md bans shadows, glass and rounded pills too, but the
+  # guard refused only colours and gradients: each of these passed it.
+  while IFS='|' read -r lit want; do
+    printf 'pub fn style(el: gpui_kit::Div) -> gpui_kit::Div {\n    %s\n}\n' "$lit" > "$d/src/tint.rs"
+    (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $lit"; return 1; }
+    assert_contains "$d.guard" "$want" || return 1
+    assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+  done <<'CASES'
+el.shadow_lg()|shadows in src/
+el.shadow_2xl()|shadows in src/
+el.shadow(vec![])|shadows in src/
+let shadows: Vec<gpui_kit::BoxShadow> = Vec::new();|shadows in src/
+el.rounded_full()|rounded pills in src/
+el.rounded_lg()|rounded pills in src/
+el.rounded_tl_3xl()|rounded pills in src/
+el.bg(gpui_kit::pattern_slash(cx.omarchy().border, 1.0, 4.0))|pattern fills in src/
+el.bg(gpui_kit::checkerboard(cx.omarchy().border, 8.0))|pattern fills in src/
+window_background: gpui_kit::WindowBackgroundAppearance::Blurred,|see-through window in src/
+window_background: gpui_kit::WindowBackgroundAppearance::Transparent,|see-through window in src/
+CASES
   # Colours from the theme's roles pass, and so does a helper named like a colour.
   printf 'pub fn tint(cx: &gpui_kit::App) -> gpui_kit::Hsla {\n    redraw_hint(cx.omarchy().accent.opacity(0.5))\n}\n' > "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
     || fail "theme-derived colours failed the guard: $(cat "$d.guard")" || return 1
+  # Small radii, removing a shadow, an opaque window and helpers named like a
+  # banned call pass too.
+  printf 'pub fn style(el: gpui_kit::Div) -> gpui_kit::Div {\n    shadowed_text(el.rounded_sm().rounded_none().shadow_none(), rounded_full_hint())\n}\npub const BG: gpui_kit::WindowBackgroundAppearance = gpui_kit::WindowBackgroundAppearance::Opaque;\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "flat, square styling failed the guard: $(cat "$d.guard")" || return 1
   rm -f "$d/src/tint.rs"
   # The Omarchy guards ship only with Omarchy packs: no other pack, and not the
   # shared Rust gates, refuses colours or gradients.
@@ -3880,10 +3970,10 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
     esac
   done
   # ...and a plain rust project's own guards, the Rust gates included, accept
-  # colour and gradient text (needs a Rust toolchain, as the rust pack's tests do).
+  # colour, gradient and shadow text (needs a Rust toolchain, as the rust pack's tests do).
   if [ -z "$(rust_ready)" ]; then
     bootstrap_rust "$d.rust" || return 1
-    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
+    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( shadow_lg( rounded_full( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
     (cd "$d.rust" && for g in scripts/check.d/*.sh; do rust_env bash "$g" || exit 1; done) >"$d.rust.guard" 2>&1 \
       || fail "a plain rust project refused colour text: $(tail -20 "$d.rust.guard")" || return 1
   fi
@@ -4389,6 +4479,66 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "omarchy-plugin-validate: rejected"
 }
+test_stack_omarchy_plugin_guard_refuses_fixed_colours_and_sizes_in_qml() {
+  # Regression test. DESIGN.md says "No hex colours or fixed pixel sizes in QML:
+  # tokens only", but nothing enforced it: each of these passed the guard.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
+  local d="$WORK/omarchy-plugin-tokens/demo-app" rc lit want
+  omarchy_plugin_project "$d" || return 1
+  stub_omarchy_kit "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  mkdir -p "$d/bar" || return 1
+  while IFS='|' read -r lit want; do
+    printf 'import QtQuick\n\nRectangle {\n  %s\n}\n' "$lit" > "$d/bar/Extra.qml"
+    (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $lit"; return 1; }
+    assert_contains "$d.guard" "bar/Extra.qml:4:" || return 1
+    assert_contains "$d.guard" "$want" || return 1
+  done <<'CASES'
+color: "#ff0000"|fixed colours in QML
+border.color: '#fff'|fixed colours in QML
+color: "#80ff0000"|fixed colours in QML
+color: Qt.rgba(1, 0, 0, 1)|fixed colours in QML
+color: Qt.rgb(1, 0, 0)|fixed colours in QML
+color: Qt.hsla(0.5, 1, 0.5, 1)|fixed colours in QML
+color: Qt.hsva(0.5, 1, 1, 1)|fixed colours in QML
+gradient: Gradient { GradientStop { position: 0; color: Color.accent } }|gradients in QML
+LinearGradient {|gradients in QML
+width: 24|fixed pixel sizes in QML
+height: 2|fixed pixel sizes in QML
+implicitWidth: 120;|fixed pixel sizes in QML
+implicitHeight: 30 // the bar's|fixed pixel sizes in QML
+font.pixelSize: 14|fixed pixel sizes in QML
+font { pointSize: 10 }|fixed pixel sizes in QML
+spacing: 4|fixed pixel sizes in QML
+anchors.margins: 8|fixed pixel sizes in QML
+anchors.leftMargin: -6|fixed pixel sizes in QML
+Layout.topMargin: 12|fixed pixel sizes in QML
+radius: 4|fixed pixel sizes in QML
+CASES
+  # Tokens pass, and so do 0 and 1, sizes worked out from tokens, a # in text,
+  # and the tests' own QML.
+  cat > "$d/bar/Extra.qml" <<'QML'
+import QtQuick
+import qs.Commons
+
+Rectangle {
+  width: Style.space(8)
+  height: Style.bar.sizeHorizontal
+  implicitWidth: 2 * Style.spacing.md
+  spacing: Style.spacing.sm
+  radius: 0
+  border.width: 1
+  anchors.margins: 0
+  color: Color.accent
+  Text { text: "#1 in the queue"; textFormat: Text.PlainText; font.pixelSize: Style.font.body }
+}
+QML
+  printf 'import QtQuick\n\nRectangle { width: 24; color: "#ffffff" }\n' > "$d/tests/qml/Fixture.qml"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "tokens failed the guard: $(cat "$d.guard")"
+}
 test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
   command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
   local d="$WORK/omarchy-plugin-link/demo-app" home="$WORK/omarchy-plugin-link/home" rc
@@ -4458,6 +4608,14 @@ test_stack_omarchy_plugin_tests_run_fails_closed() {
   (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
   rm -f "$d/Extra.js"
   assert_exit 1 "$rc" || return 1
+  # Regression test. Coverage measured only *.js and the loader found only *.js,
+  # so an ECMAScript module QML imports (Extra.mjs) escaped the gate untested.
+  mkdir -p "$d/logic" && printf 'export function hidden(x) {\n  return x ? 1 : 2\n}\n' > "$d/logic/Extra.mjs" || return 1
+  (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
+  rm -rf "$d/logic"
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.run" "Extra.mjs" || return 1
+  assert_contains "$d.run" "does not meet threshold of 100%" || return 1
   # A failed QML run, one with no real test, and a Qt 5 runner each fail.
   while IFS='|' read -r out want; do
     printf '%b' "$out" > "$d.qml-out"
@@ -4600,7 +4758,7 @@ omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empt
 test_heavy_stack_omarchy_plugin_project_is_green() {
   # The new project's own gate, for real: Omarchy's validator and Text-format
   # scanner at .omarchy-ref (fetched), then Logic.js at 100% and the QML tests.
-  local d="$WORK/heavy-omarchy-plugin/demo-app" why kit
+  local d="$WORK/heavy-omarchy-plugin/demo-app" why kit fmt rc line
   why="$(omarchy_plugin_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   omarchy_plugin_project "$d" || return 1
@@ -4615,7 +4773,23 @@ test_heavy_stack_omarchy_plugin_project_is_green() {
   if (cd "$d" && OMARCHY_KIT_DIR="$kit" bash scripts/check.d/omarchy-plugin.sh) >"$d.guard.out" 2>&1; then
     fail "a Text without textFormat passed the guard" || return 1
   fi
-  assert_contains "$d.guard.out" "without textFormat"
+  assert_contains "$d.guard.out" "without textFormat" || return 1
+  # Regression test. A QtQuick.Controls Label is a Text whose textFormat also
+  # defaults to AutoText, but Omarchy's scanner reads only Text, so a Label
+  # showing a setting passed. It must be plain text: no textFormat and a
+  # RichText one both fail, Text.PlainText passes.
+  for fmt in "" "textFormat: Text.RichText" "textFormat: Text.PlainText"; do
+    (cd "$d" && git checkout -q HEAD -- Widget.qml) || return 1
+    LABEL_FORMAT="$fmt" perl -0pi -e 's/  WidgetButton \{/  Label {\n    text: root.setting("label", "Pressed")\n    $ENV{LABEL_FORMAT}\n  }\n  WidgetButton {/' "$d/Widget.qml"
+    line="$(grep -n '^    text: root\.setting("label", "Pressed")$' "$d/Widget.qml" | cut -d: -f1)"
+    (cd "$d" && OMARCHY_KIT_DIR="$kit" bash scripts/check.d/omarchy-plugin.sh) >"$d.guard.out" 2>&1; rc=$?
+    case "$fmt" in
+      *PlainText) assert_exit 0 "$rc" || { tail -5 "$d.guard.out"; return 1; } ;;
+      *) assert_exit 1 "$rc" || { echo "    for a Label with '${fmt:-no textFormat}'"; return 1; }
+        assert_contains "$d.guard.out" "shell/Widget.qml:$line: text binding without textFormat" || return 1
+        assert_contains "$d.guard.out" "give it textFormat: Text.PlainText" || return 1 ;;
+    esac
+  done
 }
 
 # --- tests: foldkit stack pack (plan 011) ---------------------------------------

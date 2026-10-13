@@ -10,11 +10,9 @@
 set -euo pipefail
 
 APP_ID="{{PACKAGE_NAME}}"
+# PREFIX is the one setting. Generic names such as APPDIR, which every AppImage
+# exports to its children, are never read from the environment.
 PREFIX="${PREFIX:-$HOME/.local}"
-BINDIR="${BINDIR:-$PREFIX/bin}"
-APPDIR="${APPDIR:-$PREFIX/share/applications}"
-ICONDIR="${ICONDIR:-$PREFIX/share/icons/hicolor/scalable/apps}"
-BINARY="${CARGO_TARGET_DIR:-target}/release/$APP_ID"
 
 mode=install
 build=1
@@ -30,44 +28,88 @@ done
 # After --help, which reads this script by its path. A CDPATH entry must not pick the directory.
 CDPATH='' cd -- "$(dirname -- "$0")/.."
 
+# A relative PREFIX would resolve against this project, not the caller's
+# directory, and write a relative Exec=.
+case "$PREFIX" in
+  /*) ;;
+  *) echo "install.sh: PREFIX must be an absolute path: $PREFIX" >&2; exit 2 ;;
+esac
 # Exec quotes the binary's path; these characters would need escaping there
 # (desktop entry spec), so refuse them rather than write a broken entry.
-case "$BINDIR" in
-  *[\"\`\$\\%]*|*$'\n'*) echo "install.sh: unsupported character in BINDIR: $BINDIR" >&2; exit 2 ;;
+case "$PREFIX" in
+  *[\"\`\$\\%]*|*$'\n'*) echo "install.sh: unsupported character in PREFIX: $PREFIX" >&2; exit 2 ;;
 esac
+bindir="$PREFIX/bin"
+appdir="$PREFIX/share/applications"
+icondir="$PREFIX/share/icons/hicolor/scalable/apps"
+version="$(head -n 1 VERSION)"
 
 desktop_entry() {
-  BINDIR="$BINDIR" VERSION="$(head -n 1 VERSION)" perl -pe \
+  BINDIR="$bindir" VERSION="$version" perl -pe \
     's/\@BINDIR\@/$ENV{BINDIR}/g; s/\@VERSION\@/$ENV{VERSION}/g' packaging/app.desktop.in
 }
 
 refresh_launcher() {
   if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database "$APPDIR" 2>/dev/null || true
+    update-desktop-database "$appdir" 2>/dev/null || true
   fi
+}
+
+# This app's desktop entry marks an install this script made (it writes the
+# entry last). A binary at its path without one is another tool's: install
+# never replaces it and --uninstall never removes it.
+unrelated_binary() {
+  { [ -e "$bindir/$APP_ID" ] || [ -L "$bindir/$APP_ID" ]; } && [ ! -e "$appdir/$APP_ID.desktop" ]
 }
 
 case "$mode" in
   print)
     desktop_entry ;;
   uninstall)
-    rm -f "$BINDIR/$APP_ID" "$APPDIR/$APP_ID.desktop" "$ICONDIR/$APP_ID.svg"
+    if unrelated_binary; then
+      echo "install.sh: left $bindir/$APP_ID alone: it is not one this script installed (no $appdir/$APP_ID.desktop)" >&2
+      exit 1
+    fi
+    rm -f "$bindir/$APP_ID" "$appdir/$APP_ID.desktop" "$icondir/$APP_ID.svg"
     refresh_launcher
     echo "Removed $APP_ID from $PREFIX." ;;
   install)
-    if [ "$build" = 1 ]; then cargo build --locked --release; fi
-    [ -x "$BINARY" ] || { echo "install.sh: $BINARY is missing; build it first" >&2; exit 1; }
-    install -d "$BINDIR" "$APPDIR" "$ICONDIR"
-    install -m 755 "$BINARY" "$BINDIR/$APP_ID"
-    install -m 644 assets/icon.svg "$ICONDIR/$APP_ID.svg"
-    desktop_entry > "$APPDIR/$APP_ID.desktop.tmp"
-    chmod 644 "$APPDIR/$APP_ID.desktop.tmp"
-    mv "$APPDIR/$APP_ID.desktop.tmp" "$APPDIR/$APP_ID.desktop"
+    if unrelated_binary; then
+      echo "install.sh: $bindir/$APP_ID is not one this script installed (no $appdir/$APP_ID.desktop): move it aside first" >&2
+      exit 1
+    fi
+    if [ "$build" = 1 ]; then
+      # Install the binary cargo reports building: build.target-dir,
+      # CARGO_BUILD_TARGET_DIR and build.target all move it, and sudo drops
+      # CARGO_TARGET_DIR. Its diagnostics still reach the terminal.
+      command -v jq >/dev/null 2>&1 || { echo "install.sh: jq not found; it reads where cargo put the binary" >&2; exit 1; }
+      binary="$(cargo build --locked --release --message-format=json-render-diagnostics \
+        | jq -r --arg id "$APP_ID" 'select(.reason == "compiler-artifact" and .target.name == $id and .executable != null) | .executable')"
+      [ -n "$binary" ] || { echo "install.sh: cargo built no $APP_ID binary" >&2; exit 1; }
+    else
+      binary="${CARGO_TARGET_DIR:-target}/release/$APP_ID"
+    fi
+    [ -x "$binary" ] || { echo "install.sh: $binary is missing; build it first" >&2; exit 1; }
+    # It must be this app at this VERSION: a build from before the last bump
+    # would install under the new version's entry. That is all --no-build can
+    # check, so an older build of the same VERSION still gets through; the
+    # default path installs exactly what cargo just built.
+    reported="$("$binary" --version 2>/dev/null || true)"
+    if [ "$reported" != "$APP_ID $version" ]; then
+      echo "install.sh: $binary reports '$reported', not '$APP_ID $version': rebuild it" >&2
+      exit 1
+    fi
+    install -d "$bindir" "$appdir" "$icondir"
+    install -m 755 "$binary" "$bindir/$APP_ID"
+    install -m 644 assets/icon.svg "$icondir/$APP_ID.svg"
+    desktop_entry > "$appdir/$APP_ID.desktop.tmp"
+    chmod 644 "$appdir/$APP_ID.desktop.tmp"
+    mv "$appdir/$APP_ID.desktop.tmp" "$appdir/$APP_ID.desktop"
     refresh_launcher
-    echo "Installed $APP_ID $(head -n 1 VERSION):"
-    echo "  $BINDIR/$APP_ID"
-    echo "  $APPDIR/$APP_ID.desktop"
-    echo "  $ICONDIR/$APP_ID.svg"
-    case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "Note: $BINDIR is not on PATH in this shell." ;; esac
+    echo "Installed $APP_ID $version:"
+    echo "  $bindir/$APP_ID"
+    echo "  $appdir/$APP_ID.desktop"
+    echo "  $icondir/$APP_ID.svg"
+    case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: $bindir is not on PATH in this shell." ;; esac
     echo "Keybinding and window rule: docs/guides/omarchy.md" ;;
 esac
