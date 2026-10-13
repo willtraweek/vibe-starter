@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The test gate: Logic.js under Node at 100% lines, branches and functions, then
-# the QML tests under Qt 6's qmltestrunner, offscreen. Fails closed: a missing
-# tool, an old Node, a Qt 5 runner or zero QML tests is a failure, not a skip.
+# The test gate: Logic.js (and every other *.js or *.mjs module outside tests/)
+# under Node at 100% lines, branches and functions, then the QML tests under Qt
+# 6's qmltestrunner, offscreen. Fails closed: a missing tool, an old Node, a Qt 5
+# runner or zero QML tests is a failure, not a skip.
 set -euo pipefail
 CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 
@@ -15,7 +16,7 @@ if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 8 ]; }; then
   exit 1
 fi
 node --test --experimental-test-coverage \
-  --test-coverage-include='**/*.js' --test-coverage-exclude='tests/**' \
+  --test-coverage-include='**/*.js' --test-coverage-include='**/*.mjs' --test-coverage-exclude='tests/**' \
   --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 \
   'tests/unit/*.test.js'
 

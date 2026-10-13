@@ -16,11 +16,11 @@ process), where the bar, its panels and its menus are all plugins.
 
 ## Test it
 
-`./tests/run` runs `Logic.js`'s unit tests under Node, at 100% lines, branches and functions,
-then `Widget.qml` under Qt 6's `qmltestrunner`, offscreen, against stand-ins for the `qs.Ui`
-components it uses (`tests/qml/imports`). The stand-ins copy only what the widget uses from
-Omarchy's real components; when the widget uses more, add it there, following
-`$OMARCHY_PATH/shell/Ui`.
+`./tests/run` runs `Logic.js`'s unit tests under Node, at 100% lines, branches and functions
+(every other `.js` or `.mjs` module outside `tests/` too), then `Widget.qml` under Qt 6's
+`qmltestrunner`, offscreen, against stand-ins for the `qs.Ui` components it uses
+(`tests/qml/imports`). The stand-ins copy only what the widget uses from Omarchy's real
+components; when the widget uses more, add it there, following `$OMARCHY_PATH/shell/Ui`.
 
 `./scripts/check.sh` runs Omarchy's own `omarchy plugin validate` rules and its Text-format
 scanner, on the files git would commit, at the Omarchy commit pinned in `.omarchy-ref` (fetched

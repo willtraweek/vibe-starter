@@ -4516,6 +4516,14 @@ test_stack_omarchy_plugin_tests_run_fails_closed() {
   (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
   rm -f "$d/Extra.js"
   assert_exit 1 "$rc" || return 1
+  # Regression test. Coverage measured only *.js and the loader found only *.js,
+  # so an ECMAScript module QML imports (Extra.mjs) escaped the gate untested.
+  mkdir -p "$d/logic" && printf 'export function hidden(x) {\n  return x ? 1 : 2\n}\n' > "$d/logic/Extra.mjs" || return 1
+  (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
+  rm -rf "$d/logic"
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.run" "Extra.mjs" || return 1
+  assert_contains "$d.run" "does not meet threshold of 100%" || return 1
   # A failed QML run, one with no real test, and a Qt 5 runner each fail.
   while IFS='|' read -r out want; do
     printf '%b' "$out" > "$d.qml-out"
