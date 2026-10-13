@@ -53,6 +53,15 @@ fn space_counts_and_r_resets(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn enter_runs_the_primary_action(cx: &mut TestAppContext) {
+    // Regression test. Press is ButtonVariant::Primary, which DESIGN.md keeps for
+    // what Enter does, yet Enter did nothing until Tab reached the button.
+    let (view, cx) = open(cx);
+    press(cx, "enter");
+    assert_eq!(count(&view, cx), 1);
+}
+
+#[gpui_kit::test]
 fn clicking_the_button_counts(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
     let bounds = cx.debug_bounds("press").expect("the press button is drawn");

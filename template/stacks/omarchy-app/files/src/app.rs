@@ -32,6 +32,8 @@ actions!(
 pub fn init(cx: &mut App) {
     gpui_omarchy::init(cx);
     cx.bind_keys([
+        // Enter runs the primary action (DESIGN.md), wherever the focus is.
+        KeyBinding::new("enter", Increment, Some(KEY_CONTEXT)),
         KeyBinding::new("space", Increment, Some(KEY_CONTEXT)),
         KeyBinding::new("r", Reset, Some(KEY_CONTEXT)),
         KeyBinding::new("q", Quit, Some(KEY_CONTEXT)),
@@ -153,6 +155,7 @@ impl Render for MainWindow {
                                 .flex()
                                 .items_center()
                                 .gap(rems(0.5))
+                                .child(keycap("enter", cx))
                                 .child(keycap("space", cx))
                                 .child("press")
                                 .child(keycap("r", cx))
