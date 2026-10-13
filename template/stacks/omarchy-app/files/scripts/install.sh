@@ -14,7 +14,6 @@ PREFIX="${PREFIX:-$HOME/.local}"
 BINDIR="${BINDIR:-$PREFIX/bin}"
 APPDIR="${APPDIR:-$PREFIX/share/applications}"
 ICONDIR="${ICONDIR:-$PREFIX/share/icons/hicolor/scalable/apps}"
-BINARY="${CARGO_TARGET_DIR:-target}/release/$APP_ID"
 
 mode=install
 build=1
@@ -55,10 +54,20 @@ case "$mode" in
     refresh_launcher
     echo "Removed $APP_ID from $PREFIX." ;;
   install)
-    if [ "$build" = 1 ]; then cargo build --locked --release; fi
-    [ -x "$BINARY" ] || { echo "install.sh: $BINARY is missing; build it first" >&2; exit 1; }
+    if [ "$build" = 1 ]; then
+      # Install the binary cargo reports building: build.target-dir,
+      # CARGO_BUILD_TARGET_DIR and build.target all move it, and sudo drops
+      # CARGO_TARGET_DIR. Its diagnostics still reach the terminal.
+      command -v jq >/dev/null 2>&1 || { echo "install.sh: jq not found; it reads where cargo put the binary" >&2; exit 1; }
+      binary="$(cargo build --locked --release --message-format=json-render-diagnostics \
+        | jq -r --arg id "$APP_ID" 'select(.reason == "compiler-artifact" and .target.name == $id and .executable != null) | .executable')"
+      [ -n "$binary" ] || { echo "install.sh: cargo built no $APP_ID binary" >&2; exit 1; }
+    else
+      binary="${CARGO_TARGET_DIR:-target}/release/$APP_ID"
+    fi
+    [ -x "$binary" ] || { echo "install.sh: $binary is missing; build it first" >&2; exit 1; }
     install -d "$BINDIR" "$APPDIR" "$ICONDIR"
-    install -m 755 "$BINARY" "$BINDIR/$APP_ID"
+    install -m 755 "$binary" "$BINDIR/$APP_ID"
     install -m 644 assets/icon.svg "$ICONDIR/$APP_ID.svg"
     desktop_entry > "$APPDIR/$APP_ID.desktop.tmp"
     chmod 644 "$APPDIR/$APP_ID.desktop.tmp"

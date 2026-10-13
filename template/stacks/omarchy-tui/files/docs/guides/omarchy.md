@@ -12,7 +12,9 @@ themed by Omarchy, and the launcher on `Super + Space`.
 
 ## Install it for yourself
 
-`./scripts/install.sh` builds a release binary and installs, under `~/.local` (no root):
+`./scripts/install.sh` builds a release binary and installs the one cargo reports building
+(wherever `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` put it), under `~/.local`
+(no root):
 
 - `~/.local/bin/{{PACKAGE_NAME}}`
 - `~/.local/share/applications/{{PACKAGE_NAME}}.desktop`, which the Omarchy launcher lists. It

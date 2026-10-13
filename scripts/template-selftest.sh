@@ -3775,14 +3775,22 @@ test_stack_omarchy_app_rejects_unusable_names_before_writes() {
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "'$name' changed files before its rejection" || return 1
   done
 }
+stub_app_binary() {  # $1 = path: a stand-in release binary whose --version prints $2
+  mkdir -p "$(dirname "$1")" || return 1
+  cat > "$1" <<STUB || return 1
+#!/bin/sh
+[ "\$1" = --version ] && echo "$2"
+STUB
+  chmod +x "$1"
+}
 test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   # install.sh puts exactly three files under PREFIX and removes exactly those;
-  # the stub stands in for the release binary, so nothing is compiled.
-  local d="$WORK/omarchy-app-install/demo-app" p="$WORK/omarchy-app-install/prefix" rc f entry
+  # stubs stand in for cargo and the release binary, so nothing is compiled.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local w="$WORK/omarchy-app-install" d="$WORK/omarchy-app-install/demo-app" p="$WORK/omarchy-app-install/prefix" rc f entry
   omarchy_app_project "$d" || return 1
-  mkdir -p "$d/target/release" "$WORK/omarchy-app-install/elsewhere/release" || return 1
-  printf '#!/bin/sh\necho demo_app\n' > "$d/target/release/demo_app"
-  chmod +x "$d/target/release/demo_app" || return 1
+  mkdir -p "$w/elsewhere/release" || return 1
+  stub_app_binary "$d/target/release/demo_app" "demo_app 0.0.0" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1 \
     || fail "install exited $?: $(cat "$d.install")" || return 1
   entry="$p/share/applications/demo_app.desktop"
@@ -3799,14 +3807,31 @@ test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   done
   assert_exists "$p/bin/keep-me" || return 1
   assert_exists "$p/share/applications/other.desktop" || return 1
-  # The binary is found where CARGO_TARGET_DIR put it.
-  mv "$d/target/release/demo_app" "$WORK/omarchy-app-install/elsewhere/release/demo_app" || return 1
-  (cd "$d" && CARGO_TARGET_DIR="$WORK/omarchy-app-install/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
+  # With --no-build, the binary is found where CARGO_TARGET_DIR put it.
+  mv "$d/target/release/demo_app" "$w/elsewhere/release/demo_app" || return 1
+  (cd "$d" && CARGO_TARGET_DIR="$w/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
     >"$d.install" 2>&1 || fail "install with CARGO_TARGET_DIR exited $?: $(cat "$d.install")" || return 1
   assert_exists "$p/bin/demo_app" || return 1
   (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.install" "is missing; build it first" || return 1
+  # Regression test. install.sh guessed target/release/<app id>, but cargo's
+  # build.target-dir, CARGO_BUILD_TARGET_DIR and build.target move the binary,
+  # and sudo drops CARGO_TARGET_DIR: it now installs the one cargo reports.
+  stub_app_binary "$w/built/demo_app" "demo_app 0.0.0" && echo '# the one cargo built' >> "$w/built/demo_app" || return 1
+  mkdir -p "$w/bin" || return 1
+  cat > "$w/bin/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" > "$w/cargo.args"
+echo '{"reason":"compiler-artifact","target":{"kind":["lib"],"name":"demo_app"},"executable":null}'
+echo '{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"demo_app"},"executable":"$w/built/demo_app"}'
+echo '{"reason":"build-finished","success":true}'
+STUB
+  chmod +x "$w/bin/cargo" || return 1
+  (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX="$p" ./scripts/install.sh) >"$d.install" 2>&1 \
+    || fail "install with a build exited $?: $(cat "$d.install")" || return 1
+  assert_contains "$w/cargo.args" "cargo build --locked --release --message-format=json-render-diagnostics" || return 1
+  cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "install did not take the binary cargo reported" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \
