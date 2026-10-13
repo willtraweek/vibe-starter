@@ -4847,6 +4847,8 @@ printf '0.1.0\n' > VERSION|package.json version "0.0.0" differs from VERSION 0.1
 printf 'v1\n' > VERSION|VERSION must hold MAJOR.MINOR.PATCH
 printf '0.1.0.1\n' > VERSION|package.json version "0.0.0" differs from VERSION 0.1.0.1 (npm form 0.1.0): set it to 0.1.0
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.optionalDependencies={"left-pad":"^1.3.0"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "^1.3.0"
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.dependencies.vite="^"+p.devDependencies.vite;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|vite must be pinned to an exact version, got "^
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.dependencies.vite=p.devDependencies.vite;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|vite is listed in both dependencies and devDependencies: keep one
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/ui"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/ui @FK_NEXT@ must equal foldkit @FK@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies.vite="^"+p.devDependencies.vite;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|vite must be pinned to an exact version, got "^
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));fs.writeFileSync("package.json",JSON.stringify(p)+"\n")'|package.json is not in JSON.stringify(pkg, null, 2)

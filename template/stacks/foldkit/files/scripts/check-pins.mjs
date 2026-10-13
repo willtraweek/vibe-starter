@@ -87,14 +87,23 @@ if (!RELEASE.test(version)) {
 }
 
 // Optional dependencies are pinned like the rest; pnpm may skip one on a platform
-// it doesn't support, so only those may be missing from node_modules.
+// it doesn't support, so only those may be missing from node_modules. Each
+// section is checked on its own: merged, one section's entry would hide another's.
+const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies']
 const optional = pkg.optionalDependencies ?? {}
-const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...optional }
-for (const [name, spec] of Object.entries(deps)) {
-  if (typeof spec !== 'string' || !EXACT.test(spec)) {
-    errors.push(`${name} must be pinned to an exact version, got ${JSON.stringify(spec)}`)
+const section = new Map()
+for (const key of SECTIONS) {
+  for (const [name, spec] of Object.entries(pkg[key] ?? {})) {
+    if (typeof spec !== 'string' || !EXACT.test(spec)) {
+      errors.push(`${name} must be pinned to an exact version, got ${JSON.stringify(spec)}`)
+    }
+    if (section.has(name)) {
+      errors.push(`${name} is listed in both ${section.get(name)} and ${key}: keep one`)
+    }
+    section.set(name, key)
   }
 }
+const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...optional }
 
 const nodeVersion = existsSync(join(ROOT, '.node-version')) ? read('.node-version').trim() : ''
 const runtime = pkg.devEngines?.runtime
