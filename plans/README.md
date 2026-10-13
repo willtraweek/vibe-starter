@@ -244,24 +244,16 @@ Open for the maintainer (none blocks execution):
 - a skeleton "Health Stack" section in CLAUDE.md, so gstack `/health` stops calling a bare
   `tsc` in every stack pack's projects.
 
-**Before plan 011 runs or ships.** Its pre-landing review (2026-10-04) left findings in the
-embedded pack and helpers, tracked in #20.
-- The local commits it names, `98b35eb` and `b185770`, are unpushed: plans 009 and 010 on the
-  tree it was written against. Its own implementation, including the rehearsed lockfile, is
-  on the unpushed branch `willtraweek/foldkit-stack-pack`.
-- Run `contracts.sh` on master once plans 007–010 have landed, before rebuilding the pack from
-  this plan or rebasing that branch. On a tree where step 1 is already applied, it only says so
-  and checks nothing.
-- Plan 007 as shipped (PR #19) rewrote TEMPLATE.md's skipped-locally line, so `contracts.sh`
-  will report `DIFFERS  TEMPLATE.md: the skipped-locally line`. That DIFFERS is expected, but
-  allowing it is not a repair: step 4.3 replaces that same old line, and step 4's verify grep
-  expects step 4.3's new text. Re-anchor `contracts.sh`, the Current state bullet and step 4.3
-  on 007's new sentence, update the verify grep to match (#20 item 1), and regenerate
-  `helpers.sha256`, which covers `contracts.sh`.
-- The branch's own index edits (row 011 DONE, an older "stays red" line) predate this section;
-  keep master's text when rebasing.
-- Every finding in #20 needs a disposition in the pack's implementation PR, with `pack.sha256`
-  and `helpers.sha256` regenerated, before row 011 is marked DONE.
+**Plan 011's acceptance.** PR #22 executes plan 011 together with plans 007–010, so the plan is
+not replayed: its embedded pack, helpers and `pack.sha256`/`helpers.sha256` stay as the record
+of the 2026-10-02 rehearsal (the plan says so at the top) instead of being regenerated, and its
+"Maintenance notes" now describe the pack as it is. That replaces the old requirement to
+regenerate both manifests and rerun preflight, steps 1–3 and `heavy.sh` before row 011 is DONE.
+Row 011 is DONE when every finding of #20 has a disposition in PR #22's description (each one
+fixed with a regression test, or declined with a reason) and the final tree passes the full
+light suite, every heavy test and hosted CI. Items 1–4 and 15 (the plan's own replay anchors,
+manifests and preview helper) are superseded by that: the maintenance notes carry the port
+check and the lockfile review that remain useful.
 
 **Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
 container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and
