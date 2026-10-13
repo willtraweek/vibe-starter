@@ -10,6 +10,8 @@
 #        scripts/template-selftest.sh --print-inventory   # the golden placeholder inventory
 #        SELFTEST_EXCLUDE=<substring>   # skip tests whose name contains it; not counted as skips
 #        SELFTEST_HEAVY=1               # also build real projects locally (test_heavy_*)
+#        SELFTEST_RUST_TOOLCHAIN=<channel>  # run the Rust tests on it (default: stable)
+#        SELFTEST_CARGO_TARGET_DIR=<dir>    # the heavy Rust tests build under <dir>/<pack>
 #
 # Portability: must run on macOS /bin/bash 3.2 and on Linux bash 5. No mapfile,
 # no associative arrays, no ${var,,}, no `local -n`.
@@ -3532,8 +3534,11 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
     n=$((n + 1))
     pin="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' "$f")"
     [ -n "$pin" ] || fail "no channel in ${f#"$REPO"/}" || return 1
-    assert_contains "$wf" "rustup toolchain install $pin " || return 1
-    assert_contains "$wf" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || return 1
+    # Both jobs install and test it: every occurrence must be the pin, not just one.
+    [ "$(sed -n 's/^ *run: rustup toolchain install \([^ ]*\) .*/\1/p' "$wf" | LC_ALL=C sort -u)" = "$pin" ] \
+      || fail "a template-selftest.yml job installs another toolchain than $pin" || return 1
+    [ "$(sed -n 's/^ *SELFTEST_RUST_TOOLCHAIN: "\([^"]*\)"$/\1/p' "$wf" | LC_ALL=C sort -u)" = "$pin" ] \
+      || fail "a template-selftest.yml job tests another toolchain than $pin" || return 1
     assert_contains "$REPO/template/stacks/rust/commands" "STACK=Rust ${pin%.*} " || return 1
     # Every pack that names its Rust (STACK lines, --help descriptions) names this
     # one, and so do TEMPLATE.md's commands for running the Rust tests locally.
@@ -3893,9 +3898,9 @@ test_heavy_stack_omarchy_app_project_is_green() {
     --stack omarchy-app --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
   assert_contains "$d.out" "Wrote Cargo.lock" || return 1
   (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
-  # CI caches one target directory per generated project (one name per pack), so
-  # coverage never mixes two projects' builds; locally it lives in the copy.
-  target="${SELFTEST_CARGO_TARGET_DIR:+$SELFTEST_CARGO_TARGET_DIR/omarchy_disk_usage_explorer}"
+  # CI caches one target directory per pack, named after it, so coverage never
+  # mixes two packs' builds; locally it lives in the copy.
+  target="${SELFTEST_CARGO_TARGET_DIR:+$SELFTEST_CARGO_TARGET_DIR/omarchy-app}"
   target="${target:-$d/target}"
   (cd "$d" && CARGO_TARGET_DIR="$target" rust_env ./scripts/check.sh \
     && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage.sh \

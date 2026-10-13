@@ -151,9 +151,10 @@ shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh \
 The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
 `scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
 that need a missing tool are skipped locally: gitleaks; uv for the Python pack; Node for the
-JavaScript checkers; rustup with
-clippy and rustfmt, and jq, for the Rust pack, plus cargo-llvm-cov and llvm-tools for its
-coverage test. CI installs them all and treats skips as failures. The Rust tests use your default
+JavaScript checkers; rustup with clippy and rustfmt for the Rust packs, plus cargo-llvm-cov and
+llvm-tools for their coverage tests; jq for the Rust and omarchy-plugin packs; python3 for the
+omarchy-plugin guard test and the omarchy-tui heavy test. CI installs them all and treats skips
+as failures. The Rust tests use your default
 stable toolchain unless `SELFTEST_RUST_TOOLCHAIN` names another, and most of them skip on one
 older than the pack's pinned channel; the third command above runs them on that channel. The
 Python pack tests download Python 3.14 and a few PyPI packages into your normal uv cache on first
