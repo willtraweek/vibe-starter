@@ -5364,6 +5364,62 @@ test_stack_foldkit_guard_runs_its_checkers_first() {
   assert_contains "$d.guard.out" "src/mocked.test.ts:1: vi.doMock: no vi.mock" || return 1
   assert_absent "$d.pnpm.log"
 }
+test_stack_foldkit_guard_reports_lockfile_failures_accurately() {
+  # Regression test (#20 item 26). The lockfile check gave its 24-hour advice for
+  # every supply-chain failure, a tampered tarball URL included, with pnpm's help
+  # cut; and pnpm_config_* settings in the environment beat pnpm-workspace.yaml
+  # (pnpm_config_trust_lockfile=true skips the policy check altogether).
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-guard-lockfile/demo" rc setting policy=()
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  # pnpm 12.6.0's reports, abridged.
+  cat > "$d.age" <<'OUT'
+Error: ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION
+  -> 1 lockfile entries failed verification:
+       foldkit@0.165.0 was published at 2026-10-01T01:47:28.062Z, within the minimumReleaseAge cutoff (2026-10-12T22:58:36.307Z)
+  help: The lockfile contains entries that the active policies reject. [...]
+        Alternatively, relax the policy that flagged them.
+OUT
+  cat > "$d.url" <<'OUT'
+Error: ERR_PNPM_LOCKFILE_RESOLUTION_VERIFICATION
+  -> 1 lockfile entries failed verification:
+       foldkit@0.165.0 has a tarball URL (https://registry.npmjs.org/foldkit/-/foldkit-0.0.1.tgz) that does not match the registry's published metadata
+  help: The lockfile contains entries that the active policies reject. [...]
+        Alternatively, relax the policy that flagged them.
+OUT
+  printf 'Error: ERR_PNPM_TRUST_DOWNGRADE\n  help: Check who published it.\n' > "$d.trust"
+  printf 'Error: ERR_PNPM_OUTDATED_LOCKFILE\n  -> pnpm-lock.yaml is not up to date with package.json.\n  help: Regenerate the lockfile.\n' > "$d.stale"
+  fk_guard "$d" FK_PNPM_INSTALL="cat '$d.age'; exit 1"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "foldkit@0.165.0 was published at" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than pnpm-workspace.yaml's minimumReleaseAge" || return 1
+  assert_not_contains "$d.guard.out" "relax the policy" || return 1
+  assert_not_contains "$d.guard.out" "tampered" || return 1
+  for f in url trust; do
+    fk_guard "$d" FK_PNPM_INSTALL="cat '$d.$f'; exit 1"; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.guard.out" "$(sed -n 's/^  help: //p' "$d.$f")" || return 1
+    assert_contains "$d.guard.out" "pnpm-lock.yaml or a dependency may have been tampered with" || return 1
+    assert_not_contains "$d.guard.out" "minimumReleaseAge, 24 hours" || return 1
+  done
+  assert_contains "$d.guard.out" "ERR_PNPM_TRUST_DOWNGRADE" || return 1
+  fk_guard "$d" FK_PNPM_INSTALL="cat '$d.stale'; exit 1"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "help: Regenerate the lockfile." || return 1
+  assert_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date with package.json" || return 1
+  assert_not_contains "$d.guard.out" "tampered" || return 1
+  # Every policy setting, in both spellings pnpm reads, is cleared; others stay.
+  for setting in minimum_release_age minimum_release_age_exclude minimum_release_age_strict \
+    minimum_release_age_ignore_missing_time trust_lockfile trust_policy trust_policy_exclude \
+    trust_policy_ignore_after strict_dep_builds block_exotic_subdeps allow_builds dangerously_allow_all_builds; do
+    policy+=("pnpm_config_$setting=1" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')=1")
+  done
+  fk_guard "$d" "${policy[@]}" pnpm_config_store_dir=/tmp/kept FK_PNPM_INSTALL="env > '$d.env'"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.guard.out"; return 1; }
+  assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
+  ! grep -iE '^pnpm_config_(minimum_release_age|trust_|strict_dep_builds|block_exotic_subdeps|allow_builds|dangerously)' "$d.env" \
+    || fail "the guard ran pnpm with a policy setting from the environment"
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
@@ -5538,16 +5594,37 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   (cd "$d" && env PATH=/usr/bin:/bin /bin/bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard.out" "pnpm is not installed" || return 1
-  # A locked package that pnpm's supply-chain policy rejects (an impossible age rule
-  # stands in for a release under 24 hours old) is reported as that, with the
-  # packages named, not as a stale lockfile. The install stays usable: the plain
+  # A locked release under 24 hours old (a ten-year age rule in pnpm-workspace.yaml
+  # stands in for one) is reported as that, with the packages named, not as a stale
+  # lockfile and without pnpm's "relax the policy" help. Settings in the
+  # environment can't loosen the file's rule. The install stays usable: the plain
   # guard passes right after.
-  (cd "$d" && stack_env env pnpm_config_minimum_release_age=5256000 bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  perl -pi -e 's/^minimumReleaseAge: \d+$/minimumReleaseAge: 5256000/' "$d/pnpm-workspace.yaml" || return 1
+  grep -qx 'minimumReleaseAge: 5256000' "$d/pnpm-workspace.yaml" || fail "the age-rule mutation did not apply" || return 1
+  guard; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.guard.out" "pnpm's supply-chain policy (pnpm-workspace.yaml) rejects a locked package" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than pnpm-workspace.yaml's minimumReleaseAge" || return 1
   assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
-  assert_not_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date" || return 1
+  assert_not_contains "$d.guard.out" "out of date" || return 1
   assert_not_contains "$d.guard.out" "relax the policy" || return 1
+  (cd "$d" && stack_env env pnpm_config_minimum_release_age=0 PNPM_CONFIG_MINIMUM_RELEASE_AGE=0 \
+    pnpm_config_trust_lockfile=true bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
+  (cd "$d" && git checkout -q -- pnpm-workspace.yaml) || return 1
+  # A tarball URL the registry never published for that release may be a tamper,
+  # not a young release: pnpm's report and help pass through whole.
+  perl -0pi -e 's|(\n  foldkit\@[^:\n]+:\n    resolution: \{integrity: [^,}]+)\}|$1, tarball: https://registry.npmjs.org/foldkit/-/foldkit-0.0.1.tgz}|' "$d/pnpm-lock.yaml" || return 1
+  grep -q 'foldkit-0.0.1.tgz' "$d/pnpm-lock.yaml" || fail "the tarball mutation did not apply" || return 1
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  # pnpm wraps its report at 80 columns: these fragments stay on one line.
+  assert_contains "$d.guard.out" "ERR_PNPM_LOCKFILE_RESOLUTION_VERIFICATION" || return 1
+  assert_contains "$d.guard.out" "has a tarball URL" || return 1
+  assert_contains "$d.guard.out" "help: The lockfile contains entries" || return 1
+  assert_contains "$d.guard.out" "pnpm-lock.yaml or a dependency may have been tampered with" || return 1
+  assert_not_contains "$d.guard.out" "minimumReleaseAge, 24 hours" || return 1
+  (cd "$d" && git checkout -q -- pnpm-lock.yaml) || return 1
   guard || fail "the guard failed after the mutations were reverted: $(tail -20 "$d.guard.out")" || return 1
   # Coverage: an untested module fails the global floor and is named; a tier member
   # that coverage can't measure fails its tier.
