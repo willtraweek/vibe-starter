@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url'
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const SEMVER3 = /^\d+\.\d+\.\d+$/
+// gstack's VERSION is MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.MICRO; package.json
+// carries its npm form, the first three parts (npm refuses a fourth).
+const RELEASE = /^\d+\.\d+\.\d+(?:\.\d+)?$/
 const errors = []
 
 const read = path => readFileSync(join(ROOT, path), 'utf8')
@@ -75,13 +78,18 @@ if (raw !== `${JSON.stringify(pkg, null, 2)}\n`) {
   errors.push('package.json is not in JSON.stringify(pkg, null, 2) + "\\n" form (gstack /ship rewrites it that way): reformat it')
 }
 const version = existsSync(join(ROOT, 'VERSION')) ? read('VERSION').trim() : ''
-if (!SEMVER3.test(version)) {
-  errors.push(`VERSION must hold MAJOR.MINOR.PATCH, got ${JSON.stringify(version)}`)
-} else if (pkg.version !== version) {
-  errors.push(`package.json version ${JSON.stringify(pkg.version)} differs from VERSION ${version}: set it to ${version}`)
+const npmVersion = version.split('.').slice(0, 3).join('.')
+if (!RELEASE.test(version)) {
+  errors.push(`VERSION must hold MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.MICRO, got ${JSON.stringify(version)}`)
+} else if (pkg.version !== npmVersion) {
+  const form = npmVersion === version ? '' : ` (npm form ${npmVersion})`
+  errors.push(`package.json version ${JSON.stringify(pkg.version)} differs from VERSION ${version}${form}: set it to ${npmVersion}`)
 }
 
-const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+// Optional dependencies are pinned like the rest; pnpm may skip one on a platform
+// it doesn't support, so only those may be missing from node_modules.
+const optional = pkg.optionalDependencies ?? {}
+const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...optional }
 for (const [name, spec] of Object.entries(deps)) {
   if (typeof spec !== 'string' || !EXACT.test(spec)) {
     errors.push(`${name} must be pinned to an exact version, got ${JSON.stringify(spec)}`)
@@ -117,7 +125,9 @@ const missing = []
 for (const [name, spec] of Object.entries(deps)) {
   const meta = installed(name)
   if (meta === undefined) {
-    missing.push(name)
+    if (!Object.hasOwn(optional, name)) {
+      missing.push(name)
+    }
   } else if (EXACT.test(String(spec)) && meta.version !== spec) {
     errors.push(`node_modules has ${name} ${meta.version}, package.json pins ${spec}: run pnpm install (if it stays, pnpm-lock.yaml holds the other version: regenerate it)`)
   }
@@ -154,8 +164,10 @@ if (foldkit !== undefined) {
       }
     }
   }
-  if (deps['@foldkit/devtools'] !== undefined && deps['@foldkit/devtools'] !== deps.foldkit) {
-    errors.push(`@foldkit/devtools ${deps['@foldkit/devtools']} must equal foldkit ${deps.foldkit} (they release together)`)
+  for (const name of ['@foldkit/devtools', '@foldkit/ui']) {
+    if (deps[name] !== undefined && deps[name] !== deps.foldkit) {
+      errors.push(`${name} ${deps[name]} must equal foldkit ${deps.foldkit} (they release together)`)
+    }
   }
 }
 

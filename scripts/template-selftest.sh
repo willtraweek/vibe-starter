@@ -4832,6 +4832,9 @@ test_stack_foldkit_pin_guard_fails_closed() {
   done <<'CASES'
 printf '0.1.0\n' > VERSION|package.json version "0.0.0" differs from VERSION 0.1.0
 printf 'v1\n' > VERSION|VERSION must hold MAJOR.MINOR.PATCH
+printf '0.1.0.1\n' > VERSION|package.json version "0.0.0" differs from VERSION 0.1.0.1 (npm form 0.1.0): set it to 0.1.0
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.optionalDependencies={"left-pad":"^1.3.0"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "^1.3.0"
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/ui"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/ui @FK_NEXT@ must equal foldkit @FK@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies.vite="^"+p.devDependencies.vite;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|vite must be pinned to an exact version, got "^
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));fs.writeFileSync("package.json",JSON.stringify(p)+"\n")'|package.json is not in JSON.stringify(pkg, null, 2)
 printf '{\n' > package.json|package.json is not valid JSON
@@ -4850,6 +4853,16 @@ node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/packa
 node -e 'const fs=require("fs");const f="node_modules/@foldkit/devtools-mcp/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.foldkit="~0.0";fs.writeFileSync(f,JSON.stringify(p))'|which check-pins cannot evaluate
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
 CASES
+  # Regression test. gstack's four-part VERSION (a MICRO release) leaves
+  # package.json at its npm form, the first three parts; check-pins refused it.
+  # An exactly pinned optional dependency may be absent: pnpm skips one off-platform.
+  for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
+  printf '%s.7\n' "$(cat "$d/VERSION")" > "$d/VERSION"
+  fk_json "$d/package.json" 'c.optionalDependencies = { fsevents: "2.3.3" }' || return 1
+  fk_node "$d" scripts/check-pins.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  assert_contains "$d.node.out" "check-pins: ok"
 }
 test_stack_foldkit_template_ci_matches_the_pack() {
   # The heavy job's pnpm is the version new projects pin, and both workflows pin
