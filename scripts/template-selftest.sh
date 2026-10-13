@@ -3561,30 +3561,37 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
 }
 test_stack_rust_ship_gate_runs_every_ci_gate() {
   # Value: protects=AGENTS.md's SHIP_GATE runs each gate the new project's CI
-  # runs; fails_when=a CI gate step is added or changed without SHIP_GATE (the
-  # doctest drift the first review fixed), including one in a multi-line or
+  # runs, in every pack built on the Rust gates; fails_when=a CI gate step is
+  # added or changed without SHIP_GATE (the doctest drift the first review fixed,
+  # which came back in the Omarchy packs), including one in a multi-line or
   # prefixed run: step; why_new=nothing compared them; seam=none
-  local gate step blocks n=0 ci="$REPO/template/stacks/rust/files/.github/workflows/ci.yml"
-  gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/rust/commands")"
-  [ -n "$gate" ] || fail "no SHIP_GATE in the rust pack" || return 1
-  while IFS= read -r step; do
-    n=$((n + 1))
-    case " && $gate && " in
-      *" && $step && "*) ;;
-      *) fail "SHIP_GATE lacks the CI step: $step" || return 1 ;;
-    esac
-  done < <(sed -n 's/^ *run: \(\.\/scripts\/.*\)$/\1/p; s/^ *run: \(cargo .*\)$/\1/p' "$ci")
-  [ "$n" -gt 0 ] || fail "no gate steps found in the pack's ci.yml" || return 1
-  # The sed above reads one-line steps only: every other run: step must be the
-  # toolchain install or the PR-only ratchet, the one multi-line step.
-  blocks="$(grep -cE '^ *run: *[|>]' "$ci")"
-  [ "$blocks" -eq 1 ] || fail "ci.yml has $blocks multi-line run: steps; check each against SHIP_GATE" || return 1
-  while IFS= read -r step; do
-    case "$step" in
-      "rustup toolchain install"|"|"|./scripts/*|"cargo "*) ;;
-      *) fail "unclassified ci.yml run: step: $step" || return 1 ;;
-    esac
-  done < <(sed -n 's/^ *run: //p' "$ci")
+  local pack gate step n packs=0 ci
+  for pack in $(grep -lxF _rust-gates "$REPO"/template/stacks/*/includes | sed 's|/includes$||; s|.*/||'); do
+    packs=$((packs + 1))
+    ci="$REPO/template/stacks/$pack/files/.github/workflows/ci.yml"
+    gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/$pack/commands")"
+    [ -n "$gate" ] || fail "no SHIP_GATE in the $pack pack" || return 1
+    n=0
+    while IFS= read -r step; do
+      n=$((n + 1))
+      case " && $gate && " in
+        *" && $step && "*) ;;
+        *) fail "$pack: SHIP_GATE lacks the CI step: $step" || return 1 ;;
+      esac
+    done < <(sed -n 's/^ *run: \(\.\/scripts\/.*\)$/\1/p; s/^ *run: \(cargo .*\)$/\1/p' "$ci")
+    [ "$n" -gt 0 ] || fail "no gate steps found in $pack's ci.yml" || return 1
+    # The sed above reads one-line steps only: every other run: step must be the
+    # toolchain install, the system packages or the PR-only ratchet.
+    while IFS= read -r step; do
+      case "$step" in
+        "rustup toolchain install"|./scripts/*|"cargo "*) ;;
+        "| sudo apt-get update"|'| git fetch --depth=1 origin "$GITHUB_BASE_REF"') ;;
+        *) fail "$pack: unclassified ci.yml run: step: $step" || return 1 ;;
+      esac
+    done < <(awk '/^ *run: *[|>] *$/ { getline nxt; sub(/^ */, "", nxt); print "| " nxt; next }
+      /^ *run: / { sub(/^ *run: /, ""); print }' "$ci")
+  done
+  [ "$packs" -ge 3 ] || fail "expected the rust, omarchy-app and omarchy-tui packs; found $packs"
 }
 test_stack_rust_long_name_passes_guards_and_tests() {
   # Value: protects=a long project name still passes the new project's guard and
