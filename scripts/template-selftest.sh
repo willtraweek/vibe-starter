@@ -5141,7 +5141,7 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
   # gstack /ship writes VERSION and package.json's version (as
   # JSON.stringify(p, null, 2) + "\n"). The lockfile holds neither, so the frozen
   # install still passes, the guards pass, and the build shows the new version.
-  local d="$WORK/heavy-foldkit-bump/demo" why
+  local d="$WORK/heavy-foldkit-bump/demo" why pw_deps=""
   why="$(foldkit_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   foldkit_project "$d" demo || return 1
@@ -5150,7 +5150,15 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
   (cd "$d" && stack_env pnpm install --frozen-lockfile && stack_env bash scripts/check.d/foldkit.sh \
     && stack_env pnpm build) >"$d.gate.out" 2>&1 || fail "the gate failed after a version bump: $(tail -25 "$d.gate.out")" || return 1
   cmp -s "$REPO/template/stacks/foldkit/files/pnpm-lock.yaml" "$d/pnpm-lock.yaml" || fail "the bump changed pnpm-lock.yaml" || return 1
-  grep -qF '0.1.0' "$d"/dist/assets/*.js || fail "the build does not carry VERSION 0.1.0"
+  grep -qF '0.1.0' "$d"/dist/assets/*.js || fail "the build does not carry VERSION 0.1.0" || return 1
+  # Regression test. A gstack MICRO release writes VERSION 0.1.0.1 and leaves
+  # package.json at its npm form, 0.1.0; the page said "Version unknown". The
+  # E2E journey compares the page with package.json's version.
+  printf '0.1.0.1\n' > "$d/VERSION"
+  [ "${CI:-}" != "true" ] || pw_deps="--with-deps"
+  (cd "$d" && stack_env bash scripts/check.d/foldkit.sh && stack_env pnpm exec playwright install $pw_deps chromium \
+    && stack_env pnpm exec playwright test) >"$d.micro.out" 2>&1 \
+    || fail "the gate failed on the MICRO VERSION 0.1.0.1: $(tail -25 "$d.micro.out")"
 }
 test_heavy_stack_foldkit_guards_fail_closed() {
   # Each guard fails closed on the change it exists to stop, and passes again
