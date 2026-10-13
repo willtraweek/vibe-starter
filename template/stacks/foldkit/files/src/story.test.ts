@@ -1,5 +1,9 @@
+import { Effect, Fiber, Layer } from 'effect'
+import { HttpClient } from 'effect/http'
+import { TestClock } from 'effect/testing'
 import { Command, given, message, model, story } from 'foldkit/story'
-import { describe, expect, test } from 'vitest'
+
+import { describe, expect, it, test } from '@effect/vitest'
 
 import type { StatusPayload } from './api/status'
 import { FetchStatus } from './command'
@@ -16,6 +20,11 @@ const loading = Model.make({ status: StatusState.Loading() })
 const failed = Model.make({
   status: StatusState.Failed({ reason: 'http', detail: 'HTTP 503' }),
 })
+
+const silent = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make(() => Effect.never),
+)
 
 describe('init', () => {
   test('starts loading and fetches the status', () => {
@@ -86,4 +95,37 @@ describe('update', () => {
       }),
     )
   })
+
+  // Regression test: a status server that never answered left the page on
+  // "Checking status..." forever. The real FetchStatus, run on the TestClock,
+  // now fails after 10 seconds, and Retry recovers from that failure.
+  it.effect('a status check that times out fails, and Retry recovers', () =>
+    Effect.gen(function* () {
+      const fiber = yield* FetchStatus().effect.pipe(
+        Effect.provide(silent),
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust('10 seconds')
+      const timedOut = yield* Fiber.join(fiber)
+      story(
+        update,
+        given(loading),
+        message(timedOut),
+        model(model => {
+          expect(model.status).toEqual(
+            StatusState.Failed({
+              reason: 'unreachable',
+              detail: 'timed out after 10 seconds',
+            }),
+          )
+        }),
+        message(Message.ClickedRetryStatus()),
+        Command.expectExact(FetchStatus()),
+        Command.resolve(FetchStatus, Message.SucceededFetchStatus({ payload })),
+        model(model => {
+          expect(model.status).toEqual(StatusState.Loaded({ payload }))
+        }),
+      )
+    }),
+  )
 })
