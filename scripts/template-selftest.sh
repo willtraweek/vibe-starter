@@ -3536,13 +3536,18 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
   # rust-toolchain.toml (rust_env's rustup run overrides the toolchain file and
   # template CI installs components by hand, so the suite would stay green);
   # why_new=nothing read the pins together; seam=none
-  local f pin comps c tool stale n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
+  local f pin comps c tool stale job n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
   for f in "$REPO"/template/stacks/*/files/rust-toolchain.toml; do
     [ -f "$f" ] || continue
     n=$((n + 1))
     pin="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' "$f")"
     [ -n "$pin" ] || fail "no channel in ${f#"$REPO"/}" || return 1
-    # Both jobs install and test it: every occurrence must be the pin, not just one.
+    # Each job installs and tests on the pin, and no line names another toolchain.
+    for job in selftest heavy; do
+      awk -v job="  $job:" '$0 == job { on = 1; next } on && /^  [A-Za-z0-9_-]+:$/ { on = 0 } on' "$wf" > "$WORK/pin-job.yml"
+      assert_contains "$WORK/pin-job.yml" "rustup toolchain install $pin " || { echo "    in the $job job"; return 1; }
+      assert_contains "$WORK/pin-job.yml" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || { echo "    in the $job job"; return 1; }
+    done
     [ "$(sed -n 's/^ *run: rustup toolchain install \([^ ]*\) .*/\1/p' "$wf" | LC_ALL=C sort -u)" = "$pin" ] \
       || fail "a template-selftest.yml job installs another toolchain than $pin" || return 1
     [ "$(sed -n 's/^ *SELFTEST_RUST_TOOLCHAIN: "\([^"]*\)"$/\1/p' "$wf" | LC_ALL=C sort -u)" = "$pin" ] \
