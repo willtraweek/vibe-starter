@@ -5214,6 +5214,30 @@ test_stack_foldkit_gitignore_covers_what_its_scripts_write() {
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit $f" || return 1
   done
 }
+test_stack_foldkit_design_md_records_every_token() {
+  # Regression test (design review). styles.css says its tokens come from
+  # DESIGN.md, but the pack shipped none, so a new project kept the template's
+  # placeholder DESIGN.md. The pack's own replaces it: no placeholder left, and
+  # every token styles.css defines is named with its value.
+  local d="$WORK/stack-foldkit-design/demo-app" t token value n=0
+  mkdir -p "$d.stub" || return 1
+  for t in pnpm node; do
+    printf '#!/bin/sh\nexit 1\n' > "$d.stub/$t" && chmod +x "$d.stub/$t" || return 1
+  done
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack foldkit --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d/DESIGN.md" "# Design System — Demo App" || return 1
+  assert_not_contains "$d/DESIGN.md" '{{' || return 1
+  while IFS='|' read -r token value; do
+    n=$((n + 1))
+    assert_contains "$d/DESIGN.md" "\`$token\`" || return 1
+    assert_contains "$d/DESIGN.md" "\`$value\`" || return 1
+  done < <(sed -n 's/^  \(--[a-z0-9-]*\): \(.*\);$/\1|\2/p' "$d/src/styles.css")
+  [ "$n" -ge 10 ] || fail "found only $n tokens in src/styles.css" || return 1
+  assert_contains "$d/DESIGN.md" "Light only" || return 1
+  assert_contains "$d/DESIGN.md" "system-ui"
+}
 test_stack_foldkit_button_has_states_and_a_44px_target() {
   # Regression test (design review). .button had no :hover, :focus-visible or
   # :active rule and stood about 27px tall. A static check of styles.css: each
