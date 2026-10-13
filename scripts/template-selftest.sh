@@ -3591,8 +3591,10 @@ test_stack_rust_ship_gate_runs_every_ci_gate() {
   # added or changed without SHIP_GATE (the doctest drift the first review fixed,
   # which came back in the Omarchy packs), including a command inside a
   # multi-line run: step; why_new=nothing compared them; seam=none
-  local pack gate kind step packs=0 n ci
-  for pack in $(grep -lxF _rust-gates "$REPO"/template/stacks/*/includes | sed 's|/includes$||; s|.*/||'); do
+  local inc pack gate kind step packs=0 n ci
+  for inc in "$REPO"/template/stacks/*/includes; do
+    grep -qxF _rust-gates "$inc" || continue
+    pack="$(basename "$(dirname "$inc")")"
     packs=$((packs + 1))
     ci="$REPO/template/stacks/$pack/files/.github/workflows/ci.yml"
     gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/$pack/commands")"
@@ -3602,6 +3604,7 @@ test_stack_rust_ship_gate_runs_every_ci_gate() {
     # their end: "step|cmd" for a command, "cont|text" for a line continuing the
     # previous one (it ended in a backslash).
     while IFS='|' read -r kind step; do
+      # shellcheck disable=SC2016  # the patterns are ci.yml's literal text
       case "$kind|$step" in
         "step|rustup toolchain install"|"step|sudo apt-get update") ;;
         "step|sudo apt-get install -y --no-install-recommends "*)
@@ -4075,8 +4078,10 @@ test_rust_packs_share_one_copy_of_their_gates() {
 test_rust_gates_packs_name_jq_in_their_stack() {
   # _rust-gates' coverage_tiers.sh fails without jq; README's Stack line is the
   # only prerequisite list a new project gets, so every pack including it says so.
-  local pack n=0
-  for pack in $(grep -lxF _rust-gates "$REPO"/template/stacks/*/includes | sed 's|/includes$||; s|.*/||'); do
+  local inc pack n=0
+  for inc in "$REPO"/template/stacks/*/includes; do
+    grep -qxF _rust-gates "$inc" || continue
+    pack="$(basename "$(dirname "$inc")")"
     n=$((n + 1))
     grep -q '^STACK=.*jq (scripts/coverage_tiers.sh)' "$REPO/template/stacks/$pack/commands" \
       || fail "$pack's STACK does not name jq, which scripts/coverage_tiers.sh needs" || return 1
@@ -4184,6 +4189,7 @@ test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "required in CI" || return 1
   # The validator gets exactly the entry install.sh writes, and its failure fails the guard.
+  # shellcheck disable=SC2016  # $1 belongs to the stub
   printf '#!/bin/sh\ncp "$1" "%s"\n' "$d.validated" > "$d.stub/validate" && chmod +x "$d.stub/validate" || return 1
   (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN="$d.stub/validate" bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
     || fail "the guard failed with a passing validator: $(cat "$d.guard")" || return 1
@@ -4553,6 +4559,7 @@ STUB
     || fail "the runs printed: $(cat "$r/a.out" "$r/b.out")" || return 1
   # The losing clone is gone: nothing beside the cache entry, nothing inside it.
   [ "$(LC_ALL=C ls -A "$r/cache")" = "$ref" ] || fail "left in the cache: $(ls -A "$r/cache")" || return 1
+  # shellcheck disable=SC2012  # the stub writes only .head and bin
   [ "$(LC_ALL=C ls -A "$kit" | tr '\n' ' ')" = ".head bin " ] || fail "left in the checkout: $(ls -A "$kit")" || return 1
   # Something at the cache path that isn't the pinned checkout is reported, never deleted.
   rm -rf "$r/cache" && mkdir -p "$kit" && : > "$kit/keep-me" || return 1
