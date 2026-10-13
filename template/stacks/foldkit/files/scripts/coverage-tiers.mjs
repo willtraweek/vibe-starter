@@ -40,7 +40,6 @@ const TOP_KEYS = new Set(['tiers', 'journeys', 'retired_journeys'])
 
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value)
 const isNumber = value => typeof value === 'number' && Number.isFinite(value)
-const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
 
 export const validPath = path =>
   typeof path === 'string' &&
@@ -225,11 +224,11 @@ export const validate = (config, { checkFiles = true } = {}) => {
       if (typeof tier.title !== 'string' || tier.title.trim() === '') {
         errors.push(`${key}: title must be a nonempty string`)
       }
-      if (own(tier, 'allow_empty') && typeof tier.allow_empty !== 'boolean') {
+      if (Object.hasOwn(tier, 'allow_empty') && typeof tier.allow_empty !== 'boolean') {
         errors.push(`${key}: allow_empty must be boolean`)
       }
       const members = tier.include
-      let retired = own(tier, 'retired') ? tier.retired : []
+      let retired = Object.hasOwn(tier, 'retired') ? tier.retired : []
       if (!Array.isArray(retired)) {
         errors.push(`${key}: retired must be an array`)
         retired = []
@@ -289,7 +288,7 @@ export const validate = (config, { checkFiles = true } = {}) => {
       }
     }
   }
-  let retiredJourneys = own(config, 'retired_journeys') ? config.retired_journeys : []
+  let retiredJourneys = Object.hasOwn(config, 'retired_journeys') ? config.retired_journeys : []
   if (!Array.isArray(retiredJourneys)) {
     errors.push('retired_journeys must be an array of journey titles')
     retiredJourneys = []
@@ -392,7 +391,7 @@ export const measure = (config, report) => {
     for (const path of tier.include) {
       const value = files.get(path)
       if (value === undefined) {
-        if (!own(report, join(root, path))) {
+        if (!Object.hasOwn(report, join(root, path))) {
           errors.push(`${key}: ${path} is not in the coverage report (never imported, or excluded from coverage)`)
         }
         continue
