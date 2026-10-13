@@ -3859,6 +3859,17 @@ STUB
     assert_contains "$d.install" "PREFIX must be an absolute path: rel" || return 1
   done
   assert_absent "$d/rel" || return 1
+  # Regression test. install.sh replaced any <prefix>/bin/<app id>, and
+  # --uninstall removed it. One without this app's desktop entry is another
+  # tool's: both now leave it alone, and say so.
+  mkdir -p "$w/other/bin" && printf 'another tool\n' > "$w/other/bin/demo_app" || return 1
+  for f in "" --no-build --uninstall; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX="$w/other" ./scripts/install.sh ${f:+"$f"}) >"$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "is not one this script installed (no $w/other/share/applications/demo_app.desktop)" || return 1
+    [ "$(cat "$w/other/bin/demo_app")" = "another tool" ] || fail "install.sh $f replaced or removed another tool's binary" || return 1
+  done
+  assert_absent "$w/other/share" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \

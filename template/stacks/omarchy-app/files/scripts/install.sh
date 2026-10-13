@@ -55,14 +55,29 @@ refresh_launcher() {
   fi
 }
 
+# This app's desktop entry marks an install this script made (it writes the
+# entry last). A binary at its path without one is another tool's: install
+# never replaces it and --uninstall never removes it.
+unrelated_binary() {
+  { [ -e "$bindir/$APP_ID" ] || [ -L "$bindir/$APP_ID" ]; } && [ ! -e "$appdir/$APP_ID.desktop" ]
+}
+
 case "$mode" in
   print)
     desktop_entry ;;
   uninstall)
+    if unrelated_binary; then
+      echo "install.sh: left $bindir/$APP_ID alone: it is not one this script installed (no $appdir/$APP_ID.desktop)" >&2
+      exit 1
+    fi
     rm -f "$bindir/$APP_ID" "$appdir/$APP_ID.desktop" "$icondir/$APP_ID.svg"
     refresh_launcher
     echo "Removed $APP_ID from $PREFIX." ;;
   install)
+    if unrelated_binary; then
+      echo "install.sh: $bindir/$APP_ID is not one this script installed (no $appdir/$APP_ID.desktop): move it aside first" >&2
+      exit 1
+    fi
     if [ "$build" = 1 ]; then
       # Install the binary cargo reports building: build.target-dir,
       # CARGO_BUILD_TARGET_DIR and build.target all move it, and sudo drops
