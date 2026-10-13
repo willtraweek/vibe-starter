@@ -11,7 +11,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is required: https://jqlang.org/downlo
 
 tiers_of() {  # Read the package at this exact manifest, never .packages[0].
   local manifest root metadata
-  root="$(cd "$(dirname "$1")" && pwd -P)"
+  root="$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd -P)"
   manifest="$root/$(basename "$1")"
   metadata="$(cargo metadata --offline --format-version 1 --no-deps --manifest-path "$manifest")" \
     || { echo "coverage-tiers: cannot read Cargo metadata for $manifest" >&2; return 1; }

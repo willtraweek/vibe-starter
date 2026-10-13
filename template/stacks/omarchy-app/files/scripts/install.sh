@@ -27,7 +27,8 @@ for arg in "$@"; do
     *) echo "install.sh: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
-cd "$(dirname "$0")/.."  # after --help, which reads this script by its path
+# After --help, which reads this script by its path. A CDPATH entry must not pick the directory.
+CDPATH='' cd -- "$(dirname -- "$0")/.."
 
 # Exec quotes the binary's path; these characters would need escaping there
 # (desktop entry spec), so refuse them rather than write a broken entry.

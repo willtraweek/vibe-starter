@@ -7,7 +7,7 @@
 #   ./scripts/dev-link.sh --unlink   # disable it and remove the link
 set -euo pipefail
 case "${1:-}" in -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
-cd "$(dirname "$0")/.."
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 id="$(jq -r .id manifest.json)"
 dest="$HOME/.config/omarchy/plugins/$id"
 case "${1:-}" in

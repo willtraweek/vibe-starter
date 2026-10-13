@@ -3977,6 +3977,23 @@ test_omarchy_packs_share_one_install_script() {
     "$REPO/template/stacks/omarchy-tui/files/scripts/install.sh" \
     || fail "omarchy-app's and omarchy-tui's scripts/install.sh differ"
 }
+test_stack_omarchy_scripts_stay_in_the_project_under_cdpath() {
+  # Regression test. Run as `bash scripts/install.sh` with an exported CDPATH
+  # whose entry also holds scripts/, the bare cd picked that directory:
+  # install.sh printed its path and the decoy's desktop entry, and exited 0.
+  local d="$WORK/omarchy-cdpath/demo-app" decoy="$WORK/omarchy-cdpath/decoy" bad
+  omarchy_app_project "$d" || return 1
+  mkdir -p "$decoy/scripts" "$decoy/packaging" || return 1
+  printf 'Name=DECOY @BINDIR@\n' > "$decoy/packaging/app.desktop.in"
+  printf '9.9.9\n' > "$decoy/VERSION"
+  (cd "$d" && PREFIX=/usr/local ./scripts/install.sh --print-desktop-entry) > "$d.want" || return 1
+  (cd "$d" && CDPATH="$decoy" PREFIX=/usr/local bash scripts/install.sh --print-desktop-entry) > "$d.got" 2>&1 \
+    || fail "install.sh failed under CDPATH: $(cat "$d.got")" || return 1
+  cmp -s "$d.want" "$d.got" || fail "install.sh under CDPATH printed: $(head -3 "$d.got")" || return 1
+  # Every pack script that finds a directory from a path clears CDPATH for that cd.
+  bad="$(git -C "$REPO" grep -n 'cd [^|;&]*dirname' -- template/stacks | grep -v "CDPATH=''" || true)"
+  [ -z "$bad" ] || fail "a cd without CDPATH='': $bad"
+}
 omarchy_tui_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-tui
   # cargo is a stub that fails and logs its calls to "$1.cargo-calls".
   mkdir -p "$1.stub" || return 1

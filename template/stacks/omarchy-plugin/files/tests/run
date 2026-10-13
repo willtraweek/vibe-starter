@@ -3,7 +3,7 @@
 # the QML tests under Qt 6's qmltestrunner, offscreen. Fails closed: a missing
 # tool, an old Node, a Qt 5 runner or zero QML tests is a failure, not a skip.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 
 node_version="$(node -p process.versions.node 2>/dev/null)" \
   || { echo "tests/run: Node 22.8 or newer is required" >&2; exit 1; }
