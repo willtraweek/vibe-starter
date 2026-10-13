@@ -6,7 +6,11 @@ set -euo pipefail
 
 # 1. gstack /ship bumps VERSION and, through .gstack/package-json-path, writes its
 #    npm form (the first three parts) into manifest.json in its 2-space JSON form.
-#    Keep both true.
+#    Keep all three true.
+if [ "$(head -n 1 .gstack/package-json-path 2>/dev/null)" != manifest.json ]; then
+  echo "  .gstack/package-json-path must hold the line manifest.json, or gstack /ship bumps VERSION alone: restore it and commit it" >&2
+  exit 1
+fi
 version="$(tr -d '[:space:]' < VERSION | cut -d. -f1-3)"
 manifest_version="$(jq -r .version manifest.json)"
 if [ "$manifest_version" != "$version" ]; then

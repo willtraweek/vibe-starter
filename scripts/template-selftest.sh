@@ -3981,6 +3981,15 @@ test_partial_packs_are_not_offered_as_stacks() {
   run_bootstrap "$d" --name proj --stack _rust-gates --yes; rc=$?
   assert_exit 2 "$rc"
 }
+test_template_gitignore_ignores_no_tracked_file() {
+  # Regression test. The root .gitignore (every new project's too) ignores .gstack/,
+  # and the omarchy-plugin pack's .gstack/package-json-path survived only because it
+  # was force-added: a ZIP or degit copy committed with `git add -A` dropped it, and
+  # the new plugin's first /ship then bumped VERSION alone.
+  local hits
+  hits="$(cd "$REPO" && git ls-files -z | git check-ignore --no-index -z --stdin | tr '\0' ' ')"
+  [ -z "$hits" ] || fail "a .gitignore ignores tracked files: $hits"
+}
 test_stack_pack_ci_jobs_have_timeouts() {
   # Regression test. The rust, python and foldkit packs' CI jobs had no
   # timeout-minutes, so a hung test or download held a runner for GitHub's
@@ -4332,8 +4341,14 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "not in 2-space JSON form" || return 1
-  # Omarchy's validator failing fails the guard, with its reason.
+  # Without the gstack pin, /ship would bump VERSION alone: the guard says so first.
   (cd "$d" && git checkout -q -- manifest.json) || return 1
+  rm "$d/.gstack/package-json-path" || return 1
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- .gstack/package-json-path) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" ".gstack/package-json-path must hold the line manifest.json" || return 1
+  # Omarchy's validator failing fails the guard, with its reason.
   printf '#!/bin/sh\necho "omarchy-plugin-validate: rejected" >&2\nexit 1\n' > "$d.kit/bin/omarchy-plugin-validate"
   (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
