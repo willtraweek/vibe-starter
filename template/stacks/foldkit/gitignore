@@ -6,5 +6,6 @@ test-results/
 playwright-report/
 blob-report/
 *.tsbuildinfo
-# Read-only Foldkit reference, re-created by scripts/vendor-foldkit.sh
-/repos/foldkit/
+# Read-only Foldkit reference (and the copy it replaces), re-created by
+# scripts/vendor-foldkit.sh
+/repos/

@@ -4877,6 +4877,18 @@ CASES
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok"
 }
+test_stack_foldkit_gitignore_covers_what_its_scripts_write() {
+  # Regression test. vendor-foldkit.sh parks the old copy in repos/foldkit.previous
+  # while it swaps in the new one; the pack ignored only /repos/foldkit/, so a run
+  # interrupted there left a 20 MB tree git would commit.
+  local d="$WORK/stack-foldkit-gitignore/demo" f
+  mkdir -p "$d" && cp "$REPO/template/stacks/foldkit/gitignore" "$d/.gitignore" && git -C "$d" init -q || return 1
+  assert_contains "$REPO/template/stacks/foldkit/files/scripts/vendor-foldkit.sh" 'repos/foldkit.previous' || return 1
+  for f in repos/foldkit/README.md repos/foldkit.previous/README.md node_modules/x dist/index.html \
+    coverage/coverage-summary.json test-results/x playwright-report/index.html blob-report/x tsconfig.tsbuildinfo; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit $f" || return 1
+  done
+}
 test_stack_foldkit_template_ci_matches_the_pack() {
   # The heavy job's pnpm is the version new projects pin, and both workflows pin
   # the same pnpm/setup commit.
