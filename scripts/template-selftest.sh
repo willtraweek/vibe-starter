@@ -4386,6 +4386,40 @@ STUB
   assert_contains "$d.link" "doesn't list demo_app" || return 1
   assert_not_contains "$d.calls" "plugin enable"
 }
+test_stack_omarchy_plugin_tests_run_fails_closed() {
+  # tests/run, the pack's only coverage gate, ran only in the heavy job on the
+  # green starter: dropping its thresholds, the all-modules loader or an output
+  # check kept every selftest green. A stub stands in for Qt 6's qmltestrunner.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/omarchy-plugin-run/demo-app" rc out want
+  omarchy_plugin_project "$d" || return 1
+  printf '#!/bin/sh\ncat "%s"\n' "$d.qml-out" > "$d.qmlrunner" && chmod +x "$d.qmlrunner" || return 1
+  printf 'Config: Using QtTest library 6.4.2\nPASS   : Widget::test_x()\nTotals: 3 passed, 0 failed, 0 skipped\n' > "$d.qml-out"
+  (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1 \
+    || fail "the starter failed tests/run: $(tail -20 "$d.run")" || return 1
+  # An uncovered branch in Logic.js, then a module no test requires.
+  cp "$d/Logic.js" "$d.Logic.js" || return 1
+  printf '\nfunction spare(x) {\n  return x ? 1 : 2\n}\nmodule.exports.spare = spare\n' >> "$d/Logic.js"
+  (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
+  cp "$d.Logic.js" "$d/Logic.js" || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.run" "does not meet threshold of 100%" || return 1
+  printf 'function hidden(x) {\n  return x ? 1 : 2\n}\nmodule.exports = { hidden: hidden }\n' > "$d/Extra.js"
+  (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
+  rm -f "$d/Extra.js"
+  assert_exit 1 "$rc" || return 1
+  # A failed QML run, one with no real test, and a Qt 5 runner each fail.
+  while IFS='|' read -r out want; do
+    printf '%b' "$out" > "$d.qml-out"
+    (cd "$d" && QML_TEST_RUNNER="$d.qmlrunner" ./tests/run) >"$d.run" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $out"; return 1; }
+    assert_contains "$d.run" "$want" || return 1
+  done <<'CASES'
+Config: Using QtTest library 6.4.2\nPASS   : Widget::test_x()\nTotals: 2 passed, 1 failed, 0 skipped\n|QML tests failed
+Config: Using QtTest library 6.4.2\nPASS   : Widget::initTestCase()\nTotals: 2 passed, 0 failed, 0 skipped\n|no QML tests ran
+Config: Using QtTest library 5.15.2\nPASS   : Widget::test_x()\nTotals: 3 passed, 0 failed, 0 skipped\n|not a Qt 6 runner
+CASES
+}
 test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
   # One pin drives every host check; a branch name would drift under CI.
   # A short or uppercase SHA never equals `git rev-parse HEAD`, so it would re-clone
