@@ -23,10 +23,11 @@
 #
 # The default name is the repo name of the `origin` remote, else the directory
 # name. Exit codes: 0 done (or already bootstrapped), 1 failed (a malformed
-# template-only marker, a missing skeleton or an invalid template version is
-# caught before any change; after a later failure, fix it and rerun with the
-# same arguments), 2 usage or name error, 3 refused because this is the
-# vibe-starter template repo itself, or git can't read this directory's .git.
+# template-only marker, a missing skeleton, an invalid template version or a
+# stack pack's broken `includes` is caught before any change; after a later
+# failure, fix it and rerun with the same arguments), 2 usage or name error,
+# 3 refused because this is the vibe-starter template repo itself, or git can't
+# read this directory's .git.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -229,11 +230,11 @@ if [ -n "$STACK" ]; then
       case "$part" in ''|'#'*) continue ;; esac
       case "$part" in
         _|[!_]*|_*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
-          echo "Invalid include '$part' in $pack/includes: name a partial pack, _name" >&2; exit 2 ;;
+          echo "Invalid include '$part' in $pack/includes: name a partial pack, _name" >&2; exit 1 ;;
       esac
       if [ ! -d "template/stacks/$part/files" ]; then
         echo "$pack/includes names '$part', which has no files/" >&2
-        exit 2
+        exit 1
       fi
     done < "$pack/includes"
   fi

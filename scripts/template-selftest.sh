@@ -3946,20 +3946,30 @@ test_stack_pack_includes_copy_partial_packs_first() {
   assert_absent "$d/template"
 }
 test_stack_pack_includes_are_checked_before_writes() {
-  # An include that isn't a partial pack (_name) or doesn't exist fails the
-  # bootstrap with exit 2 before any file changes.
-  local d inc before rc
-  for inc in fixture-shared _missing '_bad/name' _; do
-    d="$WORK/stack-includes-bad/$(printf '%s' "$inc" | tr '/' '-')/demo"
+  # An include that isn't a partial pack's name (_ and lowercase letters, digits,
+  # _ or -) or has no files/ is a broken template: exit 1 (no other --name can
+  # help) before any file changes. Each malformed name has a files/ directory, so
+  # only the name rule can reject it.
+  local d inc before rc want
+  while IFS='|' read -r inc want; do
+    d="$WORK/stack-includes-bad/$(printf '%s' "$inc" | tr '/.' '--')/demo"
     fresh_copy "$d" || return 1
     fixture_pack "$d/template/stacks/fixture" || return 1
-    mkdir -p "$d/template/stacks/fixture-shared/files" || return 1
+    case "$inc" in _missing) ;; *) mkdir -p "$d/template/stacks/$inc/files" || return 1 ;; esac
     printf '%s\n' "$inc" > "$d/template/stacks/fixture/includes"
     before="$(tree_fingerprint "$d")"
     run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
-    assert_exit 2 "$rc" || return 1
+    assert_exit 1 "$rc" || { echo "    for: $inc"; return 1; }
+    assert_contains "$d.out" "$want" || return 1
+    assert_not_contains "$d.out" "pass --name" || return 1
     [ "$before" = "$(tree_fingerprint "$d")" ] || fail "include '$inc' changed files before its rejection" || return 1
-  done
+  done <<'CASES'
+fixture-shared|Invalid include 'fixture-shared'
+_missing|names '_missing', which has no files/
+_bad/name|Invalid include '_bad/name'
+_Upper|Invalid include '_Upper'
+_dot.dot|Invalid include '_dot.dot'
+CASES
 }
 test_partial_packs_are_not_offered_as_stacks() {
   # _rust-gates only exists to be included: --help doesn't list it and --stack
