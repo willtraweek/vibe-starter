@@ -36,10 +36,8 @@ export const init: Runtime.ApplicationInit<
 
 // UPDATE
 
-type UpdateReturn = Update.Return<Model, Message, HttpClient.HttpClient>
-
 export const update = (model: Model, message: Message) =>
-  Message.match<UpdateReturn>(message, {
+  Message.match<Update.Return<Model, Message, HttpClient.HttpClient>>(message, {
     ClickedRetryStatus: () => ({
       model: modifyFields(model, { status: () => StatusState.Loading() }),
       commands: [FetchStatus(), FocusStatusPanel()],
