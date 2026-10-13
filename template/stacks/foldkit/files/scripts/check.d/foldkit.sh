@@ -28,10 +28,19 @@ node scripts/check-pins.mjs
 node scripts/check-rules.mjs
 # The lockfile must match package.json and pass the policy. --lockfile-only writes
 # neither the lockfile (frozen) nor node_modules; it needs the registry only when
-# pnpm's supply-chain verification of the lockfile isn't cached yet. (--offline
+# pnpm's supply-chain verification of the lockfile isn't cached yet, and offline
+# with a cold cache it waits instead of failing, so it is bounded (perl's alarm;
+# FOLDKIT_TEST_TIMEOUT shortens the limit for the template's tests). (--offline
 # can't work here: pnpm 12 won't resolve the devEngines Node runtime offline;
 # --dry-run exits 0 on a stale lockfile.)
-if ! lock_out="$(pnpm install --frozen-lockfile --lockfile-only 2>&1)"; then
+limit="${FOLDKIT_TEST_TIMEOUT:-300}"
+lock_rc=0
+lock_out="$(perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+  "$limit" pnpm install --frozen-lockfile --lockfile-only 2>&1)" || lock_rc=$?
+if [ "$lock_rc" = 142 ]; then
+  printf '%s\n' "$lock_out" >&2
+  die "the lockfile check timed out after ${limit}s (offline? pnpm verifies the lockfile against the registry once per cache)."
+elif [ "$lock_rc" != 0 ]; then
   case "$lock_out" in
     # Only a young release: pnpm's help (rebuild the lockfile, or relax the
     # policy) is the wrong advice for it.

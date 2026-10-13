@@ -15,10 +15,15 @@ for setting in minimum_release_age minimum_release_age_exclude minimum_release_a
   block_exotic_subdeps allow_builds dangerously_allow_all_builds; do
   unset "pnpm_config_$setting" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')"
 done
+# The install is bounded (perl's alarm): offline, pnpm can wait a long time.
+# FOLDKIT_TEST_TIMEOUT shortens the limit for the template's tests.
+limit="${FOLDKIT_TEST_TIMEOUT:-600}"
 if ! command -v pnpm >/dev/null 2>&1; then
   echo "pnpm not found: install pnpm 12 (https://pnpm.io/installation), then run 'pnpm install'."
-elif pnpm install --frozen-lockfile; then
+elif perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n"' "$limit" pnpm install --frozen-lockfile; then
   echo "Installed the locked dependencies (tsc is patched by @effect/tsgo)."
+elif [ "$?" = 142 ]; then
+  echo "pnpm install timed out after ${limit}s (offline?): run 'pnpm install --frozen-lockfile' before your first commit."
 else
   echo "pnpm install failed (see above; offline?): run 'pnpm install --frozen-lockfile' before your first commit."
 fi

@@ -21,9 +21,20 @@ case "$pin" in
 esac
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/vendor-foldkit.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
-git -c advice.detachedHead=false clone --quiet --depth 1 --filter=blob:none --sparse \
+# The clone and the sparse checkout (which downloads the files) are bounded:
+# offline, git can wait a long time. FOLDKIT_TEST_TIMEOUT shortens the limit for
+# the template's tests.
+limit="${FOLDKIT_TEST_TIMEOUT:-600}"
+bounded() {  # $1 = what it does, rest = the command
+  local what="$1" rc=0
+  shift
+  perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n"' "$limit" "$@" || rc=$?
+  [ "$rc" != 142 ] || echo "vendor-foldkit: $what timed out after ${limit}s (offline?)" >&2
+  return "$rc"
+}
+bounded "git clone" git -c advice.detachedHead=false clone --quiet --depth 1 --filter=blob:none --sparse \
   --branch "foldkit@$pin" https://github.com/foldkit/foldkit.git "$tmp/foldkit"
-git -C "$tmp/foldkit" sparse-checkout set --no-cone \
+bounded "the sparse checkout" git -C "$tmp/foldkit" sparse-checkout set --no-cone \
   '/*' '!/repos/' '!AGENTS.md' '!CLAUDE.md' '!.mcp.json' '!.claude/' '!.agents/'
 rm -rf "$tmp/foldkit/.git"
 # Sparse patterns first; then make sure nothing matching slipped through.

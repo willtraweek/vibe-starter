@@ -5523,6 +5523,35 @@ STUB
     done
   done
 }
+test_stack_foldkit_network_steps_time_out() {
+  # Regression test (#20 item 24). Offline with a cold cache, bootstrap's pnpm
+  # install, the guard's lockfile check and vendoring's git clone could wait
+  # without end (a 420-second hang was seen). Stubs that sleep past a one-second
+  # limit stand in for the network.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-timeouts/demo" b="$WORK/stack-foldkit-timeouts/boot/demo-app" rc
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  fk_guard "$d" FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5'; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "the lockfile check timed out after 1s (offline?" || return 1
+  mkdir -p "$d.git" && cat > "$d.git/git" <<'STUB' && chmod +x "$d.git/git" || return 1
+#!/bin/sh
+# Hangs on clone, as git can offline.
+[ "$1" = -c ] && shift 2
+[ "$1" != clone ] || exec sleep 5
+exit 1
+STUB
+  (cd "$d" && FOLDKIT_TEST_TIMEOUT=1 PATH="$d.git:$(printenv PATH)" bash scripts/vendor-foldkit.sh) >"$d.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "vendor-foldkit.sh passed with git hanging" || return 1
+  assert_contains "$d.out" "vendor-foldkit: git clone timed out after 1s (offline?)" || return 1
+  assert_absent "$d/repos" || return 1
+  # Bootstrap's install; node fails, so vendoring stays offline too.
+  printf '#!/bin/sh\nexit 1\n' > "$d.bin/node" && chmod +x "$d.bin/node" || return 1
+  fresh_copy "$b" || return 1
+  FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5' PATH="$d.bin:$(printenv PATH)" \
+    run_bootstrap "$b" --name "Demo App" --stack foldkit --yes || fail "bootstrap exited $?: $(tail -5 "$b.out")" || return 1
+  assert_contains "$b.out" "pnpm install timed out after 1s (offline?)"
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
