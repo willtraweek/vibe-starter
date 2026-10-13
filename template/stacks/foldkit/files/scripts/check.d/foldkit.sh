@@ -7,6 +7,10 @@ if ! command -v pnpm >/dev/null 2>&1; then
   die "pnpm is not installed - this project needs it: https://pnpm.io/installation (or Corepack)"
 fi
 node scripts/check-pins.mjs
+# The rules the type checker can't see: Foldkit stays out of src/domain and
+# src/api, no module mocks, the DevTools relay off, the MCP server pinned, .ts
+# modules only in src.
+node scripts/check-rules.mjs
 # The lockfile must match package.json. --lockfile-only writes neither the lockfile
 # (frozen) nor node_modules; it needs the registry only when pnpm's supply-chain
 # verification of the lockfile isn't cached yet. (--offline can't work here: pnpm
@@ -33,22 +37,6 @@ pnpm exec tsc --noEmit
 pnpm exec oxlint --type-aware --deny-warnings --disable-nested-config
 echo "  oxlint: clean"
 pnpm exec oxfmt --check src e2e vite.config.ts vitest.config.ts playwright.config.ts
-# Boundaries the type checker can't see.
-if grep -rnE "from ['\"](foldkit|@foldkit/[^'\"]+)['\"]" src/domain src/api; then
-  die "src/domain and src/api must not import foldkit (they stay framework-free; see docs/guides/foldkit.md)."
-fi
-if grep -rn 'vi\.mock(' src e2e; then
-  die "no vi.mock: swap a Layer at the network edge instead (TESTING.md: mocks only at trust boundaries)."
-fi
-# The DevTools relay: off, or the token-protected one (docs/guides/foldkit.md).
-# Comment lines don't count: vite.config.ts names the option in one.
-if grep -n 'devToolsMcpPort' vite.config.ts | grep -v 'devToolsMcpPort: false' \
-  | grep -vE '^[0-9]+:[[:space:]]*//'; then
-  die "a numeric devToolsMcpPort opens an unauthenticated DevTools relay on every network interface; see docs/guides/foldkit.md."
-fi
-if [ -f .mcp.json ] && grep -n 'npx' .mcp.json; then
-  die ".mcp.json must call the pinned local bin (node_modules/.bin/foldkit-devtools-mcp), not npx."
-fi
 node scripts/coverage-tiers.mjs --validate
 if [ "${CHECK_CI:-0}" != 1 ]; then
   pin="$(node -p 'require("./package.json").dependencies.foldkit')"

@@ -4635,6 +4635,89 @@ fk_node() {  # $1 = dir, rest = node args, run there -> "$1.node.out"
 fk_json() {  # $1 = JSON file, $2 = a JS statement over `c` (the parsed file); rewrites it
   node -e 'const fs = require("fs"); const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); eval(process.argv[2]); fs.writeFileSync(process.argv[1], JSON.stringify(c, null, 2) + "\n")' "$1" "$2"
 }
+fk_rules() {  # $1 = dir from foldkit_files, stdin = probe cases calling check(); runs them there
+  # The probe sits beside the project: check-rules reads every script inside it.
+  { cat <<'HARNESS'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+// A backslash, for escape sequences in fixture source.
+const bs = String.fromCharCode(92)
+const stash = `${process.cwd()}.stash`
+// check(files, status, ...texts): write files (null removes a file or directory),
+// run scripts/check-rules.mjs, expect its exit status and every text in its
+// output, then put the project back.
+const check = (files, status, ...texts) => {
+  const undo = []
+  for (const [path, content] of Object.entries(files)) {
+    const saved = `${stash}/${undo.length}`
+    mkdirSync(stash, { recursive: true })
+    const existed = existsSync(path)
+    if (existed) {
+      renameSync(path, saved)
+    }
+    const created = content === null ? undefined : mkdirSync(dirname(path), { recursive: true })
+    if (content !== null) {
+      writeFileSync(path, content)
+    }
+    undo.push(() => {
+      rmSync(created ?? path, { recursive: true, force: true })
+      if (existed) {
+        renameSync(saved, path)
+      }
+    })
+  }
+  try {
+    const result = spawnSync(process.execPath, ['scripts/check-rules.mjs'], { encoding: 'utf8' })
+    const out = result.stdout + result.stderr
+    assert.equal(result.status, status, `${JSON.stringify(files)}:\n${out}`)
+    for (const text of texts) {
+      assert.ok(out.includes(text), `expected ${JSON.stringify(text)} after ${JSON.stringify(files)} in:\n${out}`)
+    }
+    assert.ok(!/^\s+at /m.test(out), `stack trace in: ${out}`)
+  } finally {
+    for (const step of undo.reverse()) {
+      step()
+    }
+  }
+}
+const lineOf = (text, needle) => text.slice(0, text.indexOf(needle)).split('\n').length
+HARNESS
+    cat
+    echo "console.log('check-rules probes passed')"
+  } > "$1.rules.mjs" || return 1
+  fk_node "$1" "$1.rules.mjs" || fail "check-rules probes failed: $(tail -25 "$1.node.out")" || return 1
+  assert_contains "$1.node.out" "check-rules probes passed"
+}
+fk_installed() {  # $1 = dir from foldkit_files: node_modules as pnpm install leaves it, each dependency at its pin
+  fk_node "$1" -e '
+    const fs = require("fs")
+    const p = JSON.parse(fs.readFileSync("package.json", "utf8"))
+    const deps = { ...p.dependencies, ...p.devDependencies }
+    for (const [name, version] of Object.entries(deps)) {
+      const peerDependencies = name === "foldkit" ? { effect: deps.effect, "@effect/platform-browser": deps["@effect/platform-browser"] } : {}
+      fs.mkdirSync("node_modules/" + name, { recursive: true })
+      fs.writeFileSync("node_modules/" + name + "/package.json", JSON.stringify({ name, version, peerDependencies }) + "\n")
+    }'
+}
+fk_stub_pnpm() {  # $1 = bin dir: a pnpm for the guard's light tests
+  mkdir -p "$1" && cat > "$1/pnpm" <<'STUB' && chmod +x "$1/pnpm"
+#!/bin/sh
+# Logs each call to $FK_PNPM_LOG, runs $FK_PNPM_INSTALL for `pnpm install`, says
+# tsc is patched, and passes every other command.
+[ -z "${FK_PNPM_LOG:-}" ] || echo "$*" >> "$FK_PNPM_LOG"
+case "$1 $2 $3" in
+  install*) eval "${FK_PNPM_INSTALL:-:}" ;;
+  "exec tsc --version") echo 'Version 7.0.2+effect-tsgo' ;;
+esac
+STUB
+}
+fk_guard() {  # $1 = dir, rest = env assignments: the guard there, the stub pnpm from "$1.bin" first -> "$1.guard.out"
+  local dir="$1"; shift
+  (cd "$dir" && env PATH="$dir.bin:$(printenv PATH)" "$@" bash scripts/check.d/foldkit.sh) >"$dir.guard.out" 2>&1
+}
 foldkit_project() {  # $1 = dir, $2 = project name: a fresh copy bootstrapped with the foldkit pack
   fresh_copy "$1" || return 1
   (cd "$1" && HOME="$WORK/home" stack_env ./bootstrap --name "$2" --stack foldkit --yes </dev/null >"$1.out" 2>&1) \
@@ -5021,6 +5104,266 @@ CASES
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok"
 }
+test_stack_foldkit_rules_keep_foldkit_out_of_domain_and_api() {
+  # Regression test (#20 items 6 and 23). The guard grepped src/domain and src/api
+  # for `from 'foldkit'`: a subpath, side-effect, dynamic or require import passed,
+  # and with src/api missing, grep's error counted as no match.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-boundary/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const leak = text => ({ 'src/domain/leak.ts': text })
+check({}, 0, 'check-rules: ok')
+check(leak("import { defineTaggedUnion } from 'foldkit/schema'\n"), 1,
+  'src/domain/leak.ts:1: loads "foldkit/schema": src/domain and src/api must not import foldkit', 'docs/guides/foldkit.md')
+check({ ...leak("import { Command } from 'foldkit'\n"), 'src/api': null }, 1, 'src/domain/leak.ts:1: loads "foldkit"')
+for (const [text, specifier] of [
+  ["import type { Html } from 'foldkit/html'\n", 'foldkit/html'],
+  ["export { Command } from '@foldkit/devtools'\n", '@foldkit/devtools'],
+  ["export * from 'foldkit'\n", 'foldkit'],
+  ["import 'foldkit'\n", 'foldkit'],
+  ["export const load = () => import('foldkit/html')\n", 'foldkit/html'],
+  ["export const load = () => import(`foldkit`)\n", 'foldkit'],
+  ["export const f = require('foldkit')\n", 'foldkit'],
+  ["import fk = require('foldkit')\n", 'foldkit'],
+  ['/// <reference types="foldkit" />\n', 'foldkit'],
+  ["import x from '../../node_modules/foldkit/dist/index.js'\n", '../../node_modules/foldkit/dist/index.js'],
+  [`import { x } from '${bs}u0066oldkit/schema'\n`, 'foldkit/schema'],
+  [`import { x } from '${bs}x66oldkit'\n`, 'foldkit'],
+  [`export const f = ${bs}u0072equire('foldkit')\n`, 'foldkit'],
+  ["const s = '//'\nexport const load = () => import('foldkit')\n", 'foldkit'],
+]) {
+  check(leak(text), 1, `loads ${JSON.stringify(specifier)}`)
+}
+check({ 'src/api/leak.mts': "export * from '@foldkit/ui'\n" }, 1, 'src/api/leak.mts:1: loads "@foldkit/ui"')
+// A module name the check can't read is refused.
+for (const text of [
+  'export const load = (name: string) => import(name)\n',
+  "export const load = () => import(`fold${'kit'}`)\n",
+  "export const f = require('fold' + 'kit')\n",
+]) {
+  check(leak(text), 1, 'of a computed module name')
+}
+// Comments, strings and regular expressions import nothing.
+check(leak("// import { Command } from 'foldkit'\n/* import('foldkit') */\nexport const hint = \"import { Command } from 'foldkit'\"\nexport const re = /from 'foldkit'/\n"), 0, 'check-rules: ok')
+// What the tokenizer cannot read fails closed.
+check(leak("export const s = 'unterminated\n"), 1, 'src/domain/leak.ts:1: check-rules cannot read this file: unterminated string')
+check(leak("export const f = (a: number) => {\n  switch (a) {\n    case 1: {}\n    /x/.test('y')\n  }\n}\n"), 1, 'cannot tell whether this / after } starts a regular expression')
+// So does a directory it cannot list (root reads it anyway).
+if (process.getuid?.() !== 0) {
+  mkdirSync('src/api/locked')
+  chmodSync('src/api/locked', 0)
+  try {
+    check({}, 1, 'src/api/locked:1: cannot read this directory')
+  } finally {
+    chmodSync('src/api/locked', 0o755)
+    rmSync('src/api/locked', { recursive: true })
+  }
+}
+PROBE
+}
+test_stack_foldkit_rules_refuse_module_mocks() {
+  # Regression test (#20 item 7). The guard grepped for `vi.mock(`: vi.doMock, an
+  # aliased import (`import { vi as v }`), a namespace import or an alias of vi
+  # mocked modules unseen.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-mocks/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const test = text => ({ 'src/mocked.test.ts': text })
+const NO_MOCK = 'no vi.mock, vi.doMock or vi.importMock'
+check({}, 0, 'check-rules: ok')
+for (const [text, call] of [
+  ["import { vi } from 'vitest'\n\nvi.mock('./main')\n", 'src/mocked.test.ts:3: vi.mock'],
+  ["vi.doMock('./main')\n", 'vi.doMock'],
+  ["import { vi } from 'vitest'\nawait vi.importMock('./main')\n", 'vi.importMock'],
+  ["import { vitest } from 'vitest'\nvitest.mock('./main')\n", 'vitest.mock'],
+  ["import { vi as v } from 'vitest'\nv.mock('./main')\n", 'v.mock'],
+  ["import { it, vi as mocker } from '@effect/vitest'\nmocker.doMock('./main')\n", 'mocker.doMock'],
+  ["import * as V from 'vitest'\nV.vi.mock('./main')\n", 'V.vi.mock'],
+  ["import * as E from '@effect/vitest'\nE.vitest.doMock('./main')\n", 'E.vitest.doMock'],
+  [`${bs}u0076i.mock('./main')\n`, 'vi.mock'],
+]) {
+  check(test(text), 1, `${call}: ${NO_MOCK}`)
+}
+// Any other use of vi, or of a vitest namespace, could hide a mock.
+for (const [text, shown] of [
+  ["import { vi } from 'vitest'\nconst v = vi\nv.mock('./main')\n", 'vi'],
+  ["import { vi } from 'vitest'\nregister(vi)\n", 'vi'],
+  ["import { vi } from 'vitest'\nvi['mock']('./main')\n", 'vi'],
+  ["import { vi } from 'vitest'\nconst { mock } = vi\n", 'vi'],
+  ["import * as V from 'vitest'\nconst t = V\n", 'V'],
+  ["import * as V from 'vitest'\nV['vi'].mock('./main')\n", 'V'],
+  ["import * as V from 'vitest'\nconst v = V.vi\n", 'V.vi'],
+]) {
+  check(test(text), 1, `${shown} is used other than as ${shown}.<method>(...)`)
+}
+check({ 'src/test-utils.ts': "export { vi } from 'vitest'\n" }, 1, 're-exports vi from vitest')
+check({ 'src/test-utils.ts': "export * from '@effect/vitest'\n" }, 1, 're-exports vi from @effect/vitest')
+check({ 'src/test-utils.ts': "import { vi } from 'vitest'\nexport { vi }\n" }, 1, 'vi is used other than')
+check(test("const { vi } = await import('vitest')\n"), 1, 'import() loads vitest: import { vi } statically')
+check(test("import vitest from 'vitest'\n"), 1, 'a default import from vitest')
+check({ 'e2e/mocked.spec.ts': "import { vi } from 'vitest'\nvi.mock('./x')\n" }, 1, `e2e/mocked.spec.ts:2: vi.mock: ${NO_MOCK}`)
+// Spies, fakes and typed fns are fine; so are comments, strings and other objects' mock().
+check(test([
+  "import { vi } from 'vitest'",
+  'const spy = vi.fn<() => number>()',
+  "vi.spyOn(console, 'log')",
+  'vi.useFakeTimers()',
+  'type Spy = typeof vi.fn',
+  "// vi.mock('./main')",
+  "export const s = \"vi.mock('./main')\"",
+  'declare const lib: { mock: (path: string) => void }',
+  "lib.mock('./main')",
+  '',
+].join('\n')), 0, 'check-rules: ok')
+PROBE
+}
+test_stack_foldkit_rules_keep_the_devtools_relay_off() {
+  # Regression test (#20 item 22, P1). The guard skipped any vite.config.ts line
+  # holding `devToolsMcpPort: false` and read no other file: an alias
+  # (`devToolsMcpPort: falsePort`), the text in a trailing comment, a second
+  # config or `vite --config` opened the unauthenticated relay unseen.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-relay/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const PLUGIN = '@foldkit/vite-plugin'
+const RELAY = ['docs/guides/foldkit.md', 'extend scripts/check-rules.mjs if the change is safe']
+const vite = readFileSync('vite.config.ts', 'utf8')
+const CALL = 'foldkit({ devToolsMcpPort: false })'
+assert.ok(vite.includes(CALL) && vite.includes(`import { foldkit } from '${PLUGIN}'`), 'the starter vite.config.ts changed: update this test')
+const config = (from, to) => ({ 'vite.config.ts': vite.replace(from, to) })
+check({}, 0, 'check-rules: ok')
+// The token-protected relay, and a formatter's trailing commas.
+check(config(CALL, 'foldkit()'), 0, 'check-rules: ok')
+check(config(CALL, 'foldkit({\n      devToolsMcpPort: false,\n    },)'), 0, 'check-rules: ok')
+check(config(`[${CALL}]`, '[\n    foldkit({ devToolsMcpPort: 9988 }), // foldkit({ devToolsMcpPort: false })\n  ]'), 1,
+  `vite.config.ts:${lineOf(vite, CALL) + 1}: foldkit(...) takes another argument than { devToolsMcpPort: false } or none`)
+for (const call of [
+  'foldkit({ devToolsMcpPort: 9988 })',
+  'foldkit({ devToolsMcpPort: falsePort })',
+  "foldkit({ devToolsMcpPort: 'false' })",
+  'foldkit({ devToolsMcpPort: false, ...relay })',
+  'foldkit({ devToolsMcpPort: false && 9988 })',
+]) {
+  check(config(CALL, call), 1, `vite.config.ts:${lineOf(vite, CALL)}: foldkit(...) takes another argument than { devToolsMcpPort: false } or none`,
+    'a numeric devToolsMcpPort opens an unauthenticated DevTools relay', ...RELAY)
+}
+// The foldkit binding appears only in its import and the one call.
+for (const [from, to, text] of [
+  ['export default', 'const relay = foldkit\nexport const extra = relay({ devToolsMcpPort: 3001 })\n\nexport default', 'uses foldkit other than as the one plugin call'],
+  [CALL, 'foldkit.call(null, { devToolsMcpPort: 3001 })', 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, ...[foldkit].map(plugin => plugin({ devToolsMcpPort: 3001 }))`, 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, wrap({ foldkit })`, 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, foldkit({ devToolsMcpPort: 3001 })`, 'calls foldkit(...) 2 times'],
+  ['import { foldkit } from', 'import { foldkit as fk } from', `imports ${PLUGIN} other than as import { foldkit } from`],
+  [`import { foldkit } from '${PLUGIN}'`, `import foldkit from '${PLUGIN}'`, `imports ${PLUGIN} other than as`],
+  [`import { foldkit } from '${PLUGIN}'`, `import * as plugin from '${PLUGIN}'\nconst { foldkit } = plugin`, `imports ${PLUGIN} other than as`],
+  [`import { foldkit } from '${PLUGIN}'`, `import { foldkit } from '${PLUGIN}'\nimport '${PLUGIN}'`, `imports ${PLUGIN} other than as`],
+  ['export default', "const plugin = await import(`@foldkit/${'vite-plugin'}`)\n\nexport default", 'import() of a computed module name, which check-rules cannot follow'],
+]) {
+  check(config(from, to), 1, text, ...RELAY)
+}
+check({ 'vite.config.ts': null }, 1, 'vite.config.ts:1: is missing')
+// Nothing else loads the plugin, however the name is spelled.
+for (const [file, text] of [
+  ['scripts/dev.mjs', `const { foldkit } = await import('${PLUGIN}')\n`],
+  ['scripts/dev.mjs', 'await import(`' + PLUGIN + '`)\n'],
+  ['scripts/dev.mjs', `await import('${bs}u0040foldkit/vite-plugin')\n`],
+  ['scripts/dev.cjs', `const { foldkit } = require('${PLUGIN}')\n`],
+  ['src/plugin.ts', `export { foldkit } from '${PLUGIN}'\n`],
+  ['vitest.config.ts', `import { foldkit } from '${PLUGIN}'\n`],
+]) {
+  check({ [file]: text }, 1, `${file}:1: names ${PLUGIN}: only vite.config.ts loads it, once`, ...RELAY)
+}
+// Only the root vite.config.ts configures Vite...
+for (const file of ['vite.config.mjs', 'vite.config.js', 'tools/vite.config.ts', 'e2e/vite.config.mts']) {
+  check({ [file]: 'export default {}\n' }, 1, `${file}:1: only the root vite.config.ts may configure Vite`, ...RELAY)
+}
+// ...outside generated and vendored trees and other repositories (a worktree).
+check({
+  'node_modules/x/vite.config.ts': 'export default {}\n',
+  'dist/vite.config.js': 'export default {}\n',
+  'repos/foldkit/vite.config.ts': `import { foldkit } from '${PLUGIN}'\n`,
+  '.claude/worktrees/w/.git': 'gitdir: /elsewhere\n',
+  '.claude/worktrees/w/vite.config.ts': `import { foldkit } from '${PLUGIN}'\n`,
+}, 0, 'check-rules: ok')
+// ...and nothing points vite at another config.
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+const script = command => ({ 'package.json': `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, dev: command } }, null, 2)}\n` })
+for (const command of ['vite --config other.ts', 'vite -c other.ts', 'vite build --config=other.ts', 'pnpm exec vite preview -c=other.ts', 'node node_modules/vite/bin/vite.js --config other.ts']) {
+  check(script(command), 1, 'script "dev" must be a command that passes no --config to vite', ...RELAY)
+}
+check(script('vite --port 3001 && vitest --config vitest.config.ts'), 0, 'check-rules: ok')
+const playwright = readFileSync('playwright.config.ts', 'utf8')
+const [web, command] = /command: '([^']*)'/.exec(playwright) ?? []
+assert.ok(web !== undefined && command.includes('vite'), 'playwright.config.ts has no webServer command: update this test')
+check({ 'playwright.config.ts': playwright.replace(web, `command: '${command.replace('vite build', 'vite build -c other.ts')}'`) }, 1,
+  `playwright.config.ts:${lineOf(playwright, web)}: a command passes --config to vite`, ...RELAY)
+check({ 'playwright.config.ts': playwright.replace(web, 'command: `vite build ${process.env.FLAGS}`') }, 1, 'the webServer command must be one plain string')
+PROBE
+}
+test_stack_foldkit_rules_pin_the_devtools_mcp() {
+  # Regression test (#20 item 7). The guard grepped .mcp.json for npx: `pnpm dlx`,
+  # pnpx, bunx or yarn dlx ran an unpinned MCP server, and .cursor/mcp.json and
+  # .vscode/mcp.json went unread.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-mcp/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const BIN = 'node_modules/.bin/foldkit-devtools-mcp'
+const servers = (key, server) => `${JSON.stringify({ [key]: { 'foldkit-devtools': server } }, null, 2)}\n`
+for (const [file, key] of [['.mcp.json', 'mcpServers'], ['.cursor/mcp.json', 'mcpServers'], ['.vscode/mcp.json', 'servers']]) {
+  check({ [file]: servers(key, { command: BIN }) }, 0, 'check-rules: ok')
+  check({ [file]: servers(key, { type: 'stdio', command: BIN, env: { DEBUG: '1' } }) }, 0, 'check-rules: ok')
+  for (const server of [
+    { command: 'npx', args: ['-y', '@foldkit/devtools-mcp'] },
+    { command: 'pnpm', args: ['dlx', '@foldkit/devtools-mcp@latest'] },
+    { command: 'pnpx', args: ['@foldkit/devtools-mcp'] },
+    { command: 'bunx', args: ['@foldkit/devtools-mcp'] },
+    { command: 'yarn', args: ['dlx', '@foldkit/devtools-mcp'] },
+    { command: BIN, args: ['--port', '9988'] },
+    { command: 'sh', args: ['-c', BIN] },
+    { command: 'npx', args: ['-y', '$PACKAGE'], env: { PACKAGE: '@foldkit/devtools-mcp' } },
+  ]) {
+    check({ [file]: servers(key, server) }, 1, `${file}:3: server "foldkit-devtools" must call the pinned local bin`, 'docs/guides/foldkit.md')
+  }
+  check({ [file]: '{ "mcpServers": {' }, 1, `${file}:1: is not valid JSON`)
+}
+// Other servers are not this check's business.
+check({ '.mcp.json': servers('mcpServers', { command: 'npx', args: ['-y', 'some-server'] }) }, 0, 'check-rules: ok')
+check({ '.mcp.json': JSON.stringify({ mcpServers: [] }) }, 1, '.mcp.json:1: mcpServers must be an object')
+PROBE
+}
+test_stack_foldkit_rules_keep_src_to_ts_modules() {
+  # Regression test (Codex review CX4). Coverage measures src/**/*.ts only, so a
+  # .mts, .tsx or .js module under src escaped every floor while tests passed.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-sources/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+for (const ext of ['mts', 'cts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'd.mts']) {
+  check({ [`src/domain/extra.${ext}`]: 'export const x = 1\n' }, 1, `src/domain/extra.${ext}:1: coverage measures src/**/*.ts only`)
+}
+check({ 'src/domain/extra.ts': 'export const x = 1\n', 'src/domain/extra.d.ts': 'export {}\n', 'scripts/tool.mjs': 'export const x = 1\n' }, 0, 'check-rules: ok')
+PROBE
+}
+test_stack_foldkit_guard_runs_its_checkers_first() {
+  # The guard runs check-rules.mjs, and before any pnpm command (cheapest first):
+  # a module mock fails it offline. A stub pnpm and a faked install stand in.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-guard-order/demo" rc
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  fk_guard "$d"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.guard.out"; return 1; }
+  assert_contains "$d.guard.out" "check-rules: ok" || return 1
+  printf "vi.doMock('./main')\n" > "$d/src/mocked.test.ts"
+  fk_guard "$d" FK_PNPM_LOG="$d.pnpm.log"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "src/mocked.test.ts:1: vi.doMock: no vi.mock" || return 1
+  assert_absent "$d.pnpm.log"
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
@@ -5169,13 +5512,15 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   expect_guard_failure "effect(globalDate)" "Date.now() in src/main.ts" || return 1
   printf "import { Command } from 'foldkit'\n\nexport const leak = Command\n" > "$d/src/domain/leak.ts"
   expect_guard_failure "src/domain and src/api must not import foldkit" "a foldkit import in src/domain" || return 1
+  printf "import { defineTaggedUnion } from 'foldkit/schema'\n\nexport const Leak = defineTaggedUnion({ A: {} })\n" > "$d/src/domain/leak.ts"
+  expect_guard_failure 'src/domain/leak.ts:1: loads "foldkit/schema"' "a foldkit subpath import in src/domain" || return 1
   printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"
   expect_guard_failure "no vi.mock" "vi.mock( in a test" || return 1
   perl -pi -e 's/foldkit\((?:\{ devToolsMcpPort: false \})?\)/foldkit({ devToolsMcpPort: 9988 })/' "$d/vite.config.ts" || return 1
   grep -q 'devToolsMcpPort: 9988' "$d/vite.config.ts" || fail "the devToolsMcpPort mutation did not apply" || return 1
   expect_guard_failure "unauthenticated DevTools relay" "a numeric devToolsMcpPort in vite.config.ts" || return 1
   printf '{"mcpServers":{"foldkit-devtools":{"command":"npx","args":["-y","@foldkit/devtools-mcp"]}}}\n' > "$d/.mcp.json"
-  expect_guard_failure ".mcp.json must call the pinned local bin" "npx in .mcp.json" || return 1
+  expect_guard_failure 'server "foldkit-devtools" must call the pinned local bin' "npx in .mcp.json" || return 1
   fk_json "$d/package.json" 'c.version = "0.2.0"' || return 1
   expect_guard_failure "differs from VERSION" "package.json version drift" || return 1
   fk_json "$d/package.json" 'c.devDependencies.vitest = "^" + c.devDependencies.vitest' || return 1
