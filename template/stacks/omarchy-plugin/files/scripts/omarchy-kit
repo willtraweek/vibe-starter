@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Prints the path of a sparse Omarchy checkout at the commit in .omarchy-ref:
+# Omarchy's own plugin validator, Text-format scanner and shell components. It
+# lives outside the plugin, in a cache (OMARCHY_KIT_DIR, else
+# ~/.cache/omarchy-kit), because Omarchy's validator refuses any symlink inside
+# a plugin folder and Omarchy's repository has some. Needs git and, once, the
+# network. Bump .omarchy-ref on purpose, to a released Omarchy commit.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ref="$(tr -d '[:space:]' < .omarchy-ref)"
+case "$ref" in
+  *[!0123456789abcdef]*|'') echo "omarchy-kit: .omarchy-ref must be a full commit SHA" >&2; exit 1 ;;
+esac
+[ "${#ref}" -eq 40 ] || { echo "omarchy-kit: .omarchy-ref must be a full commit SHA" >&2; exit 1; }
+kit="${OMARCHY_KIT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-kit}/$ref"
+if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+  # Clone beside the cache and move the finished copy into place, so checks that
+  # start together never delete or half-read each other's clone.
+  mkdir -p "$(dirname "$kit")"
+  new="$(mktemp -d "$kit.XXXXXX")"
+  trap 'rm -rf "$new"' EXIT
+  git clone --quiet --filter=blob:none --no-checkout https://github.com/omacom/omarchy.git "$new" >&2
+  git -C "$new" sparse-checkout set --no-cone /bin/omarchy-plugin-validate \
+    /test/shell.d/qml-text-format-scan.py /shell/Commons/ /shell/Ui/ >&2
+  git -C "$new" -c advice.detachedHead=false checkout --quiet "$ref" >&2
+  if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+    rm -rf "$kit"
+    mv "$new" "$kit"
+  fi
+fi
+printf '%s\n' "$kit"

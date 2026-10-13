@@ -1,0 +1,11 @@
+# KEY=value lines. ./bootstrap --stack foldkit replaces {{KEY}} and {{KEY: description}}
+# placeholders in the project's docs with these values.
+INSTALL_CMD=pnpm install
+DEV_CMD=pnpm dev
+BUILD_CMD=pnpm build
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=pnpm exec vitest run
+SHIP_GATE=./scripts/check.sh && ./scripts/coverage.sh && pnpm exec playwright test
+STACK=Foldkit (the Elm architecture on Effect v4) in the browser; TypeScript 7 with the Effect language service (patched tsc); Vite 8; Vitest 5 Story/Scene tests; Playwright journeys; Oxlint (type-aware) and Oxfmt; pnpm 12 on Node 24.
+COVERAGE_ENFORCEMENT=./scripts/coverage.sh: vitest --coverage (v8, json-summary), then scripts/coverage-tiers.mjs independently enforces 90% lines and 90% branches globally plus per-tier line, branch and function floors from coverage-tiers.json; tier members missing from the report fail; fail-closed in CI, with a ratchet on pull requests
+RELEVANT_DOCS=docs/guides/foldkit.md, FOLDKIT.md (Foldkit's conventions; Foldkit owns it), the vendored Foldkit source in repos/foldkit (scripts/vendor-foldkit.sh), ENGINEERING.md and TESTING.md

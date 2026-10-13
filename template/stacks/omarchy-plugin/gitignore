@@ -1,0 +1,8 @@
+# --- Omarchy plugin ---
+# The tests use only Node's own runner; an installed package never ships.
+/node_modules/
+# gstack /ship keeps manifest.json's version in step with VERSION through this pin;
+# commit it, and keep the rest of .gstack/ local.
+!/.gstack/
+/.gstack/*
+!/.gstack/package-json-path

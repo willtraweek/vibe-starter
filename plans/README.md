@@ -16,6 +16,12 @@ has it in its initial commit (see `TEMPLATE.md`).
 
 ## Execution order & status
 
+**Integration update, 2026-10-13.** Plans 007–011 are being combined in one pull request
+against master at the maintainer's request. The original dependency order still explains
+their implementation, but separate landing PRs are no longer required for this integration.
+The review requirements below remain in force; prior branch DONE labels do not establish
+acceptance of the combined tree.
+
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | DONE (11 tests: the plan's 9 + 2 approved review fixes) |
@@ -24,21 +30,29 @@ has it in its initial commit (see `TEMPLATE.md`).
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (28 tests: the plan's 10 + 12 from review + 6 from /ship; suite: 108 passed, 0 failed, 0 skipped) |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | DONE (35 tests: the plan's 8 + 5 from review + 22 from /ship; suite: 143 passed, 0 failed, 0 skipped) |
-| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
-| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | TODO |
-| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | TODO |
-| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | TODO |
-| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | TODO |
+| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | IN PROGRESS (implementation integrated; acceptance pending) |
+| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | IN PROGRESS (implementation integrated; acceptance pending) |
+| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | IN PROGRESS (implementation integrated; acceptance pending) |
+| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | IN PROGRESS (implementation integrated; acceptance pending) |
+| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | IN PROGRESS (implementation integrated; acceptance pending) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
-Current suite after 001–006: **143 tests** (live). Projected totals for the remaining plans:
-007 → **152**, 008 → **161**, 009 → **169**, 010 → **175** (the last three include 1, 2 and 3
-heavy tests). These totals are execution targets, not results of a new sequential rehearsal.
-Python tests need uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully
-provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
+Historical suite after 001–007: **160 tests**. The remaining plans add 9, 8 and 6 tests:
+008 → **169**, 009 → **177**, 010 → **183** (1, 2 and 3 of them heavy). These totals are
+execution targets, not results of a new sequential rehearsal. Python tests need uv. Most Rust
+tests skip locally unless the test toolchain (`SELFTEST_RUST_TOOLCHAIN`, else the default stable)
+is at least as new as the packs' pinned channel, and the coverage test also needs cargo-llvm-cov.
+Fully provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
 live predecessor baseline plus each plan's additions.
 Plan 011 adds 9 more: 5 in `selftest` and 4 heavy.
+
+**Combined validation, 2026-10-13.** The integrated suite has **192 tests**: the standard
+lane passed **185**, and all **7** heavy cases passed separately, with zero failures or skips.
+Heavy validation used isolated Ubuntu 24.04 ARM64 with the pinned tools; hosted x64 CI and a
+live Omarchy desktop session are separate evidence. Review still found unresolved Foldkit
+requirements from issue #20 and an Omarchy validator-cache publication race, so these results
+do not mark plans 007–011 accepted or ready to merge.
 
 **Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
 files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps

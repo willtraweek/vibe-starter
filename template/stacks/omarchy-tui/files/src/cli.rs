@@ -1,0 +1,37 @@
+//! The command line: the machine contract (DOCTRINE.md §3). Parsing is pure,
+//! and `tests/cli.rs` checks every answer through the real binary. With no
+//! arguments the binary takes over the terminal instead.
+
+/// What the command line asked for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Command {
+    /// Run the app in this terminal.
+    Open,
+    /// Print this on stdout and exit 0.
+    Print(String),
+}
+
+/// The `--help` text.
+pub const USAGE: &str = "usage: {{PACKAGE_NAME}} [--help | --version]\n\
+    With no arguments, runs {{PROJECT_NAME}} in this terminal.\n";
+
+/// Parses `args` (program name excluded).
+///
+/// # Errors
+///
+/// Returns the message to print on stderr when the arguments are invalid.
+pub fn parse(args: &[String]) -> Result<Command, String> {
+    if args.len() > 1 {
+        return Err("error: expected at most one argument\n".to_owned());
+    }
+    match args.first().map(String::as_str) {
+        None => Ok(Command::Open),
+        Some("--version") => Ok(Command::Print(format!(
+            "{} {}\n",
+            crate::APP_ID,
+            crate::VERSION
+        ))),
+        Some("--help") => Ok(Command::Print(USAGE.to_owned())),
+        Some(other) => Err(format!("error: unexpected argument '{other}'\n")),
+    }
+}

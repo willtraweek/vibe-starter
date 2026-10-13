@@ -1,0 +1,16 @@
+#!/bin/sh
+# Runs once at the end of ./bootstrap --stack omarchy-app, from the project root.
+# 1. rustfmt lays lines out by length, and the project's name just changed the
+#    starter's lines: format them so `cargo fmt --check` passes (no network).
+# 2. Lock GPUI's dependencies (from crates.io, so this needs the network) and
+#    commit Cargo.lock, so CI's --locked builds pass on the first push.
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found: install Rust (https://rustup.rs), run 'cargo fmt --all && cargo generate-lockfile', and commit Cargo.lock."
+  exit 0
+fi
+cargo fmt --all || echo "cargo fmt failed: run 'cargo fmt --all' before your first commit."
+if cargo generate-lockfile --quiet; then
+  echo "Wrote Cargo.lock - commit it."
+else
+  echo "cargo generate-lockfile failed (offline?): run it and commit Cargo.lock before your first push."
+fi

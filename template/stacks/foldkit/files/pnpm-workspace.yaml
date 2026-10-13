@@ -1,0 +1,7 @@
+# Supply-chain policy for every install (pnpm 12). Keep these explicit even
+# where they match pnpm's defaults: an upgrade must not silently loosen them.
+minimumReleaseAge: 1440
+trustPolicy: no-downgrade
+strictDepBuilds: true
+blockExoticSubdeps: true
+allowBuilds: {}

@@ -38,6 +38,18 @@ if [ -f .bootstrapped ]; then
   exit 0
 fi
 
+# --- Stack packs, listed by --help and the prompt ---------------------------
+# One line per pack: its name and the one-line `description` of what it builds,
+# in the order the prompt offers them.
+list_stacks() {
+  local name
+  [ -d template/stacks ] || return 0
+  find template/stacks -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \; | LC_ALL=C sort \
+    | while IFS= read -r name; do
+        printf '  %-15s %s\n' "$name" "$(head -n 1 "template/stacks/$name/description" 2>/dev/null || true)"
+      done
+}
+
 # --- Parse args -------------------------------------------------------------
 NAME=""
 NAME_GIVEN=0
@@ -57,7 +69,14 @@ while [ $# -gt 0 ]; do
     --stack=*) STACK="${1#*=}"; STACK_GIVEN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --force)  FORCE=1; shift ;;
-    -h|--help) echo "Usage: ./bootstrap [--name <project>] [--stack <name>] [--yes] [--force]"; exit 0 ;;
+    -h|--help)
+      echo "Usage: ./bootstrap [--name <project>] [--stack <name>] [--yes] [--force]"
+      if [ -d template/stacks ]; then
+        echo
+        echo "Stack packs (--stack <name>; without one the project stays stack-agnostic):"
+        list_stacks
+      fi
+      exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -166,7 +185,7 @@ esac
 # --- Stack pack preflight (optional; no writes) -----------------------------
 STACKS=""
 if [ -d template/stacks ]; then
-  STACKS="$(find template/stacks -mindepth 1 -maxdepth 1 -type d -exec basename {} \; \
+  STACKS="$(find template/stacks -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \; \
     | LC_ALL=C sort | tr '\n' ' ' | sed 's/ *$//')"
 fi
 # A retry finishes the stack the first attempt chose (saved next to the template
@@ -180,6 +199,8 @@ fi
 if [ "$STACK_GIVEN" = "0" ] && [ "$HAVE_SAVED_STACK" = "1" ]; then
   STACK="$SAVED_STACK"
 elif [ "$STACK_GIVEN" = "0" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ] && [ -n "$STACKS" ]; then
+  echo "Stack packs (none keeps the project stack-agnostic):"
+  list_stacks
   printf "Stack pack [none %s]: " "$STACKS"
   read -r STACK </dev/tty || STACK=""
 fi
@@ -200,6 +221,21 @@ if [ -n "$STACK" ]; then
   if [ ! -d "$pack/files" ] || [ ! -f "$pack/commands" ] || [ ! -f "$pack/gitignore" ]; then
     echo "Unknown stack '$STACK' (available: ${STACKS:-none})" >&2
     exit 2
+  fi
+  # A pack may include partial packs (template/stacks/_name/files/), copied
+  # before its own files so shared files live once. Checked before any write.
+  if [ -f "$pack/includes" ]; then
+    while IFS= read -r part || [ -n "$part" ]; do
+      case "$part" in ''|'#'*) continue ;; esac
+      case "$part" in
+        _|[!_]*|_*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
+          echo "Invalid include '$part' in $pack/includes: name a partial pack, _name" >&2; exit 2 ;;
+      esac
+      if [ ! -d "template/stacks/$part/files" ]; then
+        echo "$pack/includes names '$part', which has no files/" >&2
+        exit 2
+      fi
+    done < "$pack/includes"
   fi
   case "$PACKAGE_NAME" in
     [abcdefghijklmnopqrstuvwxyz]*) ;;
@@ -290,10 +326,15 @@ echo "Installed the project's own VERSION, CHANGELOG.md and TODOS.md."
 # .gitignore block are not found again.
 if [ -n "$STACK" ]; then
   pack="template/stacks/$STACK"
-  (CDPATH='' cd "$pack/files" && find . -type f) | while IFS= read -r src; do
-    dest="$(printf '%s' "${src#./}" | PKG="$PACKAGE_NAME" perl -pe 's#(^|/)__package__(?=/|$)#$1$ENV{PKG}#g')"
-    mkdir -p "$(dirname "$dest")"
-    cp "$pack/files/$src" "$dest"
+  # Included partial packs first, then the pack itself, so the pack's files win.
+  { if [ -f "$pack/includes" ]; then grep -v '^#' "$pack/includes" | grep . || true; fi
+    echo "$STACK"; } | while IFS= read -r part; do
+    (CDPATH='' cd "template/stacks/$part/files" && find . -type f) | while IFS= read -r src; do
+      dest="$(printf '%s' "${src#./}" | PKG="$PACKAGE_NAME" perl -pe 's#(^|/)__package__(?=/|$)#$1$ENV{PKG}#g')"
+      mkdir -p "$(dirname "$dest")"
+      rm -f "$dest"  # a fresh copy takes its own mode, not an included file's
+      cp "template/stacks/$part/files/$src" "$dest"
+    done
   done
   # KEY=value lines; values reach perl through the environment, never a shell.
   while IFS= read -r line || [ -n "$line" ]; do
@@ -410,7 +451,7 @@ if [ -n "$STACK" ]; then
   else
     echo "Stack pack: $STACK. Commands and .gitignore are set up; this pack has no CI workflow."
   fi
-  echo "  Run the gate and commit the lockfile before the first push; resolve any hook warning first."
+  echo "  Run the gate before the first push, and commit the lockfile if the pack wrote one; resolve any hook warning first."
   echo "  Delete DESIGN.md and/or MISSION.md if this project doesn't need them."
 else
   cat <<'CHECKLIST'

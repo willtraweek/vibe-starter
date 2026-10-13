@@ -82,8 +82,8 @@ After this plan:
   `rustfmt.toml`, `scripts/coverage.sh`, `scripts/coverage_tiers.sh` and
   `scripts/check.d/rust.sh` are byte-identical copies of the rust pack's (a self-test enforces
   it; with two Rust packs, the rule of three says copy, not abstract). `rust-version` is
-  `"1.98"`, not the rust pack's `"1.85"`: GPUI's dependency graph needs 1.92 or newer, and a
-  lower value makes Cargo's MSRV-aware resolver hold dependencies back.
+  `"1.98"`, the pinned toolchain, as in the rust pack: GPUI's dependency graph needs 1.92 or
+  newer, and a lower value makes Cargo's MSRV-aware resolver hold dependencies back.
 - **The theme is Omarchy's, live.** `gpui_omarchy::init` reads
   `~/.local/state/omarchy/current/theme/colors.toml` (falling back to the pre-4.0
   `~/.config/omarchy/current`), watches it with inotify through `notify`, and survives

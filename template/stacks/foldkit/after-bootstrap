@@ -1,0 +1,20 @@
+#!/bin/sh
+# Runs once at the end of ./bootstrap --stack foldkit, from the project root.
+# 1. Install the reviewed dependency tree from the pack's pnpm-lock.yaml. The
+#    root `prepare` script runs `effect-tsgo patch`, so tsc enforces the Effect
+#    rules from the first check.
+# 2. Vendor Foldkit's source into repos/foldkit (gitignored) for agents.
+# Both need the network; bootstrap finishes either way.
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm not found: install pnpm 12 (https://pnpm.io/installation), then run 'pnpm install'."
+elif pnpm install --frozen-lockfile; then
+  echo "Installed the locked dependencies (tsc is patched by @effect/tsgo)."
+else
+  echo "pnpm install failed (see above; offline?): run 'pnpm install --frozen-lockfile' before your first commit."
+fi
+if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && bash scripts/vendor-foldkit.sh; then
+  :
+else
+  echo "Vendoring Foldkit failed (offline?): run 'bash scripts/vendor-foldkit.sh' later; ./scripts/check.sh warns until you do."
+fi
+echo "Once per machine, for the E2E journeys: pnpm exec playwright install chromium"

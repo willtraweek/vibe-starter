@@ -17,7 +17,8 @@ jobs:
   selftest:
     if: github.repository == 'willtraweek/vibe-starter'
     # 1-vCPU container runner, GitHub's lower-cost option for short jobs (15-minute
-    # job cap). It ships bash, git, perl, GNU tar and curl; the tools are pinned below.
+    # job cap). It ships bash, git, perl, GNU tar, curl and jq (the rust tests need
+    # it); the other tools are pinned below.
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
@@ -40,13 +41,100 @@ jobs:
             --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: Lint shell scripts
+        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name template/stacks/omarchy-plugin/files/scripts/omarchy-kit template/stacks/omarchy-plugin/files/tests/run
+
       - name: Install uv (for the python stack-pack tests)
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.17"
 
-      - name: Lint shell scripts
-        run: shellcheck --version && shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap template/stacks/*/validate-name
+      - name: Install rustup (pinned, checksum-verified; ubuntu-slim has no Rust)
+        env:
+          RUSTUP_VERSION: 1.29.1
+          RUSTUP_INIT_SHA256: dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/rustup-init" \
+            "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+          echo "${RUSTUP_INIT_SHA256}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain none
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned toolchain for the rust stack-pack tests (CI only)
+        run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt,llvm-tools-preview
+
+      - name: Install cargo-llvm-cov (for the rust stack-pack tests)
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-llvm-cov@0.9.1
+          fallback: none
+
+      - name: Node for the foldkit stack-pack tests (its coverage-tier and pin checkers)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
       - name: Template self-test
+        env:
+          SELFTEST_RUST_TOOLCHAIN: "1.98.1"
+          SELFTEST_EXCLUDE: test_heavy_
         run: ./scripts/template-selftest.sh
+
+  heavy:
+    # Builds real projects from the stack packs, too big for the 1-vCPU job:
+    # the omarchy-app pack compiles GPUI (about 530 crates). Only tests named
+    # test_heavy_* run here; the selftest job excludes them.
+    if: github.repository == 'willtraweek/vibe-starter'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SELFTEST_RUST_TOOLCHAIN: "1.98.1"
+      SELFTEST_CARGO_TARGET_DIR: /home/runner/selftest-target
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - name: System libraries for GPUI, desktop-file-validate and the Qt 6 QML test runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libfontconfig-dev libxkbcommon-x11-dev desktop-file-utils \
+            qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript qml6-module-qttest
+
+      - name: Node for the omarchy-plugin tests
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install the pinned toolchain (the runner image ships rustup)
+        run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt,llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-llvm-cov@0.9.1
+          fallback: none
+
+      - name: Cache crates and build output
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            /home/runner/selftest-target
+          key: heavy-${{ runner.os }}-${{ hashFiles('template/stacks/*/files/Cargo.toml', 'template/stacks/*/files/rust-toolchain.toml') }}
+          restore-keys: heavy-${{ runner.os }}-
+
+      - name: pnpm for the foldkit pack's projects (the tests install their own Node)
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          version: "12.6.0"
+          install: false
+
+      - name: Heavy stack-pack self-tests
+        run: ./scripts/template-selftest.sh test_heavy_

@@ -8,6 +8,8 @@
 #
 # Usage: scripts/template-selftest.sh [substring]   # only tests whose name contains it
 #        scripts/template-selftest.sh --print-inventory   # the golden placeholder inventory
+#        SELFTEST_EXCLUDE=<substring>   # skip tests whose name contains it; not counted as skips
+#        SELFTEST_HEAVY=1               # also build real projects locally (test_heavy_*)
 #
 # Portability: must run on macOS /bin/bash 3.2 and on Linux bash 5. No mapfile,
 # no associative arrays, no ${var,,}, no `local -n`.
@@ -39,13 +41,27 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/vs-selftest.XXXXXX")" || {
 }
 trap 'rm -rf "$WORK"' EXIT
 FILTER="${1:-}"
-PASS=0; FAIL=0; SKIP=0
+EXCLUDE="${SELFTEST_EXCLUDE:-}"
+PASS=0; FAIL=0; SKIP=0; EXCLUDED=0
 
 # Real tool homes, captured before any test sandboxes HOME (see stack_env).
 REAL_UV_CACHE_DIR="${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null || echo "$HOME/.cache/uv")}"
 REAL_UV_PYTHON_DIR="${UV_PYTHON_INSTALL_DIR:-$(uv python dir 2>/dev/null || echo "$HOME/.local/share/uv/python")}"
 REAL_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 REAL_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+# pnpm 12 reads pnpm_config_* (and PNPM_CONFIG_*) variables, not npm_config_*.
+# `pnpm store path` ends in the store layout version (/v11); the setting is its parent.
+REAL_PNPM_STORE_DIR="$(pnpm store path 2>/dev/null | sed 's|/v[0-9][0-9]*$||' || true)"
+REAL_PNPM_STORE_DIR="${REAL_PNPM_STORE_DIR:-$HOME/.pnpm-store}"
+case "$(uname -s)" in
+  Darwin) REAL_PNPM_CACHE_DIR="$HOME/Library/Caches/pnpm" REAL_PNPM_HOME="$HOME/Library/pnpm"
+    REAL_PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright" ;;
+  *) REAL_PNPM_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pnpm" REAL_PNPM_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"
+    REAL_PLAYWRIGHT_BROWSERS_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright" ;;
+esac
+REAL_PNPM_CACHE_DIR="${pnpm_config_cache_dir:-${PNPM_CONFIG_CACHE_DIR:-$REAL_PNPM_CACHE_DIR}}"
+REAL_PNPM_HOME="${PNPM_HOME:-$REAL_PNPM_HOME}"
+REAL_PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$REAL_PLAYWRIGHT_BROWSERS_PATH}"
 
 # Hermetic git: ignore the user's global/system config (signing, hooks,
 # templates) and use a fixed identity for any test commits.
@@ -54,6 +70,8 @@ export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@example.invalid
 export GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@example.invalid
 unset GIT_TEMPLATE_DIR   # an env var, not config: it would still install the user's hooks
 unset GITLEAKS_BIN EDITORCONFIG_CHECKER_BIN   # check.sh overrides: tests set them explicitly
+unset CARGO_TARGET_DIR   # a test that builds picks its own (the heavy ones: SELFTEST_CARGO_TARGET_DIR)
+unset PREFIX BINDIR APPDIR ICONDIR DESKTOP_FILE_VALIDATE_BIN   # install.sh and guard overrides
 
 # --- assertion helpers: print a reason, return non-zero on failure ------------
 fail()                { echo "    FAIL: $*"; return 1; }
@@ -1799,10 +1817,14 @@ test_bootstrap_marker_passes_skip_nested_checkouts() {
 }
 
 # --- tests: stack packs (plan 006) --------------------------------------------
-stack_env() {  # run "$@" with the real uv/cargo homes, so a sandboxed HOME doesn't
-  # force fresh downloads of Python, crates, or toolchains on every test run.
+stack_env() {  # run "$@" with the real uv/cargo/pnpm/Playwright homes, so a sandboxed
+  # HOME doesn't force fresh downloads of Python, crates, toolchains, npm packages,
+  # pnpm's Node runtime or Chromium on every test run.
   env UV_CACHE_DIR="$REAL_UV_CACHE_DIR" UV_PYTHON_INSTALL_DIR="$REAL_UV_PYTHON_DIR" \
-    CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" "$@"
+    CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
+    pnpm_config_store_dir="$REAL_PNPM_STORE_DIR" pnpm_config_cache_dir="$REAL_PNPM_CACHE_DIR" \
+    PNPM_HOME="$REAL_PNPM_HOME" \
+    PLAYWRIGHT_BROWSERS_PATH="$REAL_PLAYWRIGHT_BROWSERS_PATH" "$@"
 }
 py_tiers() {  # $1 = python-pack project dir, rest = coverage_tiers.py args -> "$1.tiers.out"
   local dir="$1"; shift
@@ -2308,7 +2330,10 @@ test_stack_python_project_is_green_on_first_run() {
   assert_contains "$d/TESTING.md" "Tests: \`uv run pytest\`" || return 1
   assert_tree_lacks "$d" '{{TEST_CMD' || return 1
   assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
-  for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/python/commands") PROJECT_NAME YEAR; do
+  # Spell out the shared keys so a misspelled command key cannot hide a leftover.
+  # Other packs can fill optional placeholders (e.g. Foldkit's RELEVANT_DOCS).
+  for key in INSTALL_CMD DEV_CMD BUILD_CMD CHECK_CMD TEST_CMD SHIP_GATE STACK \
+    COVERAGE_ENFORCEMENT PROJECT_NAME YEAR; do
     assert_tree_lacks "$d" "{{$key" || return 1
   done
   (cd "$d" && git add -A && git commit -qm init \
@@ -2519,6 +2544,7 @@ STUB
   d="$root/python/demo"
   (cd "$d" && git add -A) || fail "git add failed" || return 1
   { git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/python/files \
+      | while IFS= read -r f; do [ ! -f "$REPO/$f" ] || printf '%s\n' "$f"; done \
       | sed 's|^template/stacks/python/files/||; s|__package__|demo|g'
     printf '%s\n' uv.lock .github/workflows/ci.yml .github/actions/install-gitleaks/action.yml
   } > "$root/committed" || return 1
@@ -2596,11 +2622,13 @@ test_bootstrap_stack_prompt_at_a_terminal() {
     fixture_pack "$root/$case/demo/template/stacks/fixture" || return 1
   done
   tty_bootstrap "$root/typed/demo" fixture --name demo || fail "exited $?: $(cat "$root/typed/demo.out")" || return 1
-  assert_contains "$root/typed/demo.out" "Stack pack [none fixture python" || return 1
+  assert_contains "$root/typed/demo.out" "Stack pack [none fixture " || return 1
+  [ -s "$REPO/template/stacks/omarchy-app/description" ] || fail "omarchy-app has no description" || return 1
+  assert_contains "$root/typed/demo.out" "$(printf '  %-15s %s' omarchy-app "$(head -n 1 "$REPO/template/stacks/omarchy-app/description")")" || return 1
   assert_contains "$root/typed/demo/src/demo/hello.txt" "package=demo" || return 1
   assert_contains "$root/typed/demo/.bootstrapped" "with the fixture stack pack" || return 1
   tty_bootstrap "$root/enter/demo" "" --name demo || fail "exited $?: $(cat "$root/enter/demo.out")" || return 1
-  assert_contains "$root/enter/demo.out" "Stack pack [none fixture python" || return 1
+  assert_contains "$root/enter/demo.out" "Stack pack [none fixture " || return 1
   assert_contains "$root/enter/demo.out" "Then choose a stack" || return 1
   assert_not_contains "$root/enter/demo/.bootstrapped" "stack pack" || return 1
   tty_bootstrap "$root/yes/demo" fixture --name demo --yes || fail "exited $?: $(cat "$root/yes/demo.out")" || return 1
@@ -2834,10 +2862,2044 @@ PYPROBE
   assert_contains "$d.tiers.out" "need 0 <= minimum <= target <= 100"
 }
 
+# --- tests: rust stack pack (plan 007) ----------------------------------------
+rust_env() {  # Without --install, rustup run cannot provision a missing toolchain.
+  stack_env rustup run "${SELFTEST_RUST_TOOLCHAIN:-stable}" "$@"
+}
+rust_ready() {  # A named local skip; fully provisioned CI must have none.
+  command -v rustup >/dev/null 2>&1 || { echo "rustup not installed"; return; }
+  command -v cargo >/dev/null 2>&1 || { echo "cargo not installed"; return; }
+  command -v jq >/dev/null 2>&1 || { echo "jq not installed"; return; }
+  rust_env cargo --version >/dev/null 2>&1 || { echo "test toolchain is not installed"; return; }
+  rust_env cargo clippy --version >/dev/null 2>&1 || { echo "clippy missing for test toolchain"; return; }
+  rust_env cargo fmt --version >/dev/null 2>&1 || { echo "rustfmt missing for test toolchain"; return; }
+  # The starter declares the pinned toolchain as its rust-version, so an older
+  # compiler refuses to build it: a named skip, not a failure.
+  local need have
+  need="$(sed -n 's/^rust-version = "1\.\([0-9][0-9]*\)"$/\1/p' "$REPO/template/stacks/rust/files/Cargo.toml")"
+  have="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
+  [ "${have:-0}" -ge "${need:-0}" ] || echo "the test toolchain is older than the pack's rust-version 1.$need (set SELFTEST_RUST_TOOLCHAIN to the channel rust-toolchain.toml pins)"
+}
+bootstrap_rust() {
+  fresh_copy "$1"
+  (cd "$1" && HOME="$WORK/home" rust_env ./bootstrap --name "Demo App" --stack rust --yes </dev/null >"$1.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")" || return 1
+  assert_exists "$1/Cargo.lock" || return 1
+  (cd "$1" && git add -A && git commit -qm init) || fail "commit failed"
+}
+rs_tiers() {
+  local dir="$1"; shift
+  (cd "$dir" && rust_env ./scripts/coverage_tiers.sh "$@" >"$dir.tiers.out" 2>&1)
+}
+rs_report() {  # Known-valid positive control, mutated independently by each probe.
+  jq -n --arg root "$(cd "$1" && pwd -P)" '
+    {type:"llvm.coverage.json.export",data:[{files:["src/lib.rs","src/main.rs"] |
+      map({filename:($root+"/"+.),summary:{lines:{count:10,covered:10},regions:{count:4,covered:4}}})}]}' > "$1/coverage.json"
+}
+rs_expect_bad_report() {
+  local dir="$1" filter="$2" rc
+  rs_report "$dir" || return 1
+  jq "$filter" "$dir/coverage.json" > "$dir/bad.json" || return 1
+  rs_tiers "$dir" --check bad.json; rc=$?
+  assert_exit 1 "$rc" || return 1
+  rs_tiers "$dir" --report bad.json; rc=$?
+  assert_exit 1 "$rc"
+}
+test_stack_rust_project_is_green_on_first_run() {
+  local d="$WORK/stack-rust/demo-app" why before_toolchains key f part
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  before_toolchains="$(rust_env rustup toolchain list)" || return 1
+  bootstrap_rust "$d" || return 1
+  assert_contains "$d/Cargo.toml" 'name = "demo_app"' || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_contains "$d/.bootstrapped" "with the rust stack pack" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_tree_lacks "$d" '{{PACKAGE_NAME}}' || return 1
+  # Spell out the shared keys so a misspelled command key cannot hide a leftover.
+  # Other packs can fill optional placeholders (e.g. Foldkit's RELEVANT_DOCS).
+  for key in INSTALL_CMD DEV_CMD BUILD_CMD CHECK_CMD TEST_CMD SHIP_GATE STACK \
+    COVERAGE_ENFORCEMENT PROJECT_NAME YEAR; do
+    assert_tree_lacks "$d" "{{$key" || return 1
+  done
+  (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
+    && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
+    || fail "new project's checks/tests failed: $(tail -25 "$d.gate.out")" || return 1
+  (cd "$d" && rust_env cargo run --locked -q -- --version) | grep -qx "demo_app $(cat "$d/VERSION")" \
+    || fail "--version does not print VERSION" || return 1
+  # git commits the lockfile CI's --locked steps need and ignores the build output.
+  git -C "$d" ls-files --error-unmatch -- Cargo.lock >/dev/null 2>&1 || fail "Cargo.lock is not committed" || return 1
+  for part in _rust-gates rust; do
+    git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
+      | while IFS= read -r f; do [ ! -f "$REPO/$f" ] || printf '%s\n' "$f"; done \
+      | sed "s|^template/stacks/$part/files/||" || return 1
+  done > "$d.files" || return 1
+  [ -s "$d.files" ] || fail "cannot list the pack's files" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.files"
+  for f in coverage.json lcov.info default.profraw; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the coverage output $f" || return 1
+  done
+  [ -z "$(cd "$d" && git status --porcelain)" ] \
+    || fail "the first run left files git would commit: $(cd "$d" && git status --porcelain | head -5)" || return 1
+  # gstack /ship bumps VERSION to four parts; the next build reports the new one.
+  printf '0.1.0.0\n' > "$d/VERSION"
+  (cd "$d" && rust_env cargo run --locked -q -- --version) | grep -qx "demo_app 0.1.0.0" \
+    || fail "--version does not follow a VERSION bump" || return 1
+  (cd "$d" && rust_env cargo test --locked) >"$d.gate.out" 2>&1 \
+    || fail "the tests failed after a VERSION bump: $(tail -25 "$d.gate.out")" || return 1
+  # Even diagnostics run under the installed override inside the pinned project.
+  [ "$(cd "$d" && rust_env rustup toolchain list)" = "$before_toolchains" ] \
+    || fail "verification changed installed toolchains"
+}
+test_stack_rust_coverage_gate_passes() {
+  # The starter passes the real gate, which then fails when it should. One project
+  # serves every case: each instrumented build is slow on the 1-vCPU CI runner.
+  local d="$WORK/stack-rust-cov/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { skip "cargo-llvm-cov not installed"; return; }
+  rust_env rustup component list --installed | grep -q '^llvm-tools' || { skip "llvm-tools not installed"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1 \
+    || fail "coverage.sh failed: $(tail -25 "$d.cov.out")" || return 1
+  # Regression test. `cargo llvm-cov --no-report` keeps earlier runs' profiles, so
+  # without a clean step a second run merged the first one's coverage: a project
+  # could delete its tests and still pass the 90% floors and the 100% tiers.
+  rm "$d/tests/cli.rs" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- tests/cli.rs) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_not_contains "$d.cov.out" "tier(s) ok" || return 1
+  # --all-features: untested code behind a Cargo feature counts against the gates.
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\n\n[features]\nextra = []\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" "extra = []" || return 1
+  printf '\n/// Spare.\n#[cfg(feature = "extra")]\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml src/lib.rs) || return 1
+  assert_exit 1 "$rc" || { tail -20 "$d.cov.out"; return 1; }
+  # Every step is --locked: without Cargo.lock the gate fails and writes none.
+  rm "$d/Cargo.lock" || return 1
+  (cd "$d" && rust_env ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "coverage.sh passed without Cargo.lock" || return 1
+  assert_absent "$d/Cargo.lock"
+}
+test_stack_rust_coverage_tiers_fail_closed() {
+  local d="$WORK/stack-rust-tiers/demo-app" why rc filter
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  rs_report "$d" || return 1
+  rs_tiers "$d" --check coverage.json || fail "valid measurements failed" || return 1
+  rs_tiers "$d" --report coverage.json || return 1
+  assert_contains "$d.tiers.out" "n/a (empty tier)" || return 1
+  for filter in \
+    '.data[0].files[0].summary.lines.covered = 5' \
+    '.data[0].files[0].summary.regions.covered = 2' \
+    '.data[0].files |= .[0:1]' \
+    '.data[0].files[].summary = {}' \
+    '.data[0].files[].summary.lines = {count:0,covered:0}' \
+    '.data[0].files[].summary.regions = {count:0,covered:0}' \
+    '.data[0].files[0].summary.lines.covered = -1' \
+    '.data[0].files[0].summary.regions.covered = 5' \
+    '.data[0].files[0].summary.lines.count = "10"' \
+    '.data[0].files[0].summary.lines.count = 10.5' \
+    '.data[0].files[0].summary.lines = {count:1e999,covered:1e999}' \
+    '.data[0].files[0].summary.lines = {count:1e308,covered:1e308}' \
+    '.data[0].files += [.data[0].files[0]]' \
+    '.data[0].files += [(.data[0].files[0] | .filename = "src/lib.rs")]' \
+    '.data = []' \
+    'del(.type)' \
+    '., .' \
+    '(.data[0].files[0].summary.lines = {count:0,covered:0}), .'; do
+    rs_expect_bad_report "$d" "$filter" || return 1
+  done
+  # With the minimums at 0 only the counter checks can reject these: a negative or
+  # fractional counter, or one member with nothing to measure (the other member
+  # keeps the tier's totals positive).
+  perl -pi -e 's/minimum = 100\.0/minimum = 0.0/g' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" "minimum = 0.0" || return 1
+  for filter in \
+    '.data[0].files[0].summary.lines.covered = -1' \
+    '.data[0].files[0].summary.lines.count = 10.5' \
+    '.data[0].files[0].summary.regions.covered = 3.5' \
+    '.data[0].files[0].summary.lines = {count:0,covered:0}' \
+    '.data[0].files[0].summary.regions = {count:0,covered:0}'; do
+    rs_expect_bad_report "$d" "$filter" || return 1
+  done
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  printf '{' > "$d/bad.json"
+  rs_tiers "$d" --check bad.json; rc=$?
+  assert_exit 1 "$rc" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/missing.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "is not a file" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -pi -e 's|include = \[\]|include = "src/lib.rs"|' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.pure_logic\].*//s' "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  # Extended by the /ship coverage audit.
+  # Value: protects=coverage_tiers.sh rejects each schema rule by itself (ranges,
+  # types, tier keys, non-canonical, duplicate or empty membership) and misuse
+  # with exit 2; fails_when=a jq schema clause or the path_ok pattern is loosened,
+  # the argument-count check is dropped, or a missing report stops naming the
+  # fix; why_new=only a string include and a missing file were fed in: the other
+  # clauses, the usage branch and the missing-report branch had no test; seam=none
+  # Every row is otherwise valid TOML naming files that exist, so only the rule
+  # under test can reject it.
+  local edit
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  while IFS= read -r edit; do
+    perl -pi -e "$edit" "$d/Cargo.toml" || return 1
+    ! (cd "$d" && git diff --quiet -- Cargo.toml) || fail "the Cargo.toml edit did not apply: $edit" || return 1
+    rs_tiers "$d" --validate; rc=$?
+    (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+    assert_exit 1 "$rc" || { echo "    accepted: $edit"; return 1; }
+    assert_contains "$d.tiers.out" "invalid tier schema, empty membership, or duplicate membership" \
+      || { echo "    for: $edit"; return 1; }
+  done <<'CASES'
+s|include = \[\]|include = ["src/lib.rs"]|
+s|"src/lib.rs", "src/main.rs"|"src/lib.rs", "src/lib.rs"|
+s|"src/lib.rs", "src/main.rs"\]|]|
+s|"src/lib.rs", |"./src/lib.rs", |
+s|"src/lib.rs", |"src//lib.rs", |
+s|"src/lib.rs", |"src/../src/lib.rs", |
+s|"src/lib.rs", |"/etc/passwd", |
+s|target = 100.0|target = 99.0|
+s|target = 100.0|target = 101.0|
+s|minimum = 100.0|minimum = -1.0|
+s|minimum = 100.0|minimum = "100"|
+s|title = "API / contract surface"|title = 5|
+s|coverage_tiers\.pure_logic|coverage_tiers.Pure-Logic|
+CASES
+  rs_tiers "$d"; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.tiers.out" "usage: " || return 1
+  rs_tiers "$d" --ratchet; rc=$?
+  assert_exit 2 "$rc" || return 1
+  rs_tiers "$d" --validate extra; rc=$?
+  assert_exit 2 "$rc" || return 1
+  # --check and --report without a name read coverage.json; with none written,
+  # the failure says how to make one.
+  rs_report "$d" || return 1
+  rs_tiers "$d" --check || fail "--check did not read coverage.json: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "coverage-tiers: 2 tier(s) ok" || return 1
+  rs_tiers "$d" --report || fail "--report did not read coverage.json: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "| Tier | Lines | Regions | Minimum | Target |" || return 1
+  assert_contains "$d.tiers.out" "| API / contract surface | 100 | 100 | " || return 1
+  rm -f "$d/coverage.json"
+  rs_tiers "$d" --check; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "coverage.json not found (run scripts/coverage.sh)"
+}
+test_stack_rust_ratchet_preserves_membership() {
+  local d="$WORK/stack-rust-ratchet/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  rs_tiers "$d" --ratchet HEAD || fail "unchanged ratchet failed" || return 1
+  perl -pi -e 's|include = \["src/lib.rs", "src/main.rs"\]|include = ["src/lib.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "member removed" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -pi -e 's/minimum = 100.0/minimum = 90.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "minimum lowered" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.api_surface\].*//s' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml)
+  printf '// extra module\n' > "$d/src/extra.rs"
+  perl -pi -e 's|include = \[\]|include = ["src/extra.rs"]|' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD || fail "adding membership failed" || return 1
+  # A lower committed baseline permits an increase without confusing it with removal.
+  perl -pi -e 's/minimum = 100.0/minimum = 90.0/g' "$d/Cargo.toml"
+  (cd "$d" && git add Cargo.toml src/extra.rs && git commit -qm 'ratchet fixture') || return 1
+  perl -pi -e 's/target = 100.0/target = 95.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "target lowered" || return 1
+  perl -pi -e 's/target = 95.0/target = 100.0/g; s/minimum = 90.0/minimum = 100.0/g' "$d/Cargo.toml"
+  rs_tiers "$d" --ratchet HEAD || fail "raising floors failed" || return 1
+  # Extended by the /ship coverage audit.
+  # Value: protects=the ratchet names a tier removed since the base and refuses a
+  # base whose tiers are invalid; fails_when=the removed-tier branch or the base
+  # validation is dropped or reworded into a pass; why_new=the removal above
+  # leaves no members, so validate rejects it before the ratchet compares
+  # anything, and an invalid base had no test; seam=none
+  # Dropping the tier that is not the only one with members keeps the config
+  # valid, so the ratchet is what objects.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\.pure_logic\].*?(?=\n\[package\.metadata\.coverage_tiers\.api_surface\])//s' "$d/Cargo.toml"
+  assert_not_contains "$d/Cargo.toml" "pure_logic" || return 1
+  assert_contains "$d/Cargo.toml" "coverage_tiers.api_surface" || return 1
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "pure_logic: tier removed since the base" || return 1
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -pi -e 's/minimum = 90.0/minimum = 101.0/' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'invalid tiers' && git checkout -q HEAD~1 -- Cargo.toml) \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "invalid base tiers"
+}
+test_stack_rust_rejects_workspaces() {
+  local d="$WORK/stack-rust-workspace/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  mkdir -p "$d/another/src"
+  printf '[package]\nname = "another"\nversion = "0.0.0"\nedition = "2024"\n' > "$d/another/Cargo.toml"
+  printf '// member\n' > "$d/another/src/lib.rs"
+  printf '\n[workspace]\nmembers = ["another"]\n' >> "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "only one root package" || return 1
+  # A plain path dependency is a second crate too: its code would escape the lints
+  # and coverage, which see only the root package.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\nanother = { path = "another" }\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'another = { path = "another" }' || return 1
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+  # A crate patched in by path, from Cargo.toml or .cargo/config.toml, is another
+  # local crate that cargo metadata does not show as a path dependency.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\nanother = "0.0.0"\n|' "$d/Cargo.toml"
+  for patch in Cargo.toml .cargo/config.toml; do
+    mkdir -p "$d/.cargo" || return 1
+    printf '\n[patch.crates-io]\nanother = { path = "another" }\n' >> "$d/$patch"
+    (cd "$d" && rust_env cargo generate-lockfile --offline -q) >"$d.lock.out" 2>&1 \
+      || fail "cannot lock the [patch] fixture in $patch: $(tail -5 "$d.lock.out")" || return 1
+    rs_tiers "$d" --validate; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+    # Valid TOML for the second crate's entry that a strict text scan would miss:
+    # a CRLF ending, a spaced header, a quoted header with a comment.
+    cp "$d/Cargo.lock" "$d.patched.lock" || return 1
+    for form in 's/\[\[package\]\]\nname = "another"/[[package]]\r\nname = "another"/' \
+      's/\[\[package\]\]\nname = "another"/[[ package ]]\nname = "another"/' \
+      's/\[\[package\]\]\nname = "another"/[["package"]] # local\nname = "another"/'; do
+      perl -0pi -e "$form" "$d/Cargo.lock" || return 1
+      cmp -s "$d/Cargo.lock" "$d.patched.lock" && { fail "the lockfile edit did not apply: $form"; return 1; }
+      rs_tiers "$d" --validate; rc=$?
+      cp "$d.patched.lock" "$d/Cargo.lock" || return 1
+      assert_exit 1 "$rc" || return 1
+      assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+    done
+    (cd "$d" && git checkout -q -- Cargo.lock) && rm -rf "$d/.cargo" || return 1
+    perl -0pi -e 's|\n\[patch\.crates-io\]\nanother = \{ path = "another" \}\n||' "$d/Cargo.toml"
+  done
+  # Cargo.lock lists every platform's crates: a crate patched in for Windows only
+  # counts on any host.
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  printf "\n[target.'cfg(windows)'.dependencies]\nanother = \"0.0.0\"\n\n[patch.crates-io]\nanother = { path = \"another\" }\n" >> "$d/Cargo.toml"
+  (cd "$d" && rust_env cargo generate-lockfile --offline -q) >"$d.lock.out" 2>&1 \
+    || fail "cannot lock the Windows-only [patch] fixture: $(tail -5 "$d.lock.out")" || return 1
+  rs_tiers "$d" --validate; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml Cargo.lock) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "local path dependencies require a gate migration" || return 1
+  # A `paths` override never reaches Cargo.lock, so the project's cargo config may
+  # set neither it nor an include (which could set it), at its root: with a BOM,
+  # in the extensionless file, or ahead of 70 KB more config.
+  mkdir -p "$d/.cargo" || return 1
+  while IFS='|' read -r file config pad; do
+    printf '%b\n' "$config" > "$d/.cargo/$file" || return 1
+    printf '# more config\n' > "$d/.cargo/more.toml" || return 1
+    [ -z "$pad" ] || awk 'BEGIN { for (i = 0; i < 3000; i++) print "# padding padding padding" }' >> "$d/.cargo/$file"
+    rs_tiers "$d" --validate; rc=$?
+    rm -f "$d/.cargo/config.toml" "$d/.cargo/config" || return 1
+    assert_exit 1 "$rc" || { echo "    for .cargo/$file: $config"; return 1; }
+    assert_contains "$d.tiers.out" "overrides crates with paths or includes other config" || return 1
+  done <<'CONFIGS'
+config.toml|paths = ["another"]|
+config.toml|include = ["more.toml"]|
+config.toml|[[include]]\npath = "more.toml"|
+config.toml|\0357\0273\0277paths = ["another"]|
+config|paths = ["another"]|
+config.toml|paths = ["another"]|pad
+CONFIGS
+  # The same key inside a table is something else (here an alias): no false failure.
+  printf '[alias]\npaths = "tree --edges normal"\n' > "$d/.cargo/config.toml" || return 1
+  rs_tiers "$d" --validate || fail "a paths alias failed the gate: $(cat "$d.tiers.out")" || return 1
+  rm -rf "$d/.cargo" || return 1
+  # Registry and git crates and an unused patch come from elsewhere: only the root
+  # counts. An empty lockfile names no root at all.
+  cp "$d/Cargo.lock" "$d.lock" || return 1
+  printf '\n[[package]]\nname = "regdep"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "%064d"\n\n[[package]]\nname = "gitdep"\nversion = "0.1.0"\nsource = "git+https://example.invalid/gitdep#%040d"\n\n[[patch.unused]]\nname = "unuseddep"\nversion = "0.2.0"\n' 0 0 >> "$d/Cargo.lock"
+  rs_tiers "$d" --validate; rc=$?
+  : > "$d/Cargo.lock"
+  rs_tiers "$d" --validate >/dev/null; rc2=$?
+  cp "$d.lock" "$d/Cargo.lock" || return 1
+  assert_exit 0 "$rc" || { cat "$d.tiers.out"; return 1; }
+  assert_exit 1 "$rc2" || return 1
+  assert_contains "$d.tiers.out" "Cargo.lock lists no package from this checkout" || return 1
+  rs_tiers "$d" --validate || fail "the root package alone failed: $(cat "$d.tiers.out")" || return 1
+  mv "$d/Cargo.lock" "$d.lock" || return 1
+  rs_tiers "$d" --validate; rc=$?
+  mv "$d.lock" "$d/Cargo.lock" || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "Cargo.lock not found" || return 1
+  printf '[workspace]\nmembers = ["another"]\nresolver = "3"\n' > "$d/Cargo.toml"
+  rs_tiers "$d" --validate; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "only one root package"
+}
+test_stack_rust_reserved_name_fails_before_writes() {
+  local d="$WORK/stack-rust-name/demo-app" stub="$WORK/stack-rust-name/stub" name before rc
+  # If validate-name ever let a name through, bootstrap would go on to its hook:
+  # a failing stub cargo and run_bootstrap's sandboxed HOME keep that run away
+  # from real toolchains and the real ~/.gstack.
+  mkdir -p "$stub" || return 1
+  printf '#!/bin/sh\nexit 101\n' > "$stub/cargo" && chmod +x "$stub/cargo" || return 1
+  for name in Async Self Gen Test Std; do
+    fresh_copy "$d"
+    before="$(tree_fingerprint "$d")"
+    PATH="$stub:$(printenv PATH)" run_bootstrap "$d" --name "$name" --stack rust --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "reserved Rust package name" || return 1
+    [ "$(tree_fingerprint "$d")" = "$before" ] || fail "reserved name mutated the tree" || return 1
+    rm -rf "$d"
+  done
+}
+test_stack_rust_packs_keep_names_out_of_doc_comments() {
+  # clippy's pedantic doc_markdown (warnings are errors) rejects a name like MyApp
+  # or my_tool in a doc comment, so no Rust pack puts the project's name in one.
+  local hits
+  hits="$(cd "$REPO" && grep -rnE '^[[:space:]]*//[/!].*\{\{(PROJECT_NAME|PACKAGE_NAME)\}\}' \
+    --include='*.rs' template/stacks || true)"
+  [ -z "$hits" ] || fail "a project name in a Rust doc comment: $hits"
+}
+test_stack_rust_after_bootstrap_formats_before_locking() {
+  # The name changes the starter's line lengths, so the hook formats before it
+  # locks, and without cargo it names both steps. The stub cargo fails and logs
+  # its calls, so no toolchain or network is needed.
+  local d="$WORK/stack-rust-hook/demo-app" rc
+  mkdir -p "$d.stub" "$d.empty" || return 1
+  cat > "$d.stub/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$d.cargo-calls"
+exit 101
+STUB
+  chmod +x "$d.stub/cargo" || return 1
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --offline --quiet')" ] \
+    || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  # Both steps failed, and the hook says so instead of claiming a lockfile.
+  assert_contains "$d.out" "cargo fmt failed: run 'cargo fmt --all' before your first commit." || return 1
+  assert_contains "$d.out" "cargo generate-lockfile failed: run it and commit Cargo.lock before your first push." || return 1
+  assert_not_contains "$d.out" "Wrote Cargo.lock" || return 1
+  (cd "$d.empty" && PATH="$d.empty" /bin/sh "$REPO/template/stacks/rust/after-bootstrap") >"$d.hook" 2>&1; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.hook" "run 'cargo fmt --all && cargo generate-lockfile'"
+}
+test_stack_rust_ratchet_passes_when_the_base_predates_the_pack() {
+  # A project's first PR into a protected default branch compares against the
+  # template commit: no Cargo.toml, or one without tiers, is nothing to ratchet,
+  # as for the python pack. An unknown ref, an unreadable tree or unreadable
+  # metadata still fails.
+  local d="$WORK/stack-rust-ratchet-nobase/demo-app" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w README.md)" | git mktree)")" \
+    && git branch -f broken "$(git commit-tree -m broken "$(printf '100644 blob %s\tCargo.toml\n' "$(printf 'not [valid toml\n' | git hash-object -w --stdin)" | git mktree)")" \
+    && git branch -f unreadable "$(git commit-tree -m unreadable "$(printf '100644 blob %s\tCargo.toml\n' 0123456789abcdef0123456789abcdef01234567 | git mktree --missing)")") \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet prepack || fail "a base without Cargo.toml failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no Cargo.toml at prepack; nothing to ratchet against" || return 1
+  perl -0pi -e 's/\n\[package\.metadata\.coverage_tiers\..*//s' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'no tiers' && git branch -f notiers && git reset -q --hard HEAD~1) \
+    || fail "git setup failed" || return 1
+  rs_tiers "$d" --ratchet notiers || fail "a base without tiers failed: $(cat "$d.tiers.out")" || return 1
+  assert_contains "$d.tiers.out" "no coverage tiers at notiers; nothing to ratchet against" || return 1
+  rs_tiers "$d" --ratchet no-such-ref; rc=$?
+  assert_exit 1 "$rc" || return 1
+  rs_tiers "$d" --ratchet broken; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tiers" || return 1
+  rs_tiers "$d" --ratchet unreadable; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "cannot read base tree"
+}
+test_stack_rust_guard_fails_closed() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=the rust guard fails on a rustfmt diff, a lint warning, a
+  # missing Cargo.lock, a bad tier config or no cargo, passes code under the
+  # coverage cfgs Cargo.toml's check-cfg allows, and check.sh runs it;
+  # fails_when=rust.sh drops -D warnings, --all-targets, --all-features, --locked,
+  # set -e or --validate, a [lints] entry or check-cfg name is removed, unsafe_code
+  # drops below forbid, or check.sh stops running the guard; why_new=a clean
+  # starter was the only input, so a guard that checked nothing, or a check-cfg
+  # list missing a coverage cfg, passed every test; seam=none
+  local d="$WORK/stack-rust-guard/demo-app" why rc want bad
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1 \
+    || fail "the guard failed on a fresh project: $(tail -20 "$d.guard.out")" || return 1
+  # Cargo.toml's check-cfg allowance: code gated on the cfgs cargo-llvm-cov sets
+  # passes, though -D warnings turns any other unexpected cfg into an error.
+  printf '\n/// Coverage runs only.\n#[cfg(coverage)]\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  printf '\n/// Nightly coverage runs only.\n#[cfg(coverage_nightly)]\npub fn spare_nightly() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- src/lib.rs) || return 1
+  [ "$rc" -eq 0 ] || fail "the guard failed code under cfg(coverage) or cfg(coverage_nightly): $(tail -20 "$d.guard.out")" || return 1
+  # Each snippet trips one check: rustfmt, then rustc's missing_docs, the
+  # unsafe_code forbid (an #[allow] cannot lift it) and an undeclared cfg name,
+  # then clippy's pedantic, dbg_macro and todo.
+  while IFS='|' read -r want bad; do
+    printf '%b' "$bad" >> "$d/src/lib.rs"
+    (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+    (cd "$d" && git checkout -q -- src/lib.rs) || return 1
+    [ "$rc" -ne 0 ] || fail "the guard passed src/lib.rs ending in: $bad" || return 1
+    assert_contains "$d.guard.out" "$want" || return 1
+  done <<'CASES'
+Diff in|\n/// Spare.\npub fn  spare() {}\n
+missing documentation|\npub fn spare() {}\n
+incompatible with previous forbid|\n/// Spare.\n#[allow(unsafe_code)]\npub fn spare() {\n    unsafe {}\n}\n
+unexpected-cfgs|\n/// Spare.\n#[cfg(coverage_typo)]\npub fn spare() {}\n
+must_use|\n/// Spare.\npub fn spare() -> u8 {\n    1\n}\n
+dbg_macro|\n/// Spare.\npub fn spare() {\n    dbg!(1);\n}\n
+clippy::todo|\n/// Spare.\npub fn spare() {\n    todo!();\n}\n
+CASES
+  # --all-targets: a warning in tests/ fails the guard too.
+  printf '\nfn spare() {}\n' >> "$d/tests/cli.rs"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- tests/cli.rs) || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed a warning in tests/cli.rs" || return 1
+  assert_contains "$d.guard.out" "is never used" || return 1
+  # --all-features: code behind a Cargo feature is linted too.
+  perl -0pi -e 's|\[dependencies\]\n|[dependencies]\n\n[features]\nextra = []\n|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" "extra = []" || return 1
+  printf '\n#[cfg(feature = "extra")]\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml src/lib.rs) || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed undocumented code behind a feature" || return 1
+  assert_contains "$d.guard.out" "missing documentation" || return 1
+  mv "$d/Cargo.lock" "$d.lock" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  mv "$d.lock" "$d/Cargo.lock" || return 1
+  [ "$rc" -ne 0 ] || fail "the guard passed without Cargo.lock" || return 1
+  assert_contains "$d.guard.out" "Cargo.lock" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/missing.rs"]|' "$d/Cargo.toml"
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  (cd "$d" && git checkout -q -- Cargo.toml) || return 1
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "include 'src/missing.rs' is not a file" || return 1
+  mkdir -p "$d.empty" || return 1
+  (cd "$d" && env PATH="$d.empty" /bin/bash scripts/check.d/rust.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "cargo is not installed" || return 1
+  printf '\npub fn spare() {}\n' >> "$d/src/lib.rs"
+  (cd "$d" && rust_env env EDITORCONFIG_CHECKER_BIN=/nonexistent GITLEAKS_BIN=/nonexistent CI=false \
+    ./scripts/check.sh) >"$d.check.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.check.out" "- rust: running scripts/check.d/rust.sh..." || return 1
+  assert_contains "$d.check.out" "missing documentation" || return 1
+  assert_not_contains "$d.check.out" "OK: checks passed."
+}
+test_stack_rust_coverage_gate_fails_closed() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=scripts/coverage.sh exits 1 with an install hint when
+  # cargo-llvm-cov is missing, clears earlier coverage data before the run,
+  # stops at a failing test run or a missed 90% floor, and ends on the tier gate
+  # over the report it just wrote; fails_when=the tool guard becomes a skip, the
+  # clean step is dropped, a floor is lowered, a step's failure is swallowed or
+  # the tier gate stops reading coverage.json; why_new=the real-tool coverage test
+  # skips without cargo-llvm-cov and cannot fail each step in turn; seam=none
+  # A stub cargo fails at the step named in fail-at and logs every call, so this
+  # needs no toolchain and behaves the same where cargo-llvm-cov is installed.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local root="$WORK/stack-rust-cov-closed" d="$WORK/stack-rust-cov-closed/demo-app" rc fail_at stopped real
+  mkdir -p "$root/bin" || return 1
+  cat > "$root/bin/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$root/calls"
+case "\$*" in *"\$(cat "$root/fail-at")"*) exit 101 ;; esac
+case "\$*" in
+  metadata*) cat "$root/metadata.json" ;;
+  *"--output-path coverage.json"*) cp "$root/report.json" coverage.json ;;
+esac
+STUB
+  chmod +x "$root/bin/cargo" || return 1
+  echo "no step" > "$root/fail-at"
+  fresh_copy "$d" || return 1
+  PATH="$root/bin:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  echo "llvm-cov --version" > "$root/fail-at"
+  : > "$root/calls"
+  (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "cargo-llvm-cov is not installed: cargo install --locked cargo-llvm-cov" || return 1
+  [ "$(cat "$root/calls")" = "cargo llvm-cov --version" ] \
+    || fail "coverage.sh went on without the tool: $(cat "$root/calls")" || return 1
+  while IFS='|' read -r fail_at stopped; do
+    printf '%s\n' "$fail_at" > "$root/fail-at"
+    : > "$root/calls"
+    (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || fail "coverage.sh passed with '$fail_at' failing" || return 1
+    assert_contains "$root/calls" "$fail_at" || return 1
+    assert_not_contains "$root/calls" "$stopped" || return 1
+  done <<'CASES'
+llvm-cov clean --locked --workspace|--no-report
+--no-report|--fail-under
+--fail-under-lines 90 --fail-under-regions 90|--output-path
+CASES
+  # With every cargo step passing, the tier gate reads the report coverage.sh just
+  # wrote: 95% of the api_surface lines clears the 90% floor, not the tier's 100%.
+  real="$(cd "$d" && pwd -P)" || return 1
+  jq -n --arg r "$real" '{packages: [{id: "demo", manifest_path: ($r + "/Cargo.toml"), dependencies: [],
+    metadata: {coverage_tiers: {api_surface: {minimum: 100, target: 100, include: ["src/lib.rs", "src/main.rs"]}}}}],
+    workspace_members: ["demo"], workspace_root: $r}' > "$root/metadata.json" || return 1
+  jq -n --arg r "$real" '{type: "llvm.coverage.json.export", data: [{files: [
+    {filename: ($r + "/src/lib.rs"), summary: {lines: {count: 10, covered: 9}, regions: {count: 4, covered: 4}}},
+    {filename: ($r + "/src/main.rs"), summary: {lines: {count: 10, covered: 10}, regions: {count: 4, covered: 4}}}]}]}' \
+    > "$root/report.json" || return 1
+  printf 'version = 4\n\n[[package]]\nname = "demo_app"\nversion = "0.0.0"\n' > "$d/Cargo.lock" || return 1
+  echo "no step" > "$root/fail-at"
+  : > "$root/calls"
+  (cd "$d" && PATH="$root/bin:$(printenv PATH)" ./scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "api_surface: lines coverage 95% is below its minimum 100%" || return 1
+  # Old coverage data is cleared before the run, never after it, and --locked so
+  # that even this step cannot write Cargo.lock.
+  if [ "$(sed -n 2p "$root/calls")" != "cargo llvm-cov clean --locked --workspace" ] \
+    || ! sed -n 3p "$root/calls" | grep -q -- '--no-report'; then
+    fail "coverage.sh does not clear old coverage data before the run: $(cat "$root/calls")"
+  fi
+}
+test_stack_rust_ci_ratchet_step_on_a_shallow_pr_checkout() {
+  # Generated by the /ship coverage audit.
+  # Value: protects=the new project's ci.yml ratchet step works on a shallow
+  # pull-request checkout: it passes an added tier member and fails a removed
+  # one; fails_when=the step's fetch, ref or script arguments drift, the script
+  # loses its exec bit in git, or git archive cannot read the depth-1 base;
+  # why_new=the ratchet tests call the script against local refs, and nothing ran
+  # the workflow's own step the way GitHub does; seam=none
+  local root="$WORK/stack-rust-ci" d="$WORK/stack-rust-ci/demo-app" why ratchet pr ci rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  ratchet="$(sed -n '/name: Coverage tiers never slip/,$p' "$d/.github/workflows/ci.yml" | sed '1,/run: |/d' | sed 's/^ *//')"
+  [ -n "$ratchet" ] || fail "cannot find ci.yml's ratchet step" || return 1
+  git init -q --bare "$root/origin.git" || return 1
+  (cd "$d" && git branch -M main && git push -q "$root/origin.git" main && git checkout -q -b pr1) \
+    || fail "pushing main failed" || return 1
+  printf '//! Extra.\n' > "$d/src/extra.rs"
+  perl -pi -e 's|include = \[\]|include = ["src/extra.rs"]|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'include = ["src/extra.rs"]' || return 1
+  (cd "$d" && git add -A && git commit -qm pr1 && git push -q "$root/origin.git" pr1 \
+    && git checkout -q -b pr2 main) || fail "pushing pr1 failed" || return 1
+  perl -pi -e 's|include = \["src/lib.rs", "src/main.rs"\]|include = ["src/lib.rs"]|' "$d/Cargo.toml"
+  assert_contains "$d/Cargo.toml" 'include = ["src/lib.rs"]' || return 1
+  (cd "$d" && git commit -qam pr2 && git push -q "$root/origin.git" pr2) || fail "pushing pr2 failed" || return 1
+  for pr in 1 2; do
+    ci="$root/pr$pr"
+    mkdir -p "$ci" || return 1
+    (cd "$ci" && git init -q && git remote add origin "file://$root/origin.git" \
+      && git fetch -q --depth=1 origin "+refs/heads/pr$pr:refs/remotes/pull/$pr/merge" \
+      && git checkout -q "refs/remotes/pull/$pr/merge") || fail "checking out PR $pr failed" || return 1
+    (cd "$ci" && rust_env env CI=true GITHUB_ACTIONS=true GITHUB_BASE_REF=main \
+      bash -eo pipefail -c "$ratchet") >"$ci.ratchet.out" 2>&1; rc=$?
+    if [ "$pr" = 1 ]; then
+      assert_exit 0 "$rc" || { cat "$ci.ratchet.out"; return 1; }
+      assert_contains "$ci.ratchet.out" "coverage-tiers: 2 tier(s) ok" || return 1
+    else
+      assert_exit 1 "$rc" || { cat "$ci.ratchet.out"; return 1; }
+      assert_contains "$ci.ratchet.out" "api_surface: member removed since the base: src/main.rs" || return 1
+    fi
+  done
+}
+test_stack_rust_template_ci_tests_the_pinned_toolchain() {
+  # Value: protects=template CI tests the rust packs on the compiler, components
+  # and cargo-llvm-cov their files pin, and the pack names that version;
+  # fails_when=a pin is bumped in one place only, or a component leaves
+  # rust-toolchain.toml (rust_env's rustup run overrides the toolchain file and
+  # template CI installs components by hand, so the suite would stay green);
+  # why_new=nothing read the pins together; seam=none
+  local f pin comps c tool n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
+  for f in "$REPO"/template/stacks/*/files/rust-toolchain.toml; do
+    [ -f "$f" ] || continue
+    n=$((n + 1))
+    pin="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' "$f")"
+    [ -n "$pin" ] || fail "no channel in ${f#"$REPO"/}" || return 1
+    assert_contains "$wf" "rustup toolchain install $pin " || return 1
+    assert_contains "$wf" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || return 1
+    assert_contains "$REPO/template/stacks/rust/commands" "STACK=Rust ${pin%.*} " || return 1
+    # A new project's CI gets only the components its toolchain file lists.
+    comps="$(sed -n "s/^ *run: rustup toolchain install $pin .*--component \([^ ]*\).*/\1/p" "$wf")"
+    [ -n "$comps" ] || fail "template CI installs no components for $pin" || return 1
+    for c in $(printf '%s\n' "$comps" | tr ',' ' '); do
+      assert_contains "$f" "\"$c\"" || return 1
+    done
+  done
+  [ "$n" -gt 0 ] || fail "no pack pins a Rust toolchain" || return 1
+  for f in "$REPO"/template/stacks/*/files/.github/workflows/ci.yml; do
+    tool="$(sed -n 's/^ *tool: \(cargo-llvm-cov@[^ ]*\)$/\1/p' "$f")"
+    [ -n "$tool" ] || continue
+    m=$((m + 1))
+    # The light and heavy jobs each install it; both must use the pack's pin.
+    [ "$(sed -n 's/^ *tool: \(cargo-llvm-cov@[^ ]*\)$/\1/p' "$wf" | LC_ALL=C sort -u)" = "$tool" ] \
+      || fail "template CI pins another cargo-llvm-cov than ${f#"$REPO"/}: $tool" || return 1
+  done
+  [ "$m" -gt 0 ] || fail "no pack pins cargo-llvm-cov" || return 1
+  # Each pack declares that compiler as its rust-version: a lower one makes Cargo
+  # hold dependencies back for a compiler nothing tests.
+  for f in "$REPO"/template/stacks/*/files/Cargo.toml; do
+    grep -q '^rust-version' "$f" || continue
+    assert_contains "$f" "rust-version = \"${pin%.*}\"" || return 1
+  done
+}
+test_stack_rust_ship_gate_runs_every_ci_gate() {
+  # Value: protects=AGENTS.md's SHIP_GATE runs each gate the new project's CI
+  # runs; fails_when=a CI gate step is added or changed without SHIP_GATE (the
+  # doctest drift the first review fixed), including one in a multi-line or
+  # prefixed run: step; why_new=nothing compared them; seam=none
+  local gate step blocks n=0 ci="$REPO/template/stacks/rust/files/.github/workflows/ci.yml"
+  gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/rust/commands")"
+  [ -n "$gate" ] || fail "no SHIP_GATE in the rust pack" || return 1
+  while IFS= read -r step; do
+    n=$((n + 1))
+    case " && $gate && " in
+      *" && $step && "*) ;;
+      *) fail "SHIP_GATE lacks the CI step: $step" || return 1 ;;
+    esac
+  done < <(sed -n 's/^ *run: \(\.\/scripts\/.*\)$/\1/p; s/^ *run: \(cargo .*\)$/\1/p' "$ci")
+  [ "$n" -gt 0 ] || fail "no gate steps found in the pack's ci.yml" || return 1
+  # The sed above reads one-line steps only: every other run: step must be the
+  # toolchain install or the PR-only ratchet, the one multi-line step.
+  blocks="$(grep -cE '^ *run: *[|>]' "$ci")"
+  [ "$blocks" -eq 1 ] || fail "ci.yml has $blocks multi-line run: steps; check each against SHIP_GATE" || return 1
+  while IFS= read -r step; do
+    case "$step" in
+      "rustup toolchain install"|"|"|./scripts/*|"cargo "*) ;;
+      *) fail "unclassified ci.yml run: step: $step" || return 1 ;;
+    esac
+  done < <(sed -n 's/^ *run: //p' "$ci")
+}
+test_stack_rust_long_name_passes_guards_and_tests() {
+  # Value: protects=a long project name still passes the new project's guard and
+  # tests right after bootstrap; fails_when=the hook stops formatting the starter
+  # once the name is substituted; why_new=the hook test checks a stub cargo's
+  # call order, and the green test uses the 8-character demo_app; seam=none
+  local d="$WORK/stack-rust-long/proj" why
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  fresh_copy "$d" || return 1
+  mkdir -p "$WORK/home" || return 1
+  (cd "$d" && HOME="$WORK/home" rust_env ./bootstrap --name "Acme Example Inventory Reconciliation Service Version Two Ok" \
+    --stack rust --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  (cd "$d" && rust_env bash scripts/check.d/rust.sh && rust_env cargo test --locked -q) >"$d.gate.out" 2>&1 \
+    || fail "the rust guards or tests failed for a long name: $(tail -25 "$d.gate.out")"
+}
+test_stack_rust_scripts_stay_in_the_project_under_cdpath() {
+  # Regression test. Run by a bare relative path with an exported CDPATH whose
+  # entry holds scripts/, the gate scripts' cd picked that directory: the tier
+  # gate checked a decoy project and passed. Each cd must stay in this project.
+  local d="$WORK/stack-rust-cdpath/demo-app" decoy="$WORK/stack-rust-cdpath/decoy" why rc
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  mkdir -p "$decoy" && cp -R "$d/." "$decoy/" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/missing.rs"]|' "$d/Cargo.toml"
+  (cd "$d" && CDPATH="$decoy" rust_env bash scripts/coverage_tiers.sh --validate) >"$d.tiers.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.tiers.out" "include 'src/missing.rs' is not a file" || return 1
+  assert_not_contains "$d.tiers.out" "$decoy" || return 1
+  # coverage.sh: a stub cargo records where each of its calls runs.
+  mkdir -p "$d.bin" || return 1
+  printf '#!/bin/sh\npwd -P >> "%s"\n' "$d.where" > "$d.bin/cargo" && chmod +x "$d.bin/cargo" || return 1
+  (cd "$d" && CDPATH="$decoy" PATH="$d.bin:$(printenv PATH)" bash scripts/coverage.sh) >"$d.cov.out" 2>&1
+  [ "$(sort -u "$d.where")" = "$(cd "$d" && pwd -P)" ] \
+    || fail "coverage.sh ran cargo in: $(sort -u "$d.where" | tr '\n' ' ')"
+}
+test_stack_rust_ratchet_ignores_files_missing_from_the_base() {
+  # A base that lists a member it never committed must not block the pull request
+  # that adds the file: like the python pack's ratchet, only the base's schema counts.
+  local d="$WORK/stack-rust-ratchet-basefiles/demo-app" why
+  why="$(rust_ready)"; [ -z "$why" ] || { skip "$why"; return; }
+  bootstrap_rust "$d" || return 1
+  perl -pi -e 's|include = \[\]|include = ["src/new.rs"]|' "$d/Cargo.toml"
+  (cd "$d" && git commit -qam 'base lists src/new.rs without the file') || return 1
+  printf '//! New.\n' > "$d/src/new.rs"
+  (cd "$d" && git add src/new.rs && git commit -qm 'add src/new.rs') || return 1
+  rs_tiers "$d" --ratchet HEAD~1 || fail "a pull request completing the base failed the ratchet: $(cat "$d.tiers.out")" || return 1
+  # Only the head's Cargo.lock is checked: a base committed without one still ratchets.
+  (cd "$d" && git rm -q --cached Cargo.lock && git commit -qm 'base without Cargo.lock' \
+    && git add Cargo.lock && git commit -qm 'add Cargo.lock') || return 1
+  rs_tiers "$d" --ratchet HEAD~1 || fail "a base without Cargo.lock failed the ratchet: $(cat "$d.tiers.out")"
+}
+
+# --- tests: omarchy-app stack pack and the pack family (plan 008) -------------
+test_bootstrap_help_lists_stack_packs_with_what_they_are_for() {
+  # --help is where an agent looks before choosing --stack: every pack is listed
+  # with its one-line description (so each pack must have one); nothing changes.
+  local d="$WORK/help-stacks/proj" before rc pack desc n=0
+  fresh_copy "$d" || return 1
+  before="$(tree_fingerprint "$d")"
+  (cd "$d" && ./bootstrap --help >"$d.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || return 1
+  for pack in "$d"/template/stacks/*/; do
+    pack="$(basename "$pack")"
+    case "$pack" in _*) continue ;; esac  # partial packs are included, never offered
+    desc="$(head -n 1 "$d/template/stacks/$pack/description" 2>/dev/null)"
+    [ -n "$desc" ] || fail "template/stacks/$pack has no description" || return 1
+    grep -qxF -- "$(printf '  %-15s %s' "$pack" "$desc")" "$d.out" \
+      || fail "--help does not list $pack with its description: $(cat "$d.out")" || return 1
+    n=$((n + 1))
+  done
+  [ "$n" -ge 3 ] || fail "expected at least the python, rust and omarchy-app packs; found $n" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "--help changed files"
+}
+test_check_tells_guards_whether_ci_requires_tools() {
+  # A guard in scripts/check.d may skip a missing tool locally but must fail in
+  # CI: check.sh hands it CHECK_CI, decided by the same rule as gitleaks.
+  local d="$WORK/check-ci-flag/proj" setting
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/scripts/check.d" || return 1
+  cat > "$d/scripts/check.d/probe.sh" <<'GUARD'
+echo "guard saw CHECK_CI=${CHECK_CI:-unset}"
+GUARD
+  for setting in CI=true:1 CI=1:1 GITHUB_ACTIONS=true:1 CI=false:0 CI=no:0 CI=:0; do
+    # CI= first: GitHub exports CI=true, which would otherwise answer for GITHUB_ACTIONS.
+    run_check "$d" GITLEAKS_BIN=/nonexistent/gitleaks CI= "${setting%:*}"
+    assert_contains "$d.out" "guard saw CHECK_CI=${setting##*:}" || return 1
+  done
+}
+test_selftest_exclude_skips_matching_tests_without_counting_them() {
+  # The 1-vCPU CI job runs everything but test_heavy_* and fails on any skip, so
+  # SELFTEST_EXCLUDE must neither run nor count what it excludes.
+  local out="$WORK/selftest-exclude.out" rc
+  SELFTEST_EXCLUDE=_unknown_arg "$REPO/scripts/template-selftest.sh" _rejects_unknown_ >"$out" 2>&1; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$out" "- test_bootstrap_rejects_unknown_stack" || return 1
+  assert_not_contains "$out" "- test_bootstrap_rejects_unknown_arg" || return 1
+  assert_contains "$out" "selftest: 1 passed, 0 failed, 0 skipped (1 excluded by SELFTEST_EXCLUDE=_unknown_arg)"
+}
+omarchy_app_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-app
+  # cargo is a stub that fails and logs its calls to "$1.cargo-calls": no
+  # network, and after-bootstrap has to report that it couldn't lock.
+  mkdir -p "$1.stub" || return 1
+  cat > "$1.stub/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$1.cargo-calls"
+exit 101
+STUB
+  chmod +x "$1.stub/cargo" || return 1
+  fresh_copy "$1" || return 1
+  PATH="$1.stub:$(printenv PATH)" run_bootstrap "$1" --name "Demo App" --stack omarchy-app --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+test_stack_omarchy_app_bootstrap_installs_the_pack() {
+  local d="$WORK/omarchy-app/demo-app" f s part
+  omarchy_app_project "$d" || return 1
+  assert_contains "$d/Cargo.toml" 'name = "demo_app"' || return 1
+  assert_contains "$d/src/lib.rs" 'pub const APP_ID: &str = "demo_app";' || return 1
+  assert_contains "$d/packaging/app.desktop.in" 'StartupWMClass=demo_app' || return 1
+  assert_contains "$d/DESIGN.md" "gpui-omarchy" || return 1
+  assert_exists "$d/docs/guides/omarchy.md" || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  { [ -x "$d/scripts/install.sh" ] && [ -x "$d/scripts/check.d/omarchy.sh" ]; } \
+    || fail "the pack's scripts lost their exec bit" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/.bootstrapped" "with the omarchy-app stack pack" || return 1
+  # after-bootstrap formats first (the name changed line lengths), then locks.
+  [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --quiet')" ] \
+    || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  assert_contains "$d.out" "cargo generate-lockfile failed (offline?)" || return 1
+  for s in '{{PACKAGE_NAME}}' '{{TEST_CMD' TEMPLATE.md template/stacks template-selftest; do
+    assert_tree_lacks "$d" "$s" || return 1
+  done
+  # git commits every pack file and the lockfile, and ignores the build output.
+  : > "$d/Cargo.lock"
+  (cd "$d" && git add -A) || fail "git add failed" || return 1
+  { for part in _rust-gates omarchy-app; do
+      git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
+        | sed "s|^template/stacks/$part/files/||"
+    done
+    printf '%s\n' Cargo.lock .github/actions/install-gitleaks/action.yml
+  } > "$d.expected" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.expected"
+  for f in target/debug/demo_app coverage.json lcov.info default_1.profraw; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
+  done
+}
+test_stack_omarchy_app_rejects_unusable_names_before_writes() {
+  # The crates it builds on, the omarchy command, and (from the rust pack) Rust's
+  # reserved names: each exits 2 before any file changes.
+  local d name before rc
+  for name in "gpui kit" GPUI-Omarchy omarchy async Std; do
+    d="$WORK/omarchy-app-names/$(printf '%s' "$name" | tr ' ' '_')/proj"
+    fresh_copy "$d" || return 1
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name "$name" --stack omarchy-app --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    case "$name" in
+      async|Std) assert_contains "$d.out" "reserved Rust package name" || return 1 ;;
+      *) assert_contains "$d.out" "is taken by a crate this pack builds on" || return 1 ;;
+    esac
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "'$name' changed files before its rejection" || return 1
+  done
+}
+test_stack_omarchy_app_install_script_installs_and_uninstalls() {
+  # install.sh puts exactly three files under PREFIX and removes exactly those;
+  # the stub stands in for the release binary, so nothing is compiled.
+  local d="$WORK/omarchy-app-install/demo-app" p="$WORK/omarchy-app-install/prefix" rc f entry
+  omarchy_app_project "$d" || return 1
+  mkdir -p "$d/target/release" "$WORK/omarchy-app-install/elsewhere/release" || return 1
+  printf '#!/bin/sh\necho demo_app\n' > "$d/target/release/demo_app"
+  chmod +x "$d/target/release/demo_app" || return 1
+  (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1 \
+    || fail "install exited $?: $(cat "$d.install")" || return 1
+  entry="$p/share/applications/demo_app.desktop"
+  [ -x "$p/bin/demo_app" ] || fail "the binary is not installed and executable" || return 1
+  assert_exists "$p/share/icons/hicolor/scalable/apps/demo_app.svg" || return 1
+  assert_contains "$entry" "Exec=\"$p/bin/demo_app\"" || return 1
+  assert_contains "$entry" "X-AppVersion=0.0.0" || return 1
+  (cd "$d" && PREFIX="$p" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$entry" \
+    || fail "--print-desktop-entry differs from the installed entry" || return 1
+  : > "$p/bin/keep-me" && : > "$p/share/applications/other.desktop" || return 1
+  (cd "$d" && PREFIX="$p" ./scripts/install.sh --uninstall) >/dev/null 2>&1 || fail "uninstall failed" || return 1
+  for f in bin/demo_app share/applications/demo_app.desktop share/icons/hicolor/scalable/apps/demo_app.svg; do
+    assert_absent "$p/$f" || return 1
+  done
+  assert_exists "$p/bin/keep-me" || return 1
+  assert_exists "$p/share/applications/other.desktop" || return 1
+  # The binary is found where CARGO_TARGET_DIR put it.
+  mv "$d/target/release/demo_app" "$WORK/omarchy-app-install/elsewhere/release/demo_app" || return 1
+  (cd "$d" && CARGO_TARGET_DIR="$WORK/omarchy-app-install/elsewhere" PREFIX="$p" ./scripts/install.sh --no-build) \
+    >"$d.install" 2>&1 || fail "install with CARGO_TARGET_DIR exited $?: $(cat "$d.install")" || return 1
+  assert_exists "$p/bin/demo_app" || return 1
+  (cd "$d" && PREFIX="$p" ./scripts/install.sh --no-build) >"$d.install" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.install" "is missing; build it first" || return 1
+  (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \
+    || fail "--help from scripts/ exited $?: $(cat "$d.help")" || return 1
+  assert_contains "$d.help" "--print-desktop-entry" || return 1
+  (cd "$d" && BINDIR='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >/dev/null 2>&1; rc=$?
+  assert_exit 2 "$rc"
+}
+test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci() {
+  local d="$WORK/omarchy-app-guard/demo-app" rc lit f
+  omarchy_app_project "$d" || return 1
+  # The starter passes; a missing validator is a notice locally...
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
+  assert_contains "$d.guard" "skipping the desktop entry check" || return 1
+  # ...and a failure where check.sh says CI.
+  (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "required in CI" || return 1
+  # Every fixed-colour spelling fails, and the guard says where (never the
+  # signature line, which names Hsla too)...
+  for lit in 'gpui_kit::rgb(0x12_34_56)' 'gpui_kit::rgba(0x1234_56ff)' 'gpui_kit::hsla(0.1, 0.2, 0.3, 1.0)' \
+    'gpui_kit::white()' 'gpui_kit::Hsla::black()' 'gpui_kit::red()' 'gpui_kit::opaque_grey(0.5, 1.0)' \
+    'gpui_kit::transparent_black()' 'gpui_kit::Rgba::try_from("#123456").unwrap()'; do
+    printf 'pub fn tint() -> gpui_kit::Hsla {\n    %s.into()\n}\n' "$lit" > "$d/src/tint.rs"
+    (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.guard" "colour literals" || return 1
+    assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+    assert_not_contains "$d.guard" "src/tint.rs:1:" || return 1
+  done
+  # ...and so does a gradient, whatever its colours: Omarchy surfaces are flat.
+  printf 'pub fn fill(stops: [gpui_kit::LinearColorStop; 2]) -> gpui_kit::Background {\n    gpui_kit::linear_gradient(90.0, stops[0], stops[1])\n}\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "Omarchy surfaces are flat" || return 1
+  # Colours from the theme's roles pass, and so does a helper named like a colour.
+  printf 'pub fn tint(cx: &gpui_kit::App) -> gpui_kit::Hsla {\n    redraw_hint(cx.omarchy().accent.opacity(0.5))\n}\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "theme-derived colours failed the guard: $(cat "$d.guard")" || return 1
+  rm -f "$d/src/tint.rs"
+  # The Omarchy guards ship only with Omarchy packs: no other pack, and not the
+  # shared Rust gates, refuses colours or gradients.
+  for f in "$REPO"/template/stacks/*/files/scripts/check.d/omarchy*.sh; do
+    [ -e "$f" ] || continue
+    case "$f" in
+      "$REPO"/template/stacks/omarchy-*) ;;
+      *) fail "an Omarchy guard outside an Omarchy pack: $f" || return 1 ;;
+    esac
+  done
+  # ...and a plain rust project's own guards, the Rust gates included, accept
+  # colour and gradient text (needs a Rust toolchain, as the rust pack's tests do).
+  if [ -z "$(rust_ready)" ]; then
+    bootstrap_rust "$d.rust" || return 1
+    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
+    (cd "$d.rust" && for g in scripts/check.d/*.sh; do rust_env bash "$g" || exit 1; done) >"$d.rust.guard" 2>&1 \
+      || fail "a plain rust project refused colour text: $(tail -20 "$d.rust.guard")" || return 1
+  fi
+  # The validator gets exactly the entry install.sh writes.
+  cat > "$d.stub/validate" <<STUB || return 1
+#!/bin/sh
+cp "\$1" "$d.validated"
+STUB
+  chmod +x "$d.stub/validate" || return 1
+  (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN="$d.stub/validate" bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "the guard failed with a passing validator: $(cat "$d.guard")" || return 1
+  (cd "$d" && PREFIX=/usr/local ./scripts/install.sh --print-desktop-entry) | cmp -s - "$d.validated" \
+    || fail "the validator did not get install.sh's entry"
+}
+omarchy_app_heavy_ready() {  # why the heavy omarchy-app build can't run here; empty = run it
+  if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
+    echo "builds GPUI (minutes): set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
+    return
+  fi
+  local why minor
+  why="$(rust_ready)"
+  [ -z "$why" ] || { echo "$why"; return; }
+  minor="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
+  [ "${minor:-0}" -ge 98 ] \
+    || { echo "the test toolchain is older than the pack's rust-version 1.98 (set SELFTEST_RUST_TOOLCHAIN=1.98.1)"; return; }
+  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed"; return; }
+  if [ "$(uname -s)" = Linux ] && ! pkg-config --exists fontconfig xkbcommon-x11 2>/dev/null; then
+    echo "GPUI's build libraries are missing (apt: pkg-config libfontconfig-dev libxkbcommon-x11-dev)"
+  fi
+}
+test_heavy_stack_omarchy_app_project_is_green() {
+  # The whole new-project gate, for real: bootstrap (its hook formats the code and
+  # locks GPUI's crates from crates.io), then the project's own check.sh,
+  # coverage.sh and ratchet. A long name, because rustfmt's layout depends on it.
+  local d="$WORK/heavy-omarchy-app/omarchy-disk-usage-explorer" why target name
+  why="$(omarchy_app_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  fresh_copy "$d" || return 1
+  (cd "$d" && HOME="$WORK/home" rust_env ./bootstrap --name "Omarchy Disk Usage Explorer" \
+    --stack omarchy-app --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "Wrote Cargo.lock" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  # CI caches one target directory per generated project (one name per pack), so
+  # coverage never mixes two projects' builds; locally it lives in the copy.
+  target="${SELFTEST_CARGO_TARGET_DIR:+$SELFTEST_CARGO_TARGET_DIR/omarchy_disk_usage_explorer}"
+  target="${target:-$d/target}"
+  (cd "$d" && CARGO_TARGET_DIR="$target" rust_env ./scripts/check.sh \
+    && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage.sh \
+    && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage_tiers.sh --ratchet HEAD) \
+    >"$d.gate.out" 2>&1 || fail "the new project's gate failed: $(tail -30 "$d.gate.out")" || return 1
+  if command -v desktop-file-validate >/dev/null 2>&1; then
+    # The guard ran the real validator above; prove it would catch a bad entry.
+    perl -ni -e 'print unless /^Type=/' "$d/packaging/app.desktop.in"
+    if (cd "$d" && CHECK_CI=1 bash scripts/check.d/omarchy.sh) >"$d.guard.out" 2>&1; then
+      fail "a desktop entry without Type= passed the guard" || return 1
+    fi
+  fi
+  # A project named like one of the starter's modules or imports still compiles,
+  # tests included: the code names its own crate ::name::.
+  for name in app cli model; do
+    fresh_copy "$d.$name" || return 1
+    (cd "$d.$name" && HOME="$WORK/home" rust_env ./bootstrap --name "$name" --stack omarchy-app --yes </dev/null \
+      && CARGO_TARGET_DIR="$target" rust_env cargo clippy --locked --all-targets --all-features -- -D warnings) \
+      >"$d.$name.out" 2>&1 || fail "a project named $name does not compile: $(tail -20 "$d.$name.out")" || return 1
+  done
+}
+
+# --- tests: partial packs and the omarchy-tui stack pack (plan 009) ----------
+test_stack_pack_includes_copy_partial_packs_first() {
+  # A pack's `includes` names partial packs (template/stacks/_name/files/), copied
+  # before the pack's own files, so a pack can override a shared file.
+  local d="$WORK/stack-includes/demo" p
+  fresh_copy "$d" || return 1
+  p="$d/template/stacks"
+  fixture_pack "$p/fixture" || return 1
+  mkdir -p "$p/_fixture-shared/files/scripts" || return 1
+  printf 'shared {{PACKAGE_NAME}}\n' > "$p/_fixture-shared/files/scripts/shared.txt"
+  printf 'from the partial pack\n' > "$p/_fixture-shared/files/override.txt"
+  printf 'from the pack\n' > "$p/fixture/files/override.txt"
+  printf 'shared, not executable\n' > "$p/_fixture-shared/files/run.sh"
+  printf '#!/bin/sh\necho pack\n' > "$p/fixture/files/run.sh" && chmod +x "$p/fixture/files/run.sh" || return 1
+  printf '# shared files\n_fixture-shared\n' > "$p/fixture/includes"
+  run_bootstrap "$d" --name demo --stack fixture --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
+  assert_contains "$d/scripts/shared.txt" "shared demo" || return 1
+  assert_contains "$d/override.txt" "from the pack" || return 1
+  [ -x "$d/run.sh" ] || fail "the pack's executable run.sh kept the partial pack's mode" || return 1
+  assert_absent "$d/template"
+}
+test_stack_pack_includes_are_checked_before_writes() {
+  # An include that isn't a partial pack (_name) or doesn't exist fails the
+  # bootstrap with exit 2 before any file changes.
+  local d inc before rc
+  for inc in fixture-shared _missing '_bad/name' _; do
+    d="$WORK/stack-includes-bad/$(printf '%s' "$inc" | tr '/' '-')/demo"
+    fresh_copy "$d" || return 1
+    fixture_pack "$d/template/stacks/fixture" || return 1
+    mkdir -p "$d/template/stacks/fixture-shared/files" || return 1
+    printf '%s\n' "$inc" > "$d/template/stacks/fixture/includes"
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name demo --stack fixture --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "include '$inc' changed files before its rejection" || return 1
+  done
+}
+test_partial_packs_are_not_offered_as_stacks() {
+  # _rust-gates only exists to be included: --help doesn't list it and --stack
+  # refuses it.
+  local d="$WORK/partial-not-a-stack/proj" rc
+  fresh_copy "$d" || return 1
+  (cd "$d" && ./bootstrap --help >"$d.out" 2>&1) || fail "--help exited $?" || return 1
+  assert_not_contains "$d.out" "_rust-gates" || return 1
+  run_bootstrap "$d" --name proj --stack _rust-gates --yes; rc=$?
+  assert_exit 2 "$rc"
+}
+test_rust_packs_share_one_copy_of_their_gates() {
+  # Three Rust packs include _rust-gates (the rule of three): none carries its own
+  # copy of a gate file, and each project still gets them.
+  local pack f d="$WORK/rust-gates/demo"
+  for pack in rust omarchy-app omarchy-tui; do
+    grep -qxF _rust-gates "$REPO/template/stacks/$pack/includes" \
+      || fail "$pack does not include _rust-gates" || return 1
+    for f in rust-toolchain.toml rustfmt.toml scripts/coverage.sh scripts/coverage_tiers.sh scripts/check.d/rust.sh; do
+      assert_exists "$REPO/template/stacks/_rust-gates/files/$f" || return 1
+      assert_absent "$REPO/template/stacks/$pack/files/$f" || return 1
+    done
+  done
+  omarchy_tui_project "$d" || return 1
+  for f in rust-toolchain.toml rustfmt.toml scripts/coverage.sh scripts/coverage_tiers.sh scripts/check.d/rust.sh; do
+    assert_exists "$d/$f" || return 1
+  done
+  [ -x "$d/scripts/coverage_tiers.sh" ] || fail "an included script lost its exec bit"
+}
+test_omarchy_packs_share_one_install_script() {
+  # Two copies (rule of three: not yet shared); they must not drift apart.
+  cmp -s "$REPO/template/stacks/omarchy-app/files/scripts/install.sh" \
+    "$REPO/template/stacks/omarchy-tui/files/scripts/install.sh" \
+    || fail "omarchy-app's and omarchy-tui's scripts/install.sh differ"
+}
+omarchy_tui_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-tui
+  # cargo is a stub that fails and logs its calls to "$1.cargo-calls".
+  mkdir -p "$1.stub" || return 1
+  cat > "$1.stub/cargo" <<STUB || return 1
+#!/bin/sh
+echo "cargo \$*" >> "$1.cargo-calls"
+exit 101
+STUB
+  chmod +x "$1.stub/cargo" || return 1
+  fresh_copy "$1" || return 1
+  PATH="$1.stub:$(printenv PATH)" run_bootstrap "$1" --name "Demo App" --stack omarchy-tui --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+test_stack_omarchy_tui_bootstrap_installs_the_pack() {
+  local d="$WORK/omarchy-tui/demo-app" f s
+  omarchy_tui_project "$d" || return 1
+  assert_contains "$d/Cargo.toml" 'name = "demo_app"' || return 1
+  assert_contains "$d/Cargo.toml" 'ratatui = "0.30.2"' || return 1
+  assert_contains "$d/packaging/app.desktop.in" 'Exec=xdg-terminal-exec --app-id=TUI.float -e "@BINDIR@/demo_app"' || return 1
+  assert_contains "$d/DESIGN.md" "16 named ANSI colours" || return 1
+  assert_exists "$d/docs/guides/omarchy.md" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`cargo test --locked\`" || return 1
+  assert_contains "$d/.bootstrapped" "with the omarchy-tui stack pack" || return 1
+  [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --quiet')" ] \
+    || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
+  for s in '{{PACKAGE_NAME}}' '{{TEST_CMD' TEMPLATE.md template/stacks template-selftest; do
+    assert_tree_lacks "$d" "$s" || return 1
+  done
+  : > "$d/Cargo.lock"
+  (cd "$d" && git add -A) || fail "git add failed" || return 1
+  { for part in _rust-gates omarchy-tui; do
+      git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
+        | sed "s|^template/stacks/$part/files/||"
+    done
+    printf '%s\n' Cargo.lock .github/actions/install-gitleaks/action.yml
+  } > "$d.expected" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.expected"
+  for f in target/debug/demo_app coverage.json default_1.profraw; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
+  done
+}
+test_stack_omarchy_tui_rejects_unusable_names_before_writes() {
+  local d name before rc
+  for name in Ratatui crossterm omarchy async; do
+    d="$WORK/omarchy-tui-names/$name/proj"
+    fresh_copy "$d" || return 1
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name "$name" --stack omarchy-tui --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    case "$name" in
+      async) assert_contains "$d.out" "reserved Rust package name" || return 1 ;;
+      *) assert_contains "$d.out" "is taken by a crate this pack builds on" || return 1 ;;
+    esac
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "'$name' changed files before its rejection" || return 1
+  done
+}
+test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
+  local d="$WORK/omarchy-tui-guard/demo-app" rc lit
+  omarchy_tui_project "$d" || return 1
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
+  for lit in 'Color::Rgb(0x12, 0x34, 0x56)' 'Color::Indexed(208)' 'Rgb(0x12, 0x34, 0x56)' \
+    'Color::from_u32(0x0012_3456)' 'Color::from([0x12, 0x34, 0x56])' '"#123456".parse::<Color>().unwrap()' \
+    '"#123456".parse::<ratatui::style::Color>().unwrap()' '"#123456".parse::<::ratatui::style::Color>().unwrap()'; do
+    printf 'use ratatui::style::Color;\npub const X: Color = %s;\n' "$lit" > "$d/src/tint.rs"
+    (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+  done
+  # The 16 named colours pass, and so do a type whose name ends in Color and a
+  # helper whose name ends in parse.
+  printf 'use ratatui::style::{Color, Style};\npub const X: Style = Style::new().fg(Color::Blue).bg(Color::Reset);\npub fn accent(t: &Theme) -> ThemeColor { ThemeColor::from(t.accent) }\npub fn load(s: &str) -> Color { reparse::<Color>(s) }\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "named colours failed the guard: $(cat "$d.guard")" || return 1
+  rm -f "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "required in CI"
+}
+omarchy_tui_heavy_ready() {  # why the heavy omarchy-tui build can't run here; empty = run it
+  if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
+    echo "builds a real project: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
+    return
+  fi
+  local why minor
+  why="$(rust_ready)"
+  [ -z "$why" ] || { echo "$why"; return; }
+  minor="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
+  [ "${minor:-0}" -ge 98 ] \
+    || { echo "the test toolchain is older than the pack's rust-version 1.98 (set SELFTEST_RUST_TOOLCHAIN=1.98.1)"; return; }
+  rust_env cargo llvm-cov --version >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || echo "python3 not installed (it drives the pseudo-terminal)"
+}
+test_heavy_stack_omarchy_tui_project_is_green() {
+  # The whole new-project gate for real, then the real binary in a real
+  # pseudo-terminal: it enters the alternate screen, `q` quits with exit 0, and
+  # it restores the terminal.
+  local d="$WORK/heavy-omarchy-tui/omarchy-disk-usage-explorer" why target name
+  why="$(omarchy_tui_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  fresh_copy "$d" || return 1
+  (cd "$d" && HOME="$WORK/home" rust_env ./bootstrap --name "Omarchy Disk Usage Explorer" \
+    --stack omarchy-tui --yes </dev/null >"$d.out" 2>&1) || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "Wrote Cargo.lock" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  target="${SELFTEST_CARGO_TARGET_DIR:+$SELFTEST_CARGO_TARGET_DIR/omarchy-tui}"
+  target="${target:-$d/target}"
+  (cd "$d" && CARGO_TARGET_DIR="$target" rust_env ./scripts/check.sh \
+    && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage.sh \
+    && CARGO_TARGET_DIR="$target" rust_env ./scripts/coverage_tiers.sh --ratchet HEAD \
+    && CARGO_TARGET_DIR="$target" rust_env cargo build --locked -q) \
+    >"$d.gate.out" 2>&1 || fail "the new project's gate failed: $(tail -30 "$d.gate.out")" || return 1
+  python3 - "$target/debug/omarchy_disk_usage_explorer" >"$d.pty.out" 2>&1 <<'PY' || fail "the real terminal run failed: $(tail -5 "$d.pty.out")" || return 1
+import fcntl, os, pty, select, struct, sys, termios, time
+pid, fd = pty.fork()
+if pid == 0:
+    # Size the terminal before the app asks, so its first frame is 24x80.
+    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    os.execv(sys.argv[1], [sys.argv[1]])
+out, sent, deadline = b"", False, time.time() + 20
+while time.time() < deadline:
+    ready, _, _ = select.select([fd], [], [], 0.2)
+    if ready:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:  # EIO once the app exits (Linux)
+            break
+        if not data:
+            break
+        out += data
+    if not sent and b"\x1b[?1049h" in out and b"quit" in out:
+        os.write(fd, b"  q")  # two presses, then quit
+        sent = True
+else:
+    os.kill(pid, 9)
+    sys.exit("timed out: " + repr(out[-200:]))
+_, status = os.waitpid(pid, 0)
+assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, status
+assert b"\x1b[?1049l" in out, "the terminal was not restored"
+print("entered and left the alternate screen; exit 0")
+PY
+  # A project named like one of the starter's modules or imports still compiles,
+  # tests included: the code names its own crate ::name::.
+  for name in app cli event io model view; do
+    fresh_copy "$d.$name" || return 1
+    (cd "$d.$name" && HOME="$WORK/home" rust_env ./bootstrap --name "$name" --stack omarchy-tui --yes </dev/null \
+      && CARGO_TARGET_DIR="$target" rust_env cargo clippy --locked --all-targets --all-features -- -D warnings) \
+      >"$d.$name.out" 2>&1 || fail "a project named $name does not compile: $(tail -20 "$d.$name.out")" || return 1
+  done
+}
+
+# --- tests: omarchy-plugin stack pack (plan 010) -----------------------------
+omarchy_plugin_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-plugin
+  fresh_copy "$1" || return 1
+  run_bootstrap "$1" --name "Demo App" --stack omarchy-plugin --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+stub_omarchy_kit() {  # $1 = project dir: replace scripts/omarchy-kit with a local stand-in
+  # The real one clones Omarchy (network); this kit's validator and scanner log
+  # what they were given and pass, so the guard's own checks can be tested.
+  mkdir -p "$1.kit/bin" "$1.kit/test/shell.d" || return 1
+  cat > "$1.kit/bin/omarchy-plugin-validate" <<STUB || return 1
+#!/bin/sh
+ls -A "\$1" > "$1.validated"
+STUB
+  cat > "$1.kit/test/shell.d/qml-text-format-scan.py" <<STUB || return 1
+import os, sys
+top = os.path.join(sys.argv[1], "shell")
+open("$1.scanned", "w").write("\n".join(sorted(os.path.relpath(os.path.join(r, f), top) for r, _, fs in os.walk(top) for f in fs)))
+STUB
+  printf '#!/bin/sh\necho "%s"\n' "$1.kit" > "$1/scripts/omarchy-kit"
+}
+test_stack_omarchy_plugin_bootstrap_installs_the_pack() {
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local d="$WORK/omarchy-plugin/demo-app" f s
+  omarchy_plugin_project "$d" || return 1
+  assert_contains "$d/manifest.json" '"id": "demo_app"' || return 1
+  assert_contains "$d/manifest.json" '"name": "Demo App"' || return 1
+  [ "$(jq -r .version "$d/manifest.json")" = "$(cat "$d/VERSION")" ] \
+    || fail "manifest.json's version differs from VERSION" || return 1
+  jq --indent 2 . "$d/manifest.json" | cmp -s - "$d/manifest.json" \
+    || fail "manifest.json is not in the 2-space form gstack writes" || return 1
+  assert_contains "$d/Widget.qml" 'moduleName: "demo_app"' || return 1
+  assert_contains "$d/tests/qml/tst_widget.qml" 'compare(item.moduleName, "demo_app")' || return 1
+  { [ -x "$d/tests/run" ] && [ -x "$d/scripts/omarchy-kit" ] && [ -x "$d/scripts/dev-link.sh" ]; } \
+    || fail "the pack's scripts lost their exec bit" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`./tests/run\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`./tests/run\`" || return 1
+  # Setup only fetches Omarchy's pinned tools; loading the plugin into the desktop
+  # is the explicit dev step.
+  assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`./scripts/omarchy-kit\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Dev / run locally: \`./scripts/dev-link.sh\`" || return 1
+  assert_contains "$d/.bootstrapped" "with the omarchy-plugin stack pack" || return 1
+  # This pack writes no lockfile, so the closing note must not order one committed.
+  assert_contains "$d.out" "commit the lockfile if the pack wrote one" || return 1
+  for s in '{{PACKAGE_NAME}}' '{{TEST_CMD' TEMPLATE.md template/stacks template-selftest; do
+    assert_tree_lacks "$d" "$s" || return 1
+  done
+  # The gstack pin is committed; the rest of .gstack/ stays local.
+  mkdir -p "$d/.gstack" && : > "$d/.gstack/state"
+  (cd "$d" && git add -A) || fail "git add failed" || return 1
+  git -C "$d" ls-files --error-unmatch -- .gstack/package-json-path >/dev/null 2>&1 \
+    || fail "git would not commit .gstack/package-json-path" || return 1
+  git -C "$d" check-ignore -q -- .gstack/state || fail "git would commit other .gstack/ state" || return 1
+  git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/omarchy-plugin/files \
+    | sed 's|^template/stacks/omarchy-plugin/files/||' > "$d.expected" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.expected"
+}
+test_stack_omarchy_plugin_rejects_the_omarchy_name() {
+  local d="$WORK/omarchy-plugin-name/proj" before rc
+  fresh_copy "$d" || return 1
+  before="$(tree_fingerprint "$d")"
+  run_bootstrap "$d" --name Omarchy --stack omarchy-plugin --yes; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.out" "reserved for Omarchy's own plugins" || return 1
+  [ "$before" = "$(tree_fingerprint "$d")" ] || fail "the rejection changed files"
+}
+test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
+  # Omarchy's validator sees exactly what git would commit (nothing local), and
+  # VERSION, manifest.json's version and its 2-space form are held together.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
+  local d="$WORK/omarchy-plugin-guard/demo-app" rc
+  omarchy_plugin_project "$d" || return 1
+  stub_omarchy_kit "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  mkdir -p "$d/.context" && : > "$d/.context/scratch"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
+  assert_contains "$d.validated" "manifest.json" || return 1
+  assert_not_contains "$d.validated" ".context" || return 1
+  assert_contains "$d.scanned" "Widget.qml" || return 1
+  assert_not_contains "$d.scanned" "tst_widget.qml" || return 1
+  # Same-named components in two folders are both scanned, and a link users
+  # would get reaches Omarchy's validator, which refuses every symlink.
+  mkdir -p "$d/bar" "$d/panel" || return 1
+  : > "$d/bar/Row.qml" && : > "$d/panel/Row.qml" && ln -s missing "$d/dangling" || return 1
+  (cd "$d" && git add -A && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "the guard failed: $(cat "$d.guard")" || return 1
+  assert_contains "$d.scanned" "bar/Row.qml" || return 1
+  assert_contains "$d.scanned" "panel/Row.qml" || return 1
+  assert_contains "$d.validated" "dangling" || return 1
+  (cd "$d" && git rm -rq --cached bar panel dangling && rm -rf bar panel dangling) || return 1
+  # gstack writes a four-part VERSION to manifest.json as its first three parts.
+  printf '0.0.0.1\n' > "$d/VERSION"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "a four-part VERSION failed the guard: $(cat "$d.guard")" || return 1
+  printf '0.0.1\n' > "$d/VERSION"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "manifest.json has version 0.0.0 but VERSION says 0.0.1" || return 1
+  (cd "$d" && git checkout -q -- VERSION && jq -c . manifest.json > m.tmp && mv m.tmp manifest.json) || return 1
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "not in 2-space JSON form" || return 1
+  # Omarchy's validator failing fails the guard, with its reason.
+  (cd "$d" && git checkout -q -- manifest.json) || return 1
+  printf '#!/bin/sh\necho "omarchy-plugin-validate: rejected" >&2\nexit 1\n' > "$d.kit/bin/omarchy-plugin-validate"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "omarchy-plugin-validate: rejected"
+}
+test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  local d="$WORK/omarchy-plugin-link/demo-app" home="$WORK/omarchy-plugin-link/home" rc
+  omarchy_plugin_project "$d" || return 1
+  mkdir -p "$d.bin" "$home" || return 1
+  for tool in omarchy omarchy-shell; do
+    # Omarchy lists the plugin only on the third query, like a rescan that
+    # finishes in the background.
+    cat > "$d.bin/$tool" <<STUB || return 1
+#!/bin/sh
+echo "$tool \$*" >> "$d.calls"
+if [ "\$*" = "plugin list --json" ]; then
+  n=\$((\$(cat "$d.lists" 2>/dev/null || echo 0) + 1)); echo "\$n" > "$d.lists"
+  if [ "\$n" -ge 3 ]; then echo '[{"id": "demo_app"}]'; else echo '[]'; fi
+fi
+STUB
+    chmod +x "$d.bin/$tool" || return 1
+  done
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh) >"$d.link" 2>&1 \
+    || fail "dev-link exited $?: $(cat "$d.link")" || return 1
+  [ -L "$home/.config/omarchy/plugins/demo_app" ] || fail "no link in the plugin folder" || return 1
+  [ "$home/.config/omarchy/plugins/demo_app" -ef "$d" ] || fail "the link points elsewhere" || return 1
+  # dev-link waits until Omarchy lists the plugin, and only then enables it.
+  [ "$(cat "$d.calls")" = "$(printf '%s\n' 'omarchy-shell shell rescanPlugins' 'omarchy plugin list --json' \
+      'omarchy plugin list --json' 'omarchy plugin list --json' 'omarchy plugin enable demo_app --section right')" ] \
+    || fail "dev-link ran: $(cat "$d.calls")" || return 1
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >/dev/null 2>&1 \
+    || fail "--unlink failed" || return 1
+  assert_contains "$d.calls" "omarchy plugin remove demo_app --yes" || return 1
+  rm -f "$home/.config/omarchy/plugins/demo_app"
+  mkdir -p "$home/.config/omarchy/plugins/demo_app" || return 1
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh) >"$d.link" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.link" "exists and is not a link" || return 1
+  # --unlink never removes a real plugin folder: Omarchy's remove would delete it.
+  : > "$d.calls"
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh --unlink) >"$d.link" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.link" "is not a link to this checkout" || return 1
+  [ ! -s "$d.calls" ] || fail "--unlink called Omarchy: $(cat "$d.calls")" || return 1
+  # A plugin Omarchy never lists is an error, never a blind enable.
+  rmdir "$home/.config/omarchy/plugins/demo_app" && printf '%s\n' -1000 > "$d.lists" || return 1
+  (cd "$d" && HOME="$home" PATH="$d.bin:$(printenv PATH)" ./scripts/dev-link.sh) >"$d.link" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.link" "doesn't list demo_app" || return 1
+  assert_not_contains "$d.calls" "plugin enable"
+}
+test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
+  # One pin drives every host check; a branch name would drift under CI.
+  local d="$WORK/omarchy-plugin-kit/demo-app" rc
+  omarchy_plugin_project "$d" || return 1
+  printf 'quattro\n' > "$d/.omarchy-ref"
+  (cd "$d" && OMARCHY_KIT_DIR="$WORK/omarchy-plugin-kit/cache" ./scripts/omarchy-kit) >"$d.kit" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.kit" "must be a full commit SHA" || return 1
+  assert_absent "$WORK/omarchy-plugin-kit/cache"
+}
+omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empty = run it
+  if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
+    echo "needs Qt 6 and the network: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
+    return
+  fi
+  local tool
+  for tool in node jq python3 git; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "$tool not installed"; return; }
+  done
+  [ -x "${QML_TEST_RUNNER:-/usr/lib/qt6/bin/qmltestrunner}" ] \
+    || echo "Qt 6's qmltestrunner not found (apt: qt6-declarative-dev-tools; or set QML_TEST_RUNNER)"
+}
+test_heavy_stack_omarchy_plugin_project_is_green() {
+  # The new project's own gate, for real: Omarchy's validator and Text-format
+  # scanner at .omarchy-ref (fetched), then Logic.js at 100% and the QML tests.
+  local d="$WORK/heavy-omarchy-plugin/demo-app" why kit
+  why="$(omarchy_plugin_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  omarchy_plugin_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  kit="${OMARCHY_KIT_DIR:-$WORK/omarchy-kit}"
+  (cd "$d" && OMARCHY_KIT_DIR="$kit" ./scripts/check.sh && ./tests/run) >"$d.gate.out" 2>&1 \
+    || fail "the new project's gate failed: $(tail -30 "$d.gate.out")" || return 1
+  assert_contains "$d.gate.out" "Totals: " || return 1
+  # Omarchy's own scanner rejects a dynamic Text without textFormat.
+  perl -0pi -e 's/  WidgetButton \{/  Text { text: root.count }\n  WidgetButton {/' "$d/Widget.qml"
+  (cd "$d" && git add -A) || return 1
+  if (cd "$d" && OMARCHY_KIT_DIR="$kit" bash scripts/check.d/omarchy-plugin.sh) >"$d.guard.out" 2>&1; then
+    fail "a Text without textFormat passed the guard" || return 1
+  fi
+  assert_contains "$d.guard.out" "without textFormat"
+}
+
+# --- tests: foldkit stack pack (plan 011) ---------------------------------------
+foldkit_heavy_ready() {  # why the heavy foldkit tests can't run here; empty = run them
+  if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
+    echo "installs a real Foldkit project from the network: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
+    return
+  fi
+  local tool
+  for tool in node pnpm git; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "$tool not installed"; return; }
+  done
+}
+foldkit_files() {  # $1 = dir: the pack's files/, unbootstrapped, with the tokens filled
+  mkdir -p "$1" || return 1
+  (cd "$REPO/template/stacks/foldkit/files" && tar -cf - .) | tar -xf - -C "$1" || return 1
+  printf '0.0.0\n' > "$1/VERSION"
+  (cd "$1" && find . -type f -exec perl -pi -e 's/\{\{PROJECT_NAME\}\}/Demo App/g; s/\{\{PACKAGE_NAME\}\}/demo_app/g' {} +)
+}
+fk_node() {  # $1 = dir, rest = node args, run there -> "$1.node.out"
+  local dir="$1"; shift
+  (cd "$dir" && node "$@" >"$dir.node.out" 2>&1)
+}
+fk_json() {  # $1 = JSON file, $2 = a JS statement over `c` (the parsed file); rewrites it
+  node -e 'const fs = require("fs"); const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); eval(process.argv[2]); fs.writeFileSync(process.argv[1], JSON.stringify(c, null, 2) + "\n")' "$1" "$2"
+}
+foldkit_project() {  # $1 = dir, $2 = project name: a fresh copy bootstrapped with the foldkit pack
+  fresh_copy "$1" || return 1
+  (cd "$1" && HOME="$WORK/home" stack_env ./bootstrap --name "$2" --stack foldkit --yes </dev/null >"$1.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+test_stack_foldkit_rejects_unusable_names_before_mutation() {
+  # A project named like a direct dependency breaks its own install or type check
+  # (named `effect`, the Effect language service reports a duplicate package on
+  # every file), and past 50 characters Oxfmt wraps src/build-info.ts.
+  local d name want before rc n=0
+  while IFS='|' read -r name want; do
+    n=$((n + 1))
+    d="$WORK/stack-foldkit-names-$n/proj"
+    fresh_copy "$d" || return 1
+    before="$(tree_fingerprint "$d")"
+    run_bootstrap "$d" --name "$name" --stack foldkit --yes; rc=$?
+    assert_exit 2 "$rc" || return 1
+    assert_contains "$d.out" "$want" || return 1
+    [ "$before" = "$(tree_fingerprint "$d")" ] || fail "rejecting '$name' changed files" || return 1
+  done <<'NAMES'
+Effect|taken by a package the foldkit pack depends on
+foldkit|taken by a package the foldkit pack depends on
+VITE|taken by a package the foldkit pack depends on
+vitest|taken by a package the foldkit pack depends on
+TypeScript|taken by a package the foldkit pack depends on
+oxlint|taken by a package the foldkit pack depends on
+oxfmt|taken by a package the foldkit pack depends on
+playwright|taken by a package the foldkit pack depends on
+node_modules|reserved by Node.js
+Acme Example Inventory Reconciliation Service Ok123|too long for the foldkit stack pack
+NAMES
+}
+test_stack_foldkit_coverage_tiers_fail_closed() {
+  # scripts/coverage-tiers.mjs is the only coverage enforcement (Vitest passes a
+  # tier glob that matches nothing): every schema rule, every counter check and
+  # every floor must fail closed, and --report prints only the snapshot table.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-tiers/demo" rc
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --validate; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  assert_contains "$d.node.out" "coverage-tiers: ok" || return 1
+  cat > "$d/probe.mjs" <<'PROBE'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import * as tiers from './scripts/coverage-tiers.mjs'
+
+const root = realpathSync('.')
+const config = JSON.parse(readFileSync('coverage-tiers.json', 'utf8'))
+const members = Object.values(config.tiers).flatMap(tier => tier.include)
+const metric = (total, covered = total) => ({ total, covered, skipped: 0, pct: 0 })
+const entry = (lines = 10, lineHits = lines, branches = 2, branchHits = branches, fns = 2, fnHits = fns) =>
+  ({ lines: metric(lines, lineHits), statements: metric(lines, lineHits), branches: metric(branches, branchHits), functions: metric(fns, fnHits) })
+const summary = (overrides = {}, extra = {}) => {
+  const files = {}
+  for (const path of members) {
+    if (overrides[path] !== null) files[join(root, path)] = overrides[path] ?? entry()
+  }
+  for (const [path, value] of Object.entries(extra)) files[path.startsWith('/') ? path : join(root, path)] = value
+  const total = {}
+  for (const name of ['lines', 'statements', 'branches', 'functions']) {
+    const sum = field => Object.values(files).reduce((acc, file) => acc + file[name][field], 0)
+    total[name] = metric(sum('total'), sum('covered'))
+  }
+  return { total, ...files }
+}
+const cli = (...args) => spawnSync(process.execPath, ['scripts/coverage-tiers.mjs', ...args], { encoding: 'utf8' })
+const run = (data, expected, text = '', args = ['--check']) => {
+  mkdirSync('coverage', { recursive: true })
+  writeFileSync('coverage/coverage-summary.json', typeof data === 'string' ? data : JSON.stringify(data))
+  const result = cli(...args)
+  const out = result.stdout + result.stderr
+  assert.equal(result.status, expected, out)
+  assert.ok(out.includes(text), `expected ${JSON.stringify(text)} in: ${out}`)
+  assert.ok(!/^\s+at /m.test(out), `stack trace in: ${out}`)
+  return result
+}
+
+// Passing, then each floor independently: global lines and branches (90%, inclusive),
+// and each tier's lines, branches and functions.
+run(summary(), 0, 'coverage-tiers: ok')
+const atFloor = summary({}, { 'src/extra.ts': entry(40, 30, 8, 6, 2, 0) })
+run(atFloor, 0, 'coverage-tiers: ok')
+run(summary({}, { 'src/extra.ts': entry(40, 29, 8, 8) }), 1, 'global: lines 89.00% is below its minimum 90% (below the floor: src/extra.ts 72.50%)')
+run(summary({}, { 'src/extra.ts': entry(40, 40, 8, 5) }), 1, 'global: branches 85.00% is below its minimum 90%')
+const big = { 'src/extra.ts': entry(1000, 1000, 100, 100) }
+run(summary({ 'src/main.ts': entry(10, 9) }, big), 1, 'pure_logic: lines 95.00% is below its minimum 100%')
+run(summary({ 'src/api/status.ts': entry(10, 10, 2, 1) }, big), 1, 'api_surface: branches 75.00% is below its minimum 100%')
+run(summary({ 'src/view.ts': entry(10, 10, 2, 2, 10, 5) }, big), 1, 'main_components: functions 58.33% is below its minimum 90%')
+run(summary({ 'src/view.ts': entry(10, 10, 0, 0, 1, 1), 'src/components/status.ts': entry(10, 10, 0, 0, 1, 1) }), 0, 'coverage-tiers: ok')
+// Membership: a member missing from the report, or with nothing measurable, fails.
+run(summary({ 'src/command.ts': null }), 1, 'api_surface: src/command.ts is not in the coverage report')
+run(summary({ 'src/view.ts': entry(0, 0, 0, 0, 0, 0) }), 1, 'main_components: src/view.ts has no measurable lines')
+// Malformed reports fail, for --check and --report alike.
+const mutations = [
+  data => { delete data[join(root, 'src/main.ts')].lines },
+  data => { data[join(root, 'src/main.ts')].lines.covered = -1 },
+  data => { data[join(root, 'src/main.ts')].branches.total = 1.5 },
+  data => { data[join(root, 'src/main.ts')].functions.covered = 3 },
+  data => { data[join(root, 'src/main.ts')] = 'x' },
+  data => { data[join(root, 'src/main.ts')].lines.total = '10' },
+  data => { delete data.total },
+  data => { data.total.lines.covered -= 1 },
+]
+for (const mutate of mutations) {
+  const data = summary()
+  mutate(data)
+  run(data, 1, 'coverage-tiers: FAIL')
+  run(data, 1, 'coverage-tiers: FAIL', ['--report'])
+}
+run((() => { const data = summary(); data.total.branches.total += 1; data.total.branches.covered += 1; return data })(), 1, 'global: counters disagree with per-file sums')
+run(summary({}, { '/elsewhere/src/x.ts': entry() }), 1, 'coverage summary names a file outside the project: /elsewhere/src/x.ts')
+run({ total: summary().total }, 1, 'coverage summary has no per-file entries')
+run(summary(Object.fromEntries(members.map(path => [path, entry(0, 0, 0, 0, 0, 0)]))), 1, 'global: no measurable lines')
+run([], 1, 'coverage summary must be an object')
+run('{', 1, 'coverage-tiers: FAIL cannot load valid configuration/report')
+rmSync('coverage', { recursive: true, force: true })
+let result = cli('--check')
+assert.ok(result.status === 1 && result.stderr.includes('cannot load valid configuration/report'), result.stderr)
+
+// --report: the table alone, with n/a for an explicitly empty tier and for a
+// metric with nothing to measure. --input reads another file.
+const original = readFileSync('coverage-tiers.json', 'utf8')
+try {
+  const withEmpty = JSON.parse(original)
+  withEmpty.tiers.later = { title: 'Later', minimum: 0, target: 100, include: [], allow_empty: true }
+  writeFileSync('coverage-tiers.json', JSON.stringify(withEmpty))
+  const branchless = summary({ 'src/view.ts': entry(10, 10, 0, 0), 'src/components/status.ts': entry(10, 10, 0, 0) }, { 'src/extra.ts': entry(40, 30, 8, 6, 2, 0) })
+  result = run(branchless, 0, '', ['--report'])
+  assert.equal(result.stdout, [
+    '| Tier | Lines | Branches | Functions | Minimum | Target |',
+    '|---|---|---|---|---|---|',
+    '| Global (lines and branches) | 90.00% | 87.50% | 85.71% | 90% | 100% |',
+    '| Pure logic & utilities | 100.00% | 100.00% | 100.00% | 100% | 100% |',
+    '| API / contract surface | 100.00% | 100.00% | 100.00% | 100% | 100% |',
+    '| Main UI components | 100.00% | n/a (nothing to measure) | 100.00% | 90% | 90% |',
+    '| Later | n/a (explicitly empty) | n/a (explicitly empty) | n/a (explicitly empty) | 0% | 100% |',
+    '',
+  ].join('\n'))
+} finally {
+  writeFileSync('coverage-tiers.json', original)
+}
+writeFileSync('alt.json', JSON.stringify(summary()))
+run('{}', 0, 'coverage-tiers: ok', ['--check', '--input', 'alt.json'])
+run('{}', 0, 'coverage-tiers: ok', ['--check', '--input=alt.json'])
+
+// Usage errors exit 2.
+for (const args of [[], ['--check', '--report'], ['--bogus'], ['--ratchet', ''], ['--ratchet'], ['--input'], ['--check=1']]) {
+  result = cli(...args)
+  assert.equal(result.status, 2, `${JSON.stringify(args)}: ${result.stdout}${result.stderr}`)
+}
+
+// Config validation: every rule names what it rejects.
+const rejected = (text, mutate) => {
+  const bad = structuredClone(config)
+  mutate(bad)
+  const errors = tiers.validate(bad)
+  assert.ok(errors.some(error => error.includes(text)), `${text}: ${JSON.stringify(errors)}`)
+}
+assert.deepEqual(tiers.validate(config), [])
+assert.ok(tiers.validate(null).some(error => error.includes('must be an object')))
+rejected('unknown top-level keys: ["tier"]', c => { c.tier = {} })
+rejected('tiers must be a nonempty object', c => { c.tiers = {} })
+rejected('tiers must be a nonempty object', c => { c.tiers = [] })
+rejected('global is reserved', c => { c.tiers.global = { title: 'G', minimum: 0, target: 0, include: [], allow_empty: true } })
+rejected('later: tier must be an object', c => { c.tiers.later = [] })
+rejected('unknown tier keys: ["minimun"]', c => { c.tiers.api_surface.minimun = 100 })
+for (const value of [true, Number.NaN, Number.POSITIVE_INFINITY, '100', null]) {
+  rejected('minimum and target must be finite numbers', c => { c.tiers.api_surface.minimum = value })
+}
+rejected('need 0 <= minimum <= target <= 100', c => { c.tiers.api_surface.target = 99 })
+rejected('need 0 <= minimum <= target <= 100', c => { c.tiers.pure_logic.target = 101 })
+rejected('need 0 <= minimum <= target <= 100', c => { c.tiers.main_components.minimum = -1 })
+rejected('title must be a nonempty string', c => { c.tiers.api_surface.title = '  ' })
+rejected('title must be a nonempty string', c => { c.tiers.api_surface.title = 1 })
+rejected('allow_empty must be boolean', c => { c.tiers.api_surface.allow_empty = 'true' })
+rejected('retired must be an array', c => { c.tiers.api_surface.retired = 'src/old.ts' })
+rejected('retired must name canonical', c => { c.tiers.api_surface.retired = ['tests/old.ts'] })
+rejected('is listed twice across include and retired', c => { c.tiers.api_surface.retired = ['src/old.ts', 'src/old.ts'] })
+rejected('is listed twice across include and retired', c => { c.tiers.api_surface.retired = ['src/command.ts'] })
+rejected('include must be an explicit array', c => { c.tiers.api_surface.include = 'src/command.ts' })
+rejected('empty include requires allow_empty', c => { c.tiers.api_surface.include = [] })
+for (const path of ['src/main.js', 'src\\main.ts', 'src//main.ts', 'src/./main.ts', 'src/../src/main.ts', '/tmp/main.ts', 'tests/main.ts', 'src/story.test.ts', 'src/vite-env.d.ts', 7]) {
+  rejected('include must name canonical', c => { c.tiers.api_surface.include = [path] })
+}
+rejected('include "src/missing.ts" is not a file within the project', c => { c.tiers.api_surface.include = ['src/missing.ts'] })
+writeFileSync(join(root, '..', 'outside.ts'), 'export const x = 1\n')
+symlinkSync(join(root, '..', 'outside.ts'), 'src/escape.ts')
+try {
+  rejected('include "src/escape.ts" is not a file within the project', c => { c.tiers.api_surface.include = ['src/escape.ts'] })
+} finally {
+  rmSync('src/escape.ts')
+}
+rejected('src/main.ts: duplicate membership in "pure_logic" and "api_surface"', c => { c.tiers.api_surface.include.push('src/main.ts') })
+rejected('journeys must be a nonempty array', c => { delete c.journeys })
+rejected('journeys must be a nonempty array', c => { c.journeys = [] })
+rejected('journeys: each must be a nonempty string', c => { c.journeys = [1] })
+rejected('is listed twice', c => { c.journeys = [c.journeys[0], c.journeys[0]] })
+rejected('journeys: no test("a journey nobody wrote") in e2e/**/*.spec.ts', c => { c.journeys.push('a journey nobody wrote') })
+// Journey titles come from plain test('...') calls, quoted either way; a skipped test is not a journey.
+writeFileSync('e2e/more.spec.ts', "import { test } from '@playwright/test'\n\ntest(\"it's double-quoted\", async () => {})\ntest('say \\'hi\\'', async () => {})\ntest.skip('skipped journey', async () => {})\n")
+try {
+  assert.deepEqual(tiers.validate({ ...config, journeys: [...config.journeys, "it's double-quoted", "say 'hi'"] }), [])
+  rejected('no test("skipped journey")', c => { c.journeys.push('skipped journey') })
+} finally {
+  rmSync('e2e/more.spec.ts')
+}
+writeFileSync('coverage-tiers.json', original.replace('"minimum": 90', '"minimum": 91'))
+result = cli('--validate')
+assert.ok(result.status === 1 && result.stderr.includes('main_components: need 0 <= minimum <= target <= 100'), result.stderr)
+writeFileSync('coverage-tiers.json', original)
+console.log('coverage-tiers probes passed')
+PROBE
+  fk_node "$d" probe.mjs || fail "coverage-tiers probes failed: $(tail -25 "$d.node.out")" || return 1
+  assert_contains "$d.node.out" "coverage-tiers probes passed"
+}
+test_stack_foldkit_coverage_tiers_ratchet() {
+  # CI's ratchet compares coverage-tiers.json with the base branch: floors and
+  # targets never drop, tiers never disappear, and a member leaves only through
+  # `retired`. A base that predates the file passes; an unreadable one fails.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-ratchet/demo" rc
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  (cd "$d" && git init -q && git add -A && git commit -qm init \
+    && git branch -f prepack "$(git commit-tree -m base "$(printf '100644 blob %s\tREADME.md\n' "$(git hash-object -w package.json)" | git mktree)")") \
+    || fail "git setup failed" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet prepack; rc=$?
+  assert_exit 0 "$rc" || return 1
+  assert_contains "$d.node.out" "no coverage-tiers.json at prepack; nothing to ratchet against" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet no-such-ref; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "cannot read coverage-tiers.json at no-such-ref: unknown revision" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs "--ratchet=--output=$d.leak"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "unknown revision" || return 1
+  assert_absent "$d.leak" || return 1
+  cp "$d/coverage-tiers.json" "$d.tiers.json" || return 1
+  # Lowered minimum, lowered target, removed tier, removed member: each fails.
+  fk_json "$d/coverage-tiers.json" 'c.tiers.api_surface.minimum = 90' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "api_surface: minimum lowered from 100 to 90" || return 1
+  cp "$d.tiers.json" "$d/coverage-tiers.json" && fk_json "$d/coverage-tiers.json" 'c.tiers.main_components.target = 95; c.tiers.main_components.minimum = 95' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  cp "$d.tiers.json" "$d/coverage-tiers.json" && fk_json "$d/coverage-tiers.json" 'c.tiers.pure_logic.target = 99; c.tiers.pure_logic.minimum = 99' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "pure_logic: target lowered from 100 to 99" || return 1
+  cp "$d.tiers.json" "$d/coverage-tiers.json" && fk_json "$d/coverage-tiers.json" 'delete c.tiers.main_components' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "main_components: tier removed since HEAD" || return 1
+  cp "$d.tiers.json" "$d/coverage-tiers.json" && fk_json "$d/coverage-tiers.json" 'c.tiers.api_surface.include = ["src/api/status.ts"]' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" 'api_surface: existing members removed since HEAD: ["src/command.ts"]' || return 1
+  assert_contains "$d.node.out" "list its old path in the tier's retired" || return 1
+  # An explicitly empty tier must not bypass membership either.
+  cp "$d.tiers.json" "$d/coverage-tiers.json" && fk_json "$d/coverage-tiers.json" 'c.tiers.api_surface.include = []; c.tiers.api_surface.allow_empty = true' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "existing members removed since HEAD" || return 1
+  # A reviewed move: the old path goes to `retired`.
+  cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
+  (cd "$d" && git mv src/command.ts src/commands.ts) || return 1
+  fk_json "$d/coverage-tiers.json" 'c.tiers.api_surface.include = ["src/api/status.ts", "src/commands.ts"]; c.tiers.api_surface.retired = ["src/command.ts"]' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  (cd "$d" && git mv src/commands.ts src/command.ts) && cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
+  # Bases whose file is malformed, invalid, or unreadable fail (only a confirmed absence passes).
+  base_with() {  # $1 = branch, $2 = coverage-tiers.json content
+    (cd "$d" && git branch -f "$1" "$(git commit-tree -m "$1" "$(printf '100644 blob %s\tcoverage-tiers.json\n' \
+      "$(printf '%s' "$2" | git hash-object -w --stdin)" | git mktree)")")
+  }
+  base_with notjson '{' || fail "git setup failed" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet notjson; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "base config: coverage-tiers.json at notjson is not valid JSON" || return 1
+  base_with invalid '{"tiers": {}, "journeys": []}' || fail "git setup failed" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet invalid; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "base config: tiers must be a nonempty object" || return 1
+  (cd "$d" && tree="$(git rev-parse 'invalid^{tree}')" \
+    && rm -f ".git/objects/$(printf '%s' "$tree" | cut -c1-2)/$(printf '%s' "$tree" | cut -c3-)") \
+    || fail "removing the base tree failed" || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet invalid; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "cannot read coverage-tiers.json at invalid"
+}
+test_stack_foldkit_pin_guard_fails_closed() {
+  # scripts/check-pins.mjs keeps package.json in gstack's byte form and in step with
+  # VERSION, every dependency exact and installed at its pin, and the Foldkit +
+  # Effect train aligned with what node_modules holds. A synthetic node_modules
+  # stands in for pnpm install. Every version comes from the pack's package.json,
+  # so the test survives a train move.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-pins/demo" rc bad want f fk vp dt mcp ox effect vite_major fk_next
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  pin() { node -p 'const p = require(process.argv[1]); ({ ...p.dependencies, ...p.devDependencies })[process.argv[2]]' "$d/package.json" "$1"; }
+  fk="$(pin foldkit)" vp="$(pin @foldkit/vite-plugin)" dt="$(pin @foldkit/devtools)" \
+    mcp="$(pin @foldkit/devtools-mcp)" ox="$(pin @foldkit/oxlint-plugin)" effect="$(pin effect)" || return 1
+  vite_major="$(pin vite | cut -d. -f1)"
+  fk_next="$(printf '%s' "$fk" | awk -F. '{ print $1 "." $2 + 1 ".0" }')"
+  for f in "$fk" "$vp" "$dt" "$mcp" "$ox" "$effect" "$vite_major" "$fk_next"; do
+    case "$f" in ''|undefined) fail "cannot read the foldkit train from the pack's package.json" || return 1 ;; esac
+  done
+  fake() {  # $1 = package name, $2 = version, $3 = peerDependencies JSON
+    mkdir -p "$d/node_modules/$1" && printf '{"name":"%s","version":"%s","peerDependencies":%s}\n' "$1" "$2" "$3" > "$d/node_modules/$1/package.json"
+  }
+  fake foldkit "$fk" "{\"effect\":\"$effect\",\"@effect/platform-browser\":\"$effect\"}" || return 1
+  fake @foldkit/vite-plugin "$vp" "{\"vite\":\"^$vite_major.0.0\",\"effect\":\"$effect\",\"foldkit\":\">=0.0.0\"}" || return 1
+  fake @foldkit/devtools "$dt" "{\"effect\":\"$effect\",\"foldkit\":\">=$fk\",\"@foldkit/ui\":\"^0\",\"@effect/platform-browser\":\"$effect\"}" || return 1
+  fake @foldkit/devtools-mcp "$mcp" "{\"effect\":\"$effect\",\"foldkit\":\">=0.0.0\"}" || return 1
+  fake @foldkit/oxlint-plugin "$ox" '{}' || return 1
+  # Every other direct dependency is installed too, at its pin.
+  fk_node "$d" -e 'const fs = require("fs"); const p = JSON.parse(fs.readFileSync("package.json", "utf8")); for (const [name, version] of Object.entries({ ...p.dependencies, ...p.devDependencies })) { const dir = "node_modules/" + name; if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version }) + "\n") } }' \
+    || fail "faking the other dependencies failed: $(cat "$d.node.out")" || return 1
+  fk_node "$d" scripts/check-pins.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  assert_contains "$d.node.out" "check-pins: ok" || return 1
+  for f in package.json VERSION .node-version; do cp "$d/$f" "$d.$f.orig" || return 1; done
+  cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
+  # Each case: a mutation (run in the project, with the pins in its environment)
+  # and the text its failure must contain (@FK@ and friends are the pins).
+  while IFS='|' read -r bad want; do
+    for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+    rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
+    (cd "$d" && FK="$fk" FK_NEXT="$fk_next" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
+      || fail "mutation failed: $bad" || return 1
+    want="$(printf '%s' "$want" | sed "s/@FK_NEXT@/$fk_next/g; s/@FK@/$fk/g; s/@VP@/$vp/g; s/@EFFECT@/$effect/g; s/@VITE_NEXT@/^$((vite_major + 1)).0.0/g")"
+    fk_node "$d" scripts/check-pins.mjs; rc=$?
+    [ "$rc" = 1 ] || fail "check-pins exited $rc after: $bad" || return 1
+    assert_contains "$d.node.out" "$want" || return 1
+    assert_contains "$d.node.out" "check-pins: FAILED" || return 1
+  done <<'CASES'
+printf '0.1.0\n' > VERSION|package.json version "0.0.0" differs from VERSION 0.1.0
+printf 'v1\n' > VERSION|VERSION must hold MAJOR.MINOR.PATCH
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies.vite="^"+p.devDependencies.vite;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|vite must be pinned to an exact version, got "^
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));fs.writeFileSync("package.json",JSON.stringify(p)+"\n")'|package.json is not in JSON.stringify(pkg, null, 2)
+printf '{\n' > package.json|package.json is not valid JSON
+printf '0.0.1\n' > .node-version|devEngines.runtime must be node at .node-version's exact version ("0.0.1")
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.packageManager="pnpm@0.0.1";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|and packageManager (pnpm@<same>) must agree
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@effect/vitest"]="0.0.1";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@effect/vitest 0.0.1 must match effect @EFFECT@
+node -e 'const fs=require("fs");const f="node_modules/foldkit/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.effect="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|foldkit @FK@ needs effect 0.0.1, package.json pins @EFFECT@
+node -e 'const fs=require("fs");const f="node_modules/foldkit/package.json";const p=JSON.parse(fs.readFileSync(f));p.version=process.env.FK_NEXT;fs.writeFileSync(f,JSON.stringify(p))'|node_modules has foldkit @FK_NEXT@, package.json pins @FK@: run pnpm install
+node -e 'const fs=require("fs");const f="node_modules/effect/package.json";const p=JSON.parse(fs.readFileSync(f));p.version="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|node_modules has effect 0.0.1, package.json pins @EFFECT@: run pnpm install (if it stays, pnpm-lock.yaml holds the other version: regenerate it)
+node -e 'const fs=require("fs");const f="node_modules/typescript/package.json";const p=JSON.parse(fs.readFileSync(f));p.version="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|node_modules has typescript 0.0.1, package.json pins
+rm -rf node_modules/foldkit|node_modules is missing foldkit: run pnpm install
+rm -rf node_modules/@foldkit/devtools-mcp|node_modules is missing @foldkit/devtools-mcp: run pnpm install
+rm -rf node_modules/effect node_modules/vitest|node_modules is missing effect, vitest: run pnpm install
+node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.foldkit=">="+process.env.FK_NEXT;fs.writeFileSync(f,JSON.stringify(p))'|@foldkit/vite-plugin @VP@ needs foldkit >=@FK_NEXT@, package.json pins @FK@
+node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.vite=process.env.VITE_NEXT;fs.writeFileSync(f,JSON.stringify(p))'|@foldkit/vite-plugin @VP@ needs vite @VITE_NEXT@
+node -e 'const fs=require("fs");const f="node_modules/@foldkit/devtools-mcp/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.foldkit="~0.0";fs.writeFileSync(f,JSON.stringify(p))'|which check-pins cannot evaluate
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
+CASES
+}
+test_stack_foldkit_template_ci_matches_the_pack() {
+  # The heavy job's pnpm is the version new projects pin, and both workflows pin
+  # the same pnpm/setup commit.
+  local want sha
+  want="$(sed -n 's/.*"packageManager": "pnpm@\([0-9.]*\)".*/\1/p' "$REPO/template/stacks/foldkit/files/package.json")"
+  [ -n "$want" ] || fail "no pnpm@ pin in the pack's package.json" || return 1
+  grep -qF "version: \"$want\"" "$REPO/.github/workflows/template-selftest.yml" \
+    || fail "template-selftest.yml's pnpm/setup is not pnpm $want" || return 1
+  sha="$(sed -n 's/.*uses: pnpm\/setup@\([0-9a-f]\{40\}\).*/\1/p' "$REPO/template/stacks/foldkit/files/.github/workflows/ci.yml")"
+  [ -n "$sha" ] || fail "the pack's ci.yml does not pin pnpm/setup by commit" || return 1
+  grep -qF "pnpm/setup@$sha" "$REPO/.github/workflows/template-selftest.yml" \
+    || fail "the two workflows pin different pnpm/setup commits"
+}
+test_heavy_stack_foldkit_project_is_green_on_first_run() {
+  # The whole new-project gate, for real: bootstrap (its hook installs the pack's
+  # locked tree, patching tsc, and vendors Foldkit), then check.sh, coverage.sh,
+  # the Playwright journeys and the production build.
+  local d="$WORK/heavy-foldkit/demo-app" why key f pw_deps=""
+  why="$(foldkit_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  foldkit_project "$d" "Demo App" || return 1
+  assert_contains "$d/package.json" '"name": "demo_app"' || return 1
+  assert_contains "$d/package.json" '"description": "Demo App"' || return 1
+  assert_contains "$d/src/build-info.ts" "export const PROJECT_NAME = 'Demo App'" || return 1
+  assert_exists "$d/pnpm-lock.yaml" || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  assert_absent "$d/template" || return 1
+  assert_contains "$d/.bootstrapped" "with the foldkit stack pack" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`pnpm exec vitest run\`" || return 1
+  assert_contains "$d/CLAUDE.md" "docs/guides/foldkit.md" || return 1
+  assert_contains "$d.out" "Installed the locked dependencies" || return 1
+  cmp -s "$REPO/template/stacks/foldkit/files/pnpm-lock.yaml" "$d/pnpm-lock.yaml" || fail "the install changed the pack's lockfile" || return 1
+  (cd "$d" && stack_env pnpm exec tsc --version) | grep -q '+effect-tsgo' || fail "tsc is not patched after bootstrap" || return 1
+  [ "$(cat "$d/repos/foldkit/.vendored-version" 2>/dev/null)" = "$(node -p 'require(process.argv[1]).dependencies.foldkit' "$d/package.json")" ] \
+    || fail "repos/foldkit is not the pinned release: $(tail -5 "$d.out")" || return 1
+  [ -z "$(find "$d/repos/foldkit" \( -name AGENTS.md -o -name CLAUDE.md -o -name .mcp.json -o -name .claude -o -name .agents -o -path "$d/repos/foldkit/repos" \) -print)" ] \
+    || fail "the vendored Foldkit carries agent files or its Effect copy" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  # No placeholder survives in what git commits (node_modules and repos/ are ignored).
+  for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/foldkit/commands") PROJECT_NAME PACKAGE_NAME YEAR; do
+    ! (cd "$d" && git grep -qF "{{$key") || fail "{{$key is left in: $(cd "$d" && git grep -lF "{{$key" | tr '\n' ' ')" || return 1
+  done
+  # git commits every pack file and ignores every build artifact.
+  git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/foldkit/files \
+    | sed 's|^template/stacks/foldkit/files/||' > "$d.expected" || return 1
+  while IFS= read -r f; do
+    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$d.expected"
+  for f in node_modules/x dist/index.html coverage/coverage-summary.json test-results/x playwright-report/index.html \
+    blob-report/x tsconfig.tsbuildinfo repos/foldkit/README.md; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
+  done
+  [ "${CI:-}" != "true" ] || pw_deps="--with-deps"
+  (cd "$d" && stack_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
+    && stack_env ./scripts/coverage.sh \
+    && stack_env pnpm exec playwright install $pw_deps chromium \
+    && stack_env pnpm exec playwright test \
+    && stack_env pnpm build) >"$d.gate.out" 2>&1 \
+    || fail "the new project's own gate failed: $(tail -25 "$d.gate.out")" || return 1
+  assert_contains "$d.gate.out" "OK: checks passed." || return 1
+  assert_contains "$d.gate.out" "coverage-tiers: ok" || return 1
+  assert_contains "$d.gate.out" "1 passed" || return 1
+  [ -z "$(git -C "$d" status --porcelain)" ] || fail "the gate left files git would commit: $(git -C "$d" status --porcelain | head -5)"
+}
+test_heavy_stack_foldkit_longest_name_passes_guards_and_tests() {
+  # 50 characters, the most validate-name allows: Oxfmt must accept
+  # src/build-info.ts as bootstrap wrote it, and the tests must pass.
+  local d="$WORK/heavy-foldkit-long/proj" name="Acme Example Inventory Reconciliation Service Ok12" why
+  why="$(foldkit_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  [ "${#name}" = 50 ] || fail "the test name is ${#name} characters, not 50" || return 1
+  foldkit_project "$d" "$name" || return 1
+  (cd "$d" && stack_env bash scripts/check.d/foldkit.sh && stack_env pnpm exec vitest run) \
+    >"$d.gate.out" 2>&1 || fail "the foldkit guards or tests failed: $(tail -25 "$d.gate.out")"
+}
+test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
+  # gstack /ship writes VERSION and package.json's version (as
+  # JSON.stringify(p, null, 2) + "\n"). The lockfile holds neither, so the frozen
+  # install still passes, the guards pass, and the build shows the new version.
+  local d="$WORK/heavy-foldkit-bump/demo" why
+  why="$(foldkit_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  foldkit_project "$d" demo || return 1
+  printf '0.1.0\n' > "$d/VERSION"
+  fk_json "$d/package.json" 'c.version = "0.1.0"' || return 1
+  (cd "$d" && stack_env pnpm install --frozen-lockfile && stack_env bash scripts/check.d/foldkit.sh \
+    && stack_env pnpm build) >"$d.gate.out" 2>&1 || fail "the gate failed after a version bump: $(tail -25 "$d.gate.out")" || return 1
+  cmp -s "$REPO/template/stacks/foldkit/files/pnpm-lock.yaml" "$d/pnpm-lock.yaml" || fail "the bump changed pnpm-lock.yaml" || return 1
+  grep -qF '0.1.0' "$d"/dist/assets/*.js || fail "the build does not carry VERSION 0.1.0"
+}
+test_heavy_stack_foldkit_guards_fail_closed() {
+  # Each guard fails closed on the change it exists to stop, and passes again
+  # once the change is reverted.
+  local d="$WORK/heavy-foldkit-guards/demo" why rc
+  why="$(foldkit_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  foldkit_project "$d" demo || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  guard() { (cd "$d" && stack_env bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; }
+  guard || fail "the guard failed on a fresh project: $(tail -20 "$d.guard.out")" || return 1
+  expect_guard_failure() {  # $1 = text the failure must contain, $2 = what changed
+    guard; rc=$?
+    [ "$rc" -ne 0 ] || fail "the guard passed after: $2" || return 1
+    assert_contains "$d.guard.out" "$1" || return 1
+    (cd "$d" && git checkout -q -- . && git clean -qfd -e node_modules -e repos) || return 1
+  }
+  perl -pi -e 's/^\/\/ UPDATE$/export const now = () => Date.now()\n\n\/\/ UPDATE/' "$d/src/main.ts" || return 1
+  expect_guard_failure "effect(globalDate)" "Date.now() in src/main.ts" || return 1
+  printf "import { Command } from 'foldkit'\n\nexport const leak = Command\n" > "$d/src/domain/leak.ts"
+  expect_guard_failure "src/domain and src/api must not import foldkit" "a foldkit import in src/domain" || return 1
+  printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"
+  expect_guard_failure "no vi.mock" "vi.mock( in a test" || return 1
+  perl -pi -e 's/foldkit\((?:\{ devToolsMcpPort: false \})?\)/foldkit({ devToolsMcpPort: 9988 })/' "$d/vite.config.ts" || return 1
+  grep -q 'devToolsMcpPort: 9988' "$d/vite.config.ts" || fail "the devToolsMcpPort mutation did not apply" || return 1
+  expect_guard_failure "unauthenticated DevTools relay" "a numeric devToolsMcpPort in vite.config.ts" || return 1
+  printf '{"mcpServers":{"foldkit-devtools":{"command":"npx","args":["-y","@foldkit/devtools-mcp"]}}}\n' > "$d/.mcp.json"
+  expect_guard_failure ".mcp.json must call the pinned local bin" "npx in .mcp.json" || return 1
+  fk_json "$d/package.json" 'c.version = "0.2.0"' || return 1
+  expect_guard_failure "differs from VERSION" "package.json version drift" || return 1
+  fk_json "$d/package.json" 'c.devDependencies.vitest = "^" + c.devDependencies.vitest' || return 1
+  expect_guard_failure "vitest must be pinned to an exact version" "a caret range" || return 1
+  node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify(JSON.parse(fs.readFileSync(process.argv[1],"utf8")),null,4)+"\n")' "$d/package.json" || return 1
+  expect_guard_failure "package.json is not in JSON.stringify" "a reformatted package.json" || return 1
+  fk_json "$d/package.json" 'c.devDependencies["is-number"] = "7.0.0"' || return 1
+  expect_guard_failure "node_modules is missing is-number: run pnpm install" "a dependency added without installing it" || return 1
+  perl -0pi -e 's/(\n      vitest:\n        specifier: )[^\n]+/${1}0.0.1/' "$d/pnpm-lock.yaml" || return 1
+  grep -q 'specifier: 0.0.1' "$d/pnpm-lock.yaml" || fail "the lockfile mutation did not apply" || return 1
+  expect_guard_failure "pnpm-lock.yaml is missing or out of date" "a lockfile that no longer matches package.json" || return 1
+  (cd "$d" && stack_env pnpm exec effect-tsgo unpatch) >"$d.unpatch.out" 2>&1 || fail "unpatch failed: $(cat "$d.unpatch.out")" || return 1
+  expect_guard_failure "tsc is not patched by @effect/tsgo" "an unpatched tsc" || return 1
+  (cd "$d" && stack_env pnpm exec effect-tsgo patch) >"$d.unpatch.out" 2>&1 || fail "re-patching failed: $(cat "$d.unpatch.out")" || return 1
+  (cd "$d" && env PATH=/usr/bin:/bin /bin/bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "pnpm is not installed" || return 1
+  # A locked package that pnpm's supply-chain policy rejects (an impossible age rule
+  # stands in for a release under 24 hours old) is reported as that, with the
+  # packages named, not as a stale lockfile. The install stays usable: the plain
+  # guard passes right after.
+  (cd "$d" && stack_env env pnpm_config_minimum_release_age=5256000 bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "pnpm's supply-chain policy (pnpm-workspace.yaml) rejects a locked package" || return 1
+  assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
+  assert_not_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date" || return 1
+  assert_not_contains "$d.guard.out" "relax the policy" || return 1
+  guard || fail "the guard failed after the mutations were reverted: $(tail -20 "$d.guard.out")" || return 1
+  # Coverage: an untested module fails the global floor and is named; a tier member
+  # that coverage can't measure fails its tier.
+  printf 'export const pick = (flag: boolean): number => {\n  if (flag) {\n    return 1\n  }\n  return 2\n}\n' > "$d/src/domain/extra.ts"
+  (cd "$d" && stack_env bash scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  rm -f "$d/src/domain/extra.ts"
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "src/domain/extra.ts" || return 1
+  # Five lines keep the global line floor (50/54); its branches fail it, by name.
+  assert_contains "$d.cov.out" "coverage-tiers: FAIL global: branches" || return 1
+  printf 'export type Shape = { readonly name: string }\n' > "$d/src/domain/shape.ts"
+  fk_json "$d/coverage-tiers.json" 'c.tiers.pure_logic.include.push("src/domain/shape.ts")' || return 1
+  (cd "$d" && stack_env bash scripts/coverage.sh) >"$d.cov.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.cov.out" "pure_logic: src/domain/shape.ts" || return 1
+  (cd "$d" && git checkout -q -- . && rm -f src/domain/shape.ts) || return 1
+  # The ratchet against the committed state.
+  fk_json "$d/coverage-tiers.json" 'c.tiers.main_components.minimum = 80' || return 1
+  (cd "$d" && node scripts/coverage-tiers.mjs --ratchet HEAD) >"$d.ratchet.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.ratchet.out" "main_components: minimum lowered from 90 to 80" || return 1
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  fk_json "$d/coverage-tiers.json" 'c.tiers.main_components.include = ["src/view.ts"]' || return 1
+  (cd "$d" && node scripts/coverage-tiers.mjs --ratchet HEAD) >"$d.ratchet.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.ratchet.out" "existing members removed since HEAD" || return 1
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+}
+
 # --- runner -------------------------------------------------------------------
 if [ "$FILTER" = "--print-inventory" ]; then placeholder_inventory; exit $?; fi
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
   case "$t" in *"$FILTER"*) ;; *) continue ;; esac
+  if [ -n "$EXCLUDE" ]; then
+    case "$t" in *"$EXCLUDE"*) EXCLUDED=$((EXCLUDED + 1)); continue ;; esac
+  fi
   echo "- $t"
   "$t"; rc=$?
   case "$rc" in
@@ -2846,7 +4908,11 @@ for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
     *)  FAIL=$((FAIL + 1)) ;;
   esac
 done
-echo "selftest: $PASS passed, $FAIL failed, $SKIP skipped"
+if [ "$EXCLUDED" -gt 0 ]; then
+  echo "selftest: $PASS passed, $FAIL failed, $SKIP skipped ($EXCLUDED excluded by SELFTEST_EXCLUDE=$EXCLUDE)"
+else
+  echo "selftest: $PASS passed, $FAIL failed, $SKIP skipped"
+fi
 if [ "${CI:-}" = "true" ] && [ "$SKIP" -gt 0 ]; then
   echo "selftest: skipped tests count as failures in CI (install the missing tool)" >&2
   exit 1

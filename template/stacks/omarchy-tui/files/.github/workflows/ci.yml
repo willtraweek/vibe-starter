@@ -1,0 +1,59 @@
+# CI for {{PROJECT_NAME}} (vibe-starter omarchy-tui stack pack): guards, then tests
+# with the coverage gates from TESTING.md, then doctests. ratatui needs no system
+# libraries; desktop-file-utils checks the launcher entry.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
+
+jobs:
+  check-and-test:
+    # Pinned, not ubuntu-latest: the apt package name below is Ubuntu 24.04's.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - name: Install desktop-file-validate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-llvm-cov@0.9.1
+          fallback: none
+
+      - name: Checks (guards run before tests)
+        run: ./scripts/check.sh
+
+      - name: Tests with the coverage gates (90% lines and regions, then per-tier)
+        run: ./scripts/coverage.sh
+
+      - name: Doctests (coverage runs on stable skip them)
+        run: cargo test --locked --doc
+
+      - name: Coverage tiers never slip (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          ./scripts/coverage_tiers.sh --ratchet "origin/$GITHUB_BASE_REF"

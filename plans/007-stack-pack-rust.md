@@ -47,8 +47,10 @@ offers. After this plan, a new Rust project:
   Release dates and tool versions below are planning snapshots; do not upgrade them as part of this revision.
   - With `channel = "stable"`, a new release's clippy lints could fail `-D warnings` with no
     commit. Pinning makes local and CI identical; the cost is a deliberate bump every six weeks.
-  - `rust-version` (the minimum supported Rust version) is `1.85`, the minimum for edition
-    2024. That's honest for this code and lets older local toolchains build it.
+  - `rust-version` is `1.98`, the pinned toolchain's minor (changed 2026-10-03 in the
+    pre-landing review; this plan first chose `1.85`, edition 2024's minimum). A lower value
+    makes Cargo's MSRV-aware resolver hold dependencies back for a compiler nothing here
+    tests, so the two are bumped together.
 - **Lints.** Everything goes in the `[lints]` table:
   - `unsafe_code = "forbid"` and `missing_docs = "warn"`.
   - `unexpected_cfgs` declares `cfg(coverage)`/`cfg(coverage_nightly)`, which cargo-llvm-cov
@@ -505,9 +507,10 @@ name = "{{PACKAGE_NAME}}"
 # by src/lib.rs. This one stays 0.0.0 so Cargo.lock never churns.
 version = "0.0.0"
 edition = "2024"
-# Oldest Rust this code builds with (edition 2024 needs 1.85). Raise it when you
-# use newer features; rust-toolchain.toml pins the compiler you develop with.
-rust-version = "1.85"
+# Declare the pinned toolchain (rust-toolchain.toml), the only one CI builds
+# with, and bump the two together: a lower value makes Cargo's MSRV-aware
+# resolver hold dependencies back for a compiler nothing here tests.
+rust-version = "1.98"
 description = "{{PROJECT_NAME}}"
 publish = false
 
@@ -1076,9 +1079,13 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
-- **Toolchain bumps.** Change `channel` in `template/stacks/rust/files/rust-toolchain.toml` on
-  purpose, fix any new clippy lints the new version raises, and keep
-  `rust-version` at the oldest Rust the code really needs.
+- **Toolchain bumps.** Change `channel` in `template/stacks/_rust-gates/files/rust-toolchain.toml` on
+  purpose, together with `rust-version` in the pack's `Cargo.toml` (it names the pinned minor,
+  so Cargo's MSRV-aware resolver never holds dependencies back for an untested compiler), the
+  `rustup toolchain install` and `SELFTEST_RUST_TOOLCHAIN` pins in
+  `.github/workflows/template-selftest.yml`, and the STACK line in `template/stacks/rust/commands`.
+  `test_stack_rust_template_ci_tests_the_pinned_toolchain` fails until all of them agree. Then
+  fix any new clippy lints the new version raises.
 - **When a project takes its first dependency:**
   - Add cargo-deny: `deny.toml` covering advisories, licenses (`private = { ignore = true }`
     because of `publish = false`), bans and sources.

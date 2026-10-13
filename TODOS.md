@@ -20,21 +20,6 @@ deferred an automatic generator ("Approach C").
 **Priority:** P2
 **Depends on:** None
 
-### Opt-in stack packs (Python, Rust)
-
-**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
-describes (coverage floor, tier checker, CI steps, `.gitignore` section).
-
-**Why:** Every project repeats the same four manual checklist steps.
-
-**Context:** Planned in `plans/006-stack-packs-python.md` and `plans/007-stack-pack-rust.md`.
-Must stay opt-in to keep the spine stack-agnostic. Plans 008–010 add three Omarchy packs (an
-app, a terminal app and a shell plugin) on the same mechanism.
-
-**Effort:** L
-**Priority:** P2
-**Depends on:** None
-
 ### Omarchy stack pack follow-ups from the plans' review
 
 **What:** Four gaps the pre-landing review of plans 008–010 left open, each done when its check
@@ -98,5 +83,45 @@ warning we want.
 **Effort:** S
 **Priority:** P3
 **Depends on:** None
+
+### A second JavaScript pack: React 19.3 + TanStack Router on Effect v4
+
+**What:** A `react` stack pack beside `foldkit`, for browser apps that want React's component
+ecosystem and a router: React 19.3 and TanStack Router for the UI, an Effect v4 data and state
+layer (Atom through `@effect/atom-react`), Vitest Browser Mode on Playwright, and the foldkit
+pack's pins, shipped lockfile, tier checker and CI shape.
+
+**Why:** Packs are chosen by what the app does. foldkit suits apps whose state fits one
+Elm-style Model; many browser apps want React components and libraries instead.
+
+**Context:** Prototyped on 2026-09-25 while choosing the first JavaScript pack (every gate
+passed; Effect + Atom added about 51 kB gzip over plain React + Router). Lessons from that
+prototype, on Effect 4.0.0-rc.117, to re-check on the stable release: a component test that
+seeds the result atom through `RegistryProvider` still runs the live layer and makes a real
+`fetch` (seeded values count as stale), so seed the Atom runtime's layer with the service over a
+fake `HttpClient`; `@effect/atom-react` peered on `scheduler <0.28.0` while React 19.3 needs
+`^0.28.0`, so two schedulers got bundled; Vitest Browser Mode needs `optimizeDeps.include` for
+React on a cold cache.
+
+**Effort:** L
+**Priority:** P3
+**Depends on:** plan 011 (its pnpm, lockfile and tier-checker patterns; extract a shared
+partial pack when a third JavaScript pack appears)
+
+### Opt-in stack packs (Python, Rust)
+
+**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
+describes (coverage floor, tier checker, CI steps, `.gitignore` section).
+
+**Why:** Every project repeats the same four manual checklist steps.
+
+**Context:** Python shipped in v0.1.0 (plan 006). Rust (plan 007) is implemented and included
+in the combined plans 007–011 integration, with acceptance and merge still pending. Both are
+opt-in so the spine stays stack-agnostic. Plans 008–010 add three Omarchy packs on the same
+mechanism; the earlier Rust branch's v0.2.0 completion label did not represent a master release.
+
+**Effort:** L
+**Priority:** P2
+**Depends on:** Plan 007 integration review and merge
 
 ## Completed

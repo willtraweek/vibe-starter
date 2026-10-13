@@ -1,0 +1,24 @@
+#!/bin/sh
+# Reject names a foldkit project can't use, before bootstrap writes anything.
+# $1 is the package name (package.json "name"), $2 the project name.
+# node_modules is reserved by Node.js.
+# Then the pack's direct dependencies without a scope or hyphen (the only ones
+# a normalized package name can equal). pnpm installs such a project, but tools
+# that find packages by name see two: named `effect`, the Effect language
+# service reports a duplicate package on every file and tsc fails.
+# Last, the length: src/build-info.ts holds
+# `export const PROJECT_NAME = '<name>'`, and past 50 characters Oxfmt's 80
+# columns wrap it, so the first `oxfmt --check` fails.
+if [ "$1" = node_modules ]; then
+  echo "Package name 'node_modules' is reserved by Node.js; choose another project name." >&2
+  exit 2
+fi
+for taken in effect foldkit oxfmt oxlint playwright typescript vite vitest; do
+  [ "$1" = "$taken" ] || continue
+  echo "Package name '$1' is taken by a package the foldkit pack depends on; choose another project name." >&2
+  exit 2
+done
+if [ ${#2} -gt 50 ]; then
+  echo "Project name is too long for the foldkit stack pack (50 characters at most): '$2'" >&2
+  exit 2
+fi

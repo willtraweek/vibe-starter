@@ -1,0 +1,10 @@
+# KEY=value lines. ./bootstrap --stack omarchy-tui replaces {{KEY}} and
+# {{KEY: description}} placeholders in the project's docs with these values.
+INSTALL_CMD=cargo build --locked
+DEV_CMD=cargo run --locked
+BUILD_CMD=cargo build --locked --release
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=cargo test --locked
+SHIP_GATE=./scripts/check.sh && ./scripts/coverage.sh
+STACK=A keyboard-driven Omarchy terminal app: Rust 1.98 (edition 2024, pinned in rust-toolchain.toml) with ratatui 0.30 and its crossterm, drawn in the terminal's own 16 colours so it follows the Omarchy theme; clippy (pedantic, warnings are errors); rustfmt; cargo test driving the real event loop into a TestBackend; cargo-llvm-cov; ./scripts/install.sh adds a launcher entry that opens it in a floating terminal.
+COVERAGE_ENFORCEMENT=./scripts/coverage.sh: cargo llvm-cov with the 90% line and region floors (regions stand in for branches on stable Rust), then the per-tier gates of scripts/coverage_tiers.sh (pure logic and the command line at 100%, the event loop and the screen at the 90% floor); CI runs it, fail-closed

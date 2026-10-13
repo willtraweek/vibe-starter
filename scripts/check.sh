@@ -180,7 +180,10 @@ fi
 
 # --- Stack guards: scripts/check.d/*.sh -------------------------------------
 # Stack packs (./bootstrap --stack ...) and the project itself add guards here.
-# Each runs from the repo root; a non-zero exit fails the check.
+# Each runs from the repo root; a non-zero exit fails the check. CHECK_CI tells
+# a guard whether a missing tool must fail it (1, the gitleaks rule above) or
+# may be skipped with a notice (0).
+if ci_requires_gitleaks; then export CHECK_CI=1; else export CHECK_CI=0; fi
 for guard in scripts/check.d/*.sh; do
   [ -f "$guard" ] || continue
   ran_any=1

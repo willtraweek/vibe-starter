@@ -54,8 +54,16 @@ Without `--stack`, the project stays stack-agnostic, exactly as before. A pack i
 - `validate-name` (optional): runs before any file is written, as
   `sh validate-name PACKAGE_NAME PROJECT_NAME`; it rejects unusable names with a nonzero exit
   (Python: keywords, names the standard library, uv or the pack's tools already use, and names
-  over 60 characters).
+  over 60 characters; Rust: keywords, the standard library's crate names, and names that clash
+  with Cargo's build directories).
 - `after-bootstrap` (optional): runs once at the end, for example to write the lockfile.
+- `description`: one line saying what the pack builds, e.g. `Omarchy app in its own window:
+  Rust + GPUI + gpui-omarchy`. `./bootstrap --help` and the interactive prompt list it; every
+  pack needs one.
+- `includes` (optional): partial packs to copy first, one per line. A partial pack is a
+  directory `template/stacks/_name/` with only `files/` (and optionally shared scripts such as
+  `validate-name` for packs to call). It is never offered as a stack; the including pack's own
+  files win. `_rust-gates` holds the Rust toolchain pin, formatter config and coverage gates.
 
 A pack's `files/.github/workflows/ci.yml` replaces `ci.yml.example`, activating the new project's
 CI. Resolve any lockfile-hook warning and run the full gate before the first push. Stack guards
@@ -63,7 +71,46 @@ go in `files/scripts/check.d/<name>.sh`; `scripts/check.sh` runs every `scripts/
 The self-test runs each real pack end to end: bootstrap a project, then run that project's own
 checks and tests.
 
-Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floors).
+Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floors), `rust`
+(pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov with 90% line and region floors),
+`omarchy-app` (an Omarchy app in its own window: Rust + GPUI + gpui-omarchy, with the Rust gates
+from `_rust-gates`), `omarchy-tui` (a terminal app for Omarchy: Rust + ratatui, with the Rust
+gates from `_rust-gates`), `omarchy-plugin` (an Omarchy 4 shell plugin: a QML bar widget,
+JavaScript logic at 100% coverage, Omarchy's own validator pinned) and `foldkit` (a browser app:
+Foldkit on Effect v4, TypeScript 7 with the Effect language service, Vite 8, Vitest 5 Story and
+Scene tests, Playwright journeys, pnpm 12, with per-tier line, branch and function floors).
+
+### Omarchy apps: choose by what the app should do
+
+[Omarchy](https://omarchy.org) is an opinionated Arch Linux + Hyprland desktop. Its packs
+build things that follow the active Omarchy theme and appear in its launcher; the new
+project's `docs/guides/omarchy.md` covers keybindings, window rules and sharing the app.
+
+| The app should… | Pack | Stack |
+|---|---|---|
+| open its own window, with rich visuals, mouse and keyboard | `omarchy-app` | Rust + GPUI (gpui-kit 0.6.6) + gpui-omarchy 0.1.3 |
+| be a keyboard-driven tool in a terminal, light, fine over SSH | `omarchy-tui` | Rust + ratatui 0.30, drawn in the terminal's 16 colours |
+| live inside the desktop itself: a bar widget, a panel, a menu, an overlay, a background service | `omarchy-plugin` | QML plugin for Omarchy 4's `omarchy-shell`, logic in plain JavaScript |
+
+gpui-kit and gpui-omarchy are pinned exactly and bumped together: gpui-omarchy pins the
+gpui-kit it was built against, and gpui-kit is pre-1.0.
+
+A plugin's repository root is the folder users install. Omarchy's plugin directory has turned
+plugins away for a root `AGENTS.md` or a committed `.gstack/`; the generated guide explains the
+choice.
+
+### Browser apps: choose by what the app should do
+
+| The app should… | Pack | Stack |
+|---|---|---|
+| run in the browser, with real client-side state | `foldkit` | Foldkit (the Elm architecture) on Effect v4, TypeScript 7 |
+
+The foldkit pack pins its whole train exactly (`foldkit`, every `@foldkit/*`, `effect` and
+every `@effect/*` but the `@effect/tsgo` patcher move together; Foldkit pins one exact Effect
+version) and ships a reviewed `pnpm-lock.yaml`, so a new project installs exactly the tree the
+self-test built. Installs honor a 24-hour release age and deny dependency build scripts
+(`pnpm-workspace.yaml`). To move the train or the toolchain, follow the maintenance notes of
+`plans/011-stack-pack-foldkit.md`: never run pnpm inside `template/`.
 
 ## Note
 
@@ -93,17 +140,34 @@ project starts from. Keep them apart:
 ```sh
 ./scripts/template-selftest.sh             # every test
 ./scripts/template-selftest.sh bootstrap   # only tests whose name contains "bootstrap"
+SELFTEST_RUST_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' template/stacks/_rust-gates/files/rust-toolchain.toml)" \
+  ./scripts/template-selftest.sh           # every test, the Rust ones on CI's pinned toolchain
 shellcheck bootstrap scripts/*.sh template/stacks/*/files/scripts/*.sh \
   template/stacks/*/files/scripts/check.d/*.sh template/stacks/*/after-bootstrap \
-  template/stacks/*/validate-name          # CI lints first, with shellcheck 0.11.0
+  template/stacks/*/validate-name template/stacks/omarchy-plugin/files/scripts/omarchy-kit \
+  template/stacks/omarchy-plugin/files/tests/run   # CI lints first, with shellcheck 0.11.0
 ```
 
 The self-test copies this working tree into a temp dir and exercises `./bootstrap` and
 `scripts/check.sh` there; your checkout is never modified. It needs git, perl, and tar. Tests
-that need gitleaks or uv are skipped locally when it is missing; CI installs both and treats
-skips as failures. The Python pack tests download Python 3.14 and a few PyPI packages into your
-normal uv cache on first run. CI runs it via `.github/workflows/template-selftest.yml`, which
-only runs on `willtraweek/vibe-starter`.
+that need a missing tool are skipped locally: gitleaks; uv for the Python pack; Node for the
+JavaScript checkers; rustup with
+clippy and rustfmt, and jq, for the Rust pack, plus cargo-llvm-cov and llvm-tools for its
+coverage test. CI installs them all and treats skips as failures. The Rust tests use your default
+stable toolchain unless `SELFTEST_RUST_TOOLCHAIN` names another, and most of them skip on one
+older than the pack's pinned channel; the third command above runs them on that channel. The
+Python pack tests download Python 3.14 and a few PyPI packages into your normal uv cache on first
+run. CI runs it via `.github/workflows/template-selftest.yml`, which only runs on
+`willtraweek/vibe-starter`.
+
+Tests named `test_heavy_*` build real projects (the omarchy-app pack compiles GPUI) and skip
+locally unless `SELFTEST_HEAVY=1`. CI runs them in their own `heavy` job; the `selftest`
+job sets `SELFTEST_EXCLUDE=test_heavy_`, which drops matching tests without counting them
+as skips. Build one locally with
+`SELFTEST_HEAVY=1 SELFTEST_RUST_TOOLCHAIN=1.98.1 ./scripts/template-selftest.sh test_heavy_`.
+The omarchy-plugin heavy test also needs Node 22.8+ and a Qt 6 `qmltestrunner` (`QML_TEST_RUNNER`).
+The foldkit heavy tests need pnpm 12 and the network: they install the pack's locked tree into
+your normal pnpm store, vendor Foldkit from GitHub and run Playwright's Chromium.
 
 ### Shipping with gstack
 

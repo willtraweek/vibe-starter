@@ -1,0 +1,8 @@
+#!/bin/sh
+# The package name becomes the plugin id. Omarchy reserves `omarchy` and the
+# `omarchy.` prefix for its own plugins (a package name has no dots).
+case "$1" in
+  omarchy)
+    echo "Plugin id '$1' is reserved for Omarchy's own plugins; choose another project name." >&2
+    exit 2 ;;
+esac
