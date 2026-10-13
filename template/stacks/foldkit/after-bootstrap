@@ -22,7 +22,8 @@ elif pnpm install --frozen-lockfile; then
 else
   echo "pnpm install failed (see above; offline?): run 'pnpm install --frozen-lockfile' before your first commit."
 fi
-if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && bash scripts/vendor-foldkit.sh; then
+# vendor-foldkit.sh says what it needs (git, the network, Node 22 or newer).
+if command -v git >/dev/null 2>&1 && bash scripts/vendor-foldkit.sh; then
   :
 else
   echo "Vendoring Foldkit failed (offline?): run 'bash scripts/vendor-foldkit.sh' later; ./scripts/check.sh warns until you do."

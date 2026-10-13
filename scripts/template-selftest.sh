@@ -5486,6 +5486,43 @@ STUB
   assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
   fk_policy_kept "$d.env"
 }
+test_stack_foldkit_scripts_need_node_22() {
+  # Regression test (#20 item 14). The guard, coverage.sh and vendor-foldkit.sh
+  # run the Node on PATH, not the one pnpm pins; with none, or one too old for the
+  # checkers, they died on "command not found" or a syntax error. Each now stops
+  # before any other command and says what to install.
+  local d="$WORK/stack-foldkit-node/demo" script version rc
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  mkdir -p "$d.bin" || return 1
+  cat > "$d.bin/node" <<'STUB'
+#!/bin/sh
+# Answers --version with $FK_NODE_VERSION (unset: fails silently, like no node);
+# logs any other call.
+if [ "$1" = --version ] && [ -n "${FK_NODE_VERSION:-}" ]; then echo "$FK_NODE_VERSION"; exit 0; fi
+[ "$1" = --version ] || echo "node $*" >> "$FK_LOG"
+exit 99
+STUB
+  cat > "$d.bin/pnpm" <<'STUB'
+#!/bin/sh
+echo "pnpm $*" >> "$FK_LOG"
+STUB
+  cat > "$d.bin/git" <<'STUB'
+#!/bin/sh
+echo "git $*" >> "$FK_LOG"
+exit 1
+STUB
+  chmod +x "$d.bin/node" "$d.bin/pnpm" "$d.bin/git" || return 1
+  for version in v20.11.1 v21.7.3 ''; do
+    for script in scripts/check.d/foldkit.sh scripts/coverage.sh scripts/vendor-foldkit.sh; do
+      rm -f "$d.log"
+      (cd "$d" && FK_NODE_VERSION="$version" FK_LOG="$d.log" PATH="$d.bin:$(printenv PATH)" bash "$script") >"$d.out" 2>&1; rc=$?
+      assert_exit 1 "$rc" || { echo "    ($script with node ${version:-missing})"; return 1; }
+      assert_contains "$d.out" "Node.js 22 or newer must be on PATH" || return 1
+      assert_contains "$d.out" "(found: ${version:-none})" || return 1
+      assert_absent "$d.log" || { echo "    $script ran: $(cat "$d.log")"; return 1; }
+    done
+  done
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
@@ -5499,6 +5536,7 @@ test_stack_foldkit_bootstrap_takes_its_offline_path() {
   PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack foldkit --yes \
     || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
   assert_contains "$d.out" "pnpm install failed" || return 1
+  assert_contains "$d.out" "vendor-foldkit: Node.js 22 or newer must be on PATH (found: none)" || return 1
   assert_contains "$d.out" "Vendoring Foldkit failed (offline?)" || return 1
   assert_contains "$d/.bootstrapped" "with the foldkit stack pack" || return 1
   for f in scripts/coverage.sh scripts/check.d/foldkit.sh scripts/vendor-foldkit.sh; do

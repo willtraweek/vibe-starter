@@ -6,6 +6,12 @@ die() { echo "  $*" >&2; exit 1; }
 if ! command -v pnpm >/dev/null 2>&1; then
   die "pnpm is not installed - this project needs it: https://pnpm.io/installation (or Corepack)"
 fi
+# The checkers run on the Node on PATH (pnpm's pinned Node runs only pnpm's own
+# commands), and need 22 or newer.
+case "$(node --version 2>/dev/null)" in
+  v2[2-9].*|v[3-9][0-9].*|v[1-9][0-9][0-9]*) ;;
+  *) die "Node.js 22 or newer must be on PATH for the checks (found: $(node --version 2>/dev/null || echo none)): install it from https://nodejs.org or with your version manager." ;;
+esac
 # pnpm 12 reads pnpm_config_* and PNPM_CONFIG_* settings from the environment
 # over pnpm-workspace.yaml: clear the supply-chain ones, so every pnpm command
 # here runs under the file's policy (after-bootstrap clears the same list).

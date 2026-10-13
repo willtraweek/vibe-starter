@@ -9,6 +9,12 @@
 # instructions for this project's agents.
 set -euo pipefail
 CDPATH='' cd -- "$(dirname -- "$0")/.."
+# Runs before pnpm has installed anything, on the Node on PATH: 22 or newer.
+case "$(node --version 2>/dev/null)" in
+  v2[2-9].*|v[3-9][0-9].*|v[1-9][0-9][0-9]*) ;;
+  *) echo "vendor-foldkit: Node.js 22 or newer must be on PATH (found: $(node --version 2>/dev/null || echo none)): install it from https://nodejs.org or with your version manager." >&2
+     exit 1 ;;
+esac
 pin="$(node -p 'require("./package.json").dependencies.foldkit')"
 case "$pin" in
   ''|*[!0-9.]*|.*|*.) echo "vendor-foldkit: package.json must pin foldkit to an exact release (got '$pin')" >&2; exit 1 ;;
