@@ -3995,18 +3995,27 @@ test_stack_pack_ci_jobs_have_timeouts() {
   done
   [ "$n" -ge 6 ] || fail "expected every pack's ci.yml; found $n"
 }
-test_stack_packs_set_every_shared_command_key() {
-  # The python and rust tests spell out the shared keys so a misspelled one can't
-  # hide a leftover placeholder; the other packs' tests check fewer, so a pack
+test_stack_every_pack_fills_every_command_placeholder() {
+  # TEMPLATE.md: each pack's new project has none of the pack's command
+  # placeholders left. The omarchy tests checked only {{TEST_CMD, so a pack
   # missing SHIP_GATE left {{SHIP_GATE: ...}} in a new project's AGENTS.md.
-  local pack key n=0
+  # Network tools are stubs that fail, so each hook takes its offline path.
+  local stub="$WORK/fill-all.stub" pack d key tool n=0
+  mkdir -p "$stub" || return 1
+  for tool in cargo pnpm node uv; do
+    printf '#!/bin/sh\nexit 101\n' > "$stub/$tool" && chmod +x "$stub/$tool" || return 1
+  done
   for pack in "$REPO"/template/stacks/*/; do
     pack="$(basename "$pack")"
     case "$pack" in _*) continue ;; esac
     n=$((n + 1))
-    for key in INSTALL_CMD DEV_CMD BUILD_CMD CHECK_CMD TEST_CMD SHIP_GATE STACK COVERAGE_ENFORCEMENT; do
-      grep -q "^$key=." "$REPO/template/stacks/$pack/commands" \
-        || fail "template/stacks/$pack/commands does not set $key" || return 1
+    d="$WORK/fill-all/$pack/demo-app"
+    fresh_copy "$d" || return 1
+    PATH="$stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack "$pack" --yes \
+      || fail "$pack: bootstrap exited $?: $(tail -5 "$d.out")" || return 1
+    for key in INSTALL_CMD DEV_CMD BUILD_CMD CHECK_CMD TEST_CMD SHIP_GATE STACK COVERAGE_ENFORCEMENT \
+      $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/$pack/commands") PROJECT_NAME PACKAGE_NAME YEAR; do
+      assert_tree_lacks "$d" "{{$key" || { echo "    in the $pack pack's project"; return 1; }
     done
   done
   [ "$n" -ge 6 ] || fail "expected at least six packs; found $n"
