@@ -3851,6 +3851,14 @@ STUB
   (cd "$d" && BINDIR="$w/env" PREFIX="$p" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$entry" \
     || fail "BINDIR in the environment changed the desktop entry" || return 1
   assert_absent "$w/env" || return 1
+  # Regression test. A relative PREFIX resolved against the project, not the
+  # caller, and wrote a relative Exec=: it is refused before anything is written.
+  for f in "" --print-desktop-entry; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX=rel ./scripts/install.sh ${f:+"$f"}) >"$d.install" 2>&1; rc=$?
+    assert_exit 2 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "PREFIX must be an absolute path: rel" || return 1
+  done
+  assert_absent "$d/rel" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \

@@ -28,6 +28,12 @@ done
 # After --help, which reads this script by its path. A CDPATH entry must not pick the directory.
 CDPATH='' cd -- "$(dirname -- "$0")/.."
 
+# A relative PREFIX would resolve against this project, not the caller's
+# directory, and write a relative Exec=.
+case "$PREFIX" in
+  /*) ;;
+  *) echo "install.sh: PREFIX must be an absolute path: $PREFIX" >&2; exit 2 ;;
+esac
 # Exec quotes the binary's path; these characters would need escaping there
 # (desktop entry spec), so refuse them rather than write a broken entry.
 case "$PREFIX" in
