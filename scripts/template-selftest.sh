@@ -3827,7 +3827,8 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
   # signature line, which names Hsla too)...
   for lit in 'gpui_kit::rgb(0x12_34_56)' 'gpui_kit::rgba(0x1234_56ff)' 'gpui_kit::hsla(0.1, 0.2, 0.3, 1.0)' \
     'gpui_kit::white()' 'gpui_kit::Hsla::black()' 'gpui_kit::red()' 'gpui_kit::opaque_grey(0.5, 1.0)' \
-    'gpui_kit::transparent_black()' 'gpui_kit::Rgba::try_from("#123456").unwrap()'; do
+    'gpui_kit::transparent_black()' 'gpui_kit::Rgba::try_from("#123456").unwrap()' 'gpui_kit::green()' \
+    'gpui_kit::blue()' 'gpui_kit::yellow()' 'gpui_kit::transparent_white()'; do
     printf 'pub fn tint() -> gpui_kit::Hsla {\n    %s.into()\n}\n' "$lit" > "$d/src/tint.rs"
     (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
     assert_exit 1 "$rc" || return 1
@@ -4102,7 +4103,8 @@ test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
     || fail "the starter failed the guard: $(cat "$d.guard")" || return 1
   for lit in 'Color::Rgb(0x12, 0x34, 0x56)' 'Color::Indexed(208)' 'Rgb(0x12, 0x34, 0x56)' \
     'Color::from_u32(0x0012_3456)' 'Color::from([0x12, 0x34, 0x56])' '"#123456".parse::<Color>().unwrap()' \
-    '"#123456".parse::<ratatui::style::Color>().unwrap()' '"#123456".parse::<::ratatui::style::Color>().unwrap()'; do
+    '"#123456".parse::<ratatui::style::Color>().unwrap()' '"#123456".parse::<::ratatui::style::Color>().unwrap()' \
+    'Color::from_str("#123456").unwrap()' 'Color::from_hsl(hsl)' 'Color::from_hsluv(hsluv)'; do
     printf 'use ratatui::style::Color;\npub const X: Color = %s;\n' "$lit" > "$d/src/tint.rs"
     (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
     assert_exit 1 "$rc" || return 1
@@ -4116,7 +4118,17 @@ test_stack_omarchy_tui_guard_refuses_rgb_and_256_colour_literals() {
   rm -f "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.guard" "required in CI"
+  assert_contains "$d.guard" "required in CI" || return 1
+  # The validator gets exactly the entry install.sh writes, and its failure fails the guard.
+  printf '#!/bin/sh\ncp "$1" "%s"\n' "$d.validated" > "$d.stub/validate" && chmod +x "$d.stub/validate" || return 1
+  (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN="$d.stub/validate" bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "the guard failed with a passing validator: $(cat "$d.guard")" || return 1
+  (cd "$d" && PREFIX=/usr/local ./scripts/install.sh --print-desktop-entry) | cmp -s - "$d.validated" \
+    || fail "the validator did not get install.sh's entry" || return 1
+  printf '#!/bin/sh\necho "validator: bad entry" >&2\nexit 1\n' > "$d.stub/validate"
+  (cd "$d" && CHECK_CI=1 DESKTOP_FILE_VALIDATE_BIN="$d.stub/validate" bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "validator: bad entry"
 }
 omarchy_tui_heavy_ready() {  # why the heavy omarchy-tui build can't run here; empty = run it
   if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
