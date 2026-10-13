@@ -4301,6 +4301,90 @@ test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
   assert_contains "$d.kit" "must be a full commit SHA" || return 1
   assert_absent "$WORK/omarchy-plugin-kit/cache"
 }
+test_stack_omarchy_plugin_kit_never_deletes_a_published_checkout() {
+  # Regression test. Two checks starting together on a cold cache both cloned,
+  # then the second one's `rm -rf` deleted the checkout the first had already
+  # handed to its guard, which lost Omarchy's validator mid-run. Stub git and rm
+  # (no network) hold the two runs in that window; the first checkout must stay.
+  local d="$WORK/omarchy-plugin-kit-race/demo-app" r="$WORK/omarchy-plugin-kit-race/run" ref kit pa pb rca rcb n ok
+  omarchy_plugin_project "$d" || return 1
+  ref="$(tr -d '[:space:]' < "$d/.omarchy-ref")"
+  kit="$r/cache/$ref"
+  mkdir -p "$r/bin" || return 1
+  cat > "$r/bin/git" <<'STUB' || return 1
+#!/bin/sh
+# clone, sparse-checkout and checkout fake a checkout of $REF; rev-parse reads it.
+# A run's second rev-parse waits until both runs have reached theirs.
+dir=.
+while :; do
+  case "$1" in
+    -C) dir="$2"; shift 2 ;;
+    -c) shift 2 ;;
+    *) break ;;
+  esac
+done
+case "$1" in
+  rev-parse)
+    n=$(( $(cat "$PROBE_ROOT/$PROBE_ID.revparse" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$PROBE_ROOT/$PROBE_ID.revparse"
+    if [ "$n" = 2 ] && [ "${PROBE_BARRIER:-1}" = 1 ]; then
+      : > "$PROBE_ROOT/$PROBE_ID.checked"
+      i=0
+      while { [ ! -e "$PROBE_ROOT/a.checked" ] || [ ! -e "$PROBE_ROOT/b.checked" ]; } && [ "$i" -lt 1000 ]; do
+        sleep 0.01; i=$((i + 1))
+      done
+    fi
+    [ -f "$dir/.head" ] && cat "$dir/.head" ;;
+  clone)
+    for dest; do :; done
+    mkdir -p "$dest/bin" && echo "validator cloned by $PROBE_ID" > "$dest/bin/omarchy-plugin-validate" ;;
+  checkout) printf '%s\n' "$REF" > "$dir/.head" ;;
+esac
+STUB
+  cat > "$r/bin/rm" <<'STUB' || return 1
+#!/bin/sh
+# Holds the second run's `rm -rf <cache entry>` until the first run has returned,
+# then lets the test look before the second run goes on.
+for last; do :; done
+if [ "$PROBE_ID" = b ] && [ "$last" = "$KIT" ]; then
+  i=0; while [ ! -e "$PROBE_ROOT/a.returned" ] && [ "$i" -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done
+  /bin/rm -rf "$last" && : > "$PROBE_ROOT/cache.deleted"
+  i=0; while [ ! -e "$PROBE_ROOT/continue" ] && [ "$i" -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done
+  exit 0
+fi
+exec /bin/rm "$@"
+STUB
+  chmod +x "$r/bin/git" "$r/bin/rm" || return 1
+  (cd "$d" && PATH="$r/bin:$(printenv PATH)" PROBE_ROOT="$r" PROBE_ID=a KIT="$kit" REF="$ref" \
+    OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/a.out" 2>"$r/a.err") & pa=$!
+  (cd "$d" && PATH="$r/bin:$(printenv PATH)" PROBE_ROOT="$r" PROBE_ID=b KIT="$kit" REF="$ref" \
+    OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/b.out" 2>"$r/b.err") & pb=$!
+  wait "$pa"; rca=$?
+  : > "$r/a.returned"
+  n=0
+  while kill -0 "$pb" 2>/dev/null && [ ! -e "$r/cache.deleted" ] && [ "$n" -lt 1000 ]; do
+    sleep 0.01; n=$((n + 1))
+  done
+  ok=1; [ -f "$kit/bin/omarchy-plugin-validate" ] || ok=0
+  : > "$r/continue"
+  wait "$pb"; rcb=$?
+  assert_exit 0 "$rca" || { cat "$r/a.err"; return 1; }
+  assert_exit 0 "$rcb" || { cat "$r/b.err"; return 1; }
+  [ "$ok" = 1 ] || fail "the second run deleted the checkout the first had returned" || return 1
+  { [ "$(cat "$r/a.out")" = "$kit" ] && [ "$(cat "$r/b.out")" = "$kit" ]; } \
+    || fail "the runs printed: $(cat "$r/a.out" "$r/b.out")" || return 1
+  # The losing clone is gone: nothing beside the cache entry, nothing inside it.
+  [ "$(LC_ALL=C ls -A "$r/cache")" = "$ref" ] || fail "left in the cache: $(ls -A "$r/cache")" || return 1
+  [ "$(LC_ALL=C ls -A "$kit" | tr '\n' ' ')" = ".head bin " ] || fail "left in the checkout: $(ls -A "$kit")" || return 1
+  # Something at the cache path that isn't the pinned checkout is reported, never deleted.
+  rm -rf "$r/cache" && mkdir -p "$kit" && : > "$kit/keep-me" || return 1
+  (cd "$d" && PATH="$r/bin:$(printenv PATH)" PROBE_ROOT="$r" PROBE_ID=c PROBE_BARRIER=0 KIT="$kit" REF="$ref" \
+    OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/c.out" 2>&1); rca=$?
+  assert_exit 1 "$rca" || return 1
+  assert_contains "$r/c.out" "is not Omarchy at $ref; delete it" || return 1
+  [ "$(LC_ALL=C ls -A "$kit")" = keep-me ] || fail "the stale entry changed: $(ls -A "$kit")" || return 1
+  [ "$(LC_ALL=C ls -A "$r/cache")" = "$ref" ] || fail "left in the cache: $(ls -A "$r/cache")"
+}
 omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empty = run it
   if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
     echo "needs Qt 6 and the network: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
