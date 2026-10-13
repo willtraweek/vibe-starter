@@ -5,7 +5,7 @@
 // named E2E journeys. Empty tiers require allow_empty. A metric with nothing to
 // measure (total 0) is n/a. --ratchet REF forbids lowering floors or targets and
 // removing tiers or members; renaming, moving or deleting a member means listing
-// its old path in the tier's `retired`.
+// its old path, which must no longer exist, in the tier's `retired`.
 //
 //   node scripts/coverage-tiers.mjs --validate          # config only (before tests)
 //   node scripts/coverage-tiers.mjs --check             # after vitest --coverage
@@ -124,6 +124,10 @@ export const validate = (config, { checkFiles = true } = {}) => {
           errors.push(`${key}: ${path} is listed twice across include and retired`)
         } else {
           seen.add(path)
+          // Retiring a file that still exists would drop a live module out of its floor.
+          if (checkFiles && existsSync(join(ROOT, path))) {
+            errors.push(`${key}: retired ${JSON.stringify(path)} still exists: only a renamed, moved or deleted member is retired`)
+          }
         }
       }
       if (!Array.isArray(members)) {

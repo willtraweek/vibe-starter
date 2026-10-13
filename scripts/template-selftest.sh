@@ -4756,6 +4756,14 @@ test_stack_foldkit_coverage_tiers_ratchet() {
   fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   (cd "$d" && git mv src/commands.ts src/command.ts) && cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
+  # Regression test. Retiring a member whose file still exists is not a move: it
+  # dropped a live module out of its tier's floor while validation and the
+  # ratchet stayed green.
+  fk_json "$d/coverage-tiers.json" 'c.tiers.api_surface.include = ["src/api/status.ts"]; c.tiers.api_surface.retired = ["src/command.ts"]' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" 'api_surface: retired "src/command.ts" still exists' || return 1
+  cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
   # Bases whose file is malformed, invalid, or unreadable fail (only a confirmed absence passes).
   base_with() {  # $1 = branch, $2 = coverage-tiers.json content
     (cd "$d" && git branch -f "$1" "$(git commit-tree -m "$1" "$(printf '100644 blob %s\tcoverage-tiers.json\n' \
