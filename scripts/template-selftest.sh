@@ -4346,12 +4346,16 @@ STUB
 }
 test_stack_omarchy_plugin_kit_refuses_an_unpinned_ref() {
   # One pin drives every host check; a branch name would drift under CI.
-  local d="$WORK/omarchy-plugin-kit/demo-app" rc
+  # A short or uppercase SHA never equals `git rev-parse HEAD`, so it would re-clone
+  # on every check (and turn ambiguous): only a full lowercase SHA passes.
+  local d="$WORK/omarchy-plugin-kit/demo-app" rc ref
   omarchy_plugin_project "$d" || return 1
-  printf 'quattro\n' > "$d/.omarchy-ref"
-  (cd "$d" && OMARCHY_KIT_DIR="$WORK/omarchy-plugin-kit/cache" ./scripts/omarchy-kit) >"$d.kit" 2>&1; rc=$?
-  assert_exit 1 "$rc" || return 1
-  assert_contains "$d.kit" "must be a full commit SHA" || return 1
+  for ref in quattro c668141 C668141E9C42B13C80C9CA4EA108E11708C5E8A5; do
+    printf '%s\n' "$ref" > "$d/.omarchy-ref"
+    (cd "$d" && OMARCHY_KIT_DIR="$WORK/omarchy-plugin-kit/cache" ./scripts/omarchy-kit) >"$d.kit" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $ref"; return 1; }
+    assert_contains "$d.kit" "must be a full commit SHA" || return 1
+  done
   assert_absent "$WORK/omarchy-plugin-kit/cache"
 }
 test_stack_omarchy_plugin_kit_never_deletes_a_published_checkout() {
@@ -4392,6 +4396,7 @@ case "$1" in
     for dest; do :; done
     mkdir -p "$dest/bin" && echo "validator cloned by $PROBE_ID" > "$dest/bin/omarchy-plugin-validate" ;;
   checkout) printf '%s\n' "$REF" > "$dir/.head" ;;
+  tag) [ "${PROBE_RELEASED:-1}" = 1 ] && echo v4.0.4 ;;
 esac
 STUB
   cat > "$r/bin/rm" <<'STUB' || return 1
@@ -4436,7 +4441,16 @@ STUB
   assert_exit 1 "$rca" || return 1
   assert_contains "$r/c.out" "is not Omarchy at $ref; delete it" || return 1
   [ "$(LC_ALL=C ls -A "$kit")" = keep-me ] || fail "the stale entry changed: $(ls -A "$kit")" || return 1
-  [ "$(LC_ALL=C ls -A "$r/cache")" = "$ref" ] || fail "left in the cache: $(ls -A "$r/cache")"
+  [ "$(LC_ALL=C ls -A "$r/cache")" = "$ref" ] || fail "left in the cache: $(ls -A "$r/cache")" || return 1
+  # Regression test. GitHub serves an unmerged pull request's commit by SHA too,
+  # and the kit runs its validator and scanner on every check: a commit in no
+  # Omarchy release (no v* tag contains it) is refused before checkout.
+  rm -rf "$r/cache" || return 1
+  (cd "$d" && PATH="$r/bin:$(printenv PATH)" PROBE_ROOT="$r" PROBE_ID=d PROBE_BARRIER=0 PROBE_RELEASED=0 KIT="$kit" \
+    REF="$ref" OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/d.out" 2>&1); rca=$?
+  assert_exit 1 "$rca" || return 1
+  assert_contains "$r/d.out" "is in no Omarchy release" || return 1
+  [ -z "$(ls -A "$r/cache" 2>/dev/null)" ] || fail "a refused commit left: $(ls -A "$r/cache")"
 }
 omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empty = run it
   if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then

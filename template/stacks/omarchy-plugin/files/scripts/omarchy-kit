@@ -25,6 +25,12 @@ if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
   git clone --quiet --filter=blob:none --no-checkout https://github.com/omacom/omarchy.git "$new" >&2
   git -C "$new" sparse-checkout set --no-cone /bin/omarchy-plugin-validate \
     /test/shell.d/qml-text-format-scan.py /shell/Commons/ /shell/Ui/ >&2
+  # Only a commit in an Omarchy release: GitHub also serves unmerged pull
+  # requests' commits by SHA, and this kit's code runs on every check.
+  if [ -z "$(GIT_NO_LAZY_FETCH=1 git -C "$new" tag --list 'v*' --contains "$ref" 2>/dev/null)" ]; then
+    echo "omarchy-kit: $ref is in no Omarchy release (a v* tag); pin .omarchy-ref to a released commit" >&2
+    exit 1
+  fi
   git -C "$new" -c advice.detachedHead=false checkout --quiet "$ref" >&2
   [ -e "$kit" ] || mv "$new" "$kit" 2>/dev/null || true
   if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
