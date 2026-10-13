@@ -4972,6 +4972,8 @@ test_stack_foldkit_pin_guard_fails_closed() {
   cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
   # Each case: a mutation (run in the project, with the pins in its environment)
   # and the text its failure must contain (@FK@ and friends are the pins).
+  # Regression case (the last): @foldkit/ui, a peer of @foldkit/devtools, had no
+  # pin, so pnpm resolved it on its own and no check held it to the train.
   while IFS='|' read -r bad want; do
     for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
     rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
@@ -5009,6 +5011,7 @@ node -e 'const fs=require("fs");const f="node_modules/@foldkit/devtools-mcp/pack
 node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.effect="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|@foldkit/vite-plugin @VP@ needs effect 0.0.1, package.json pins @EFFECT@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.peerDependencies={"left-pad":"github:alice-example/left-pad"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "github:alice-example/left-pad"
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));delete p.devDependencies["@foldkit/ui"];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools needs @foldkit/ui as a peer: pin @foldkit/ui to foldkit @FK@
 CASES
   # Regression test. gstack's four-part VERSION (a MICRO release) leaves
   # package.json at its npm form, the first three parts; check-pins refused it.
