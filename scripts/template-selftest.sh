@@ -1907,6 +1907,9 @@ colorama|taken by the Python standard library
 Python|reserved by Python or uv
 activate|reserved by Python or uv
 SiteCustomize|reserved by Python or uv
+target|a directory bootstrap leaves unfilled
+Dist|a directory bootstrap leaves unfilled
+node_modules|a directory bootstrap leaves unfilled
 Acme Example Inventory Reconciliation Service Version Two Ok1|too long for the python stack pack
 NAMES
 }

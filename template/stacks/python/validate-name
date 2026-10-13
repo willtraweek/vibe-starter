@@ -15,6 +15,14 @@ case "$1" in
     echo "Package name '$1' is reserved by Python or uv; choose another project name." >&2
     exit 2 ;;
 esac
+# The package becomes src/<name>/, and bootstrap fills placeholders everywhere but
+# in directories named node_modules, target or dist (build output): a package of
+# one of those names would keep its placeholders and fail its first import.
+case "$1" in
+  node_modules|target|dist)
+    echo "Package name '$1' is a directory bootstrap leaves unfilled; choose another project name." >&2
+    exit 2 ;;
+esac
 # Top-level standard-library modules (Python 3.14's sys.stdlib_module_names, public
 # lowercase names) and the pack's own tools. The editable src/ path comes after both
 # on sys.path, so a package with one of these names is shadowed: the new project's
