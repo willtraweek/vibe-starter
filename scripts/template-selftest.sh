@@ -3844,10 +3844,36 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "Omarchy surfaces are flat" || return 1
+  # Regression test. DESIGN.md bans shadows, glass and rounded pills too, but the
+  # guard refused only colours and gradients: each of these passed it.
+  while IFS='|' read -r lit want; do
+    printf 'pub fn style(el: gpui_kit::Div) -> gpui_kit::Div {\n    %s\n}\n' "$lit" > "$d/src/tint.rs"
+    (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $lit"; return 1; }
+    assert_contains "$d.guard" "$want" || return 1
+    assert_contains "$d.guard" "src/tint.rs:2:" || return 1
+  done <<'CASES'
+el.shadow_lg()|shadows in src/
+el.shadow_2xl()|shadows in src/
+el.shadow(vec![])|shadows in src/
+let shadows: Vec<gpui_kit::BoxShadow> = Vec::new();|shadows in src/
+el.rounded_full()|rounded pills in src/
+el.rounded_lg()|rounded pills in src/
+el.rounded_tl_3xl()|rounded pills in src/
+el.bg(gpui_kit::pattern_slash(cx.omarchy().border, 1.0, 4.0))|pattern fills in src/
+el.bg(gpui_kit::checkerboard(cx.omarchy().border, 8.0))|pattern fills in src/
+window_background: gpui_kit::WindowBackgroundAppearance::Blurred,|see-through window in src/
+window_background: gpui_kit::WindowBackgroundAppearance::Transparent,|see-through window in src/
+CASES
   # Colours from the theme's roles pass, and so does a helper named like a colour.
   printf 'pub fn tint(cx: &gpui_kit::App) -> gpui_kit::Hsla {\n    redraw_hint(cx.omarchy().accent.opacity(0.5))\n}\n' > "$d/src/tint.rs"
   (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
     || fail "theme-derived colours failed the guard: $(cat "$d.guard")" || return 1
+  # Small radii, removing a shadow, an opaque window and helpers named like a
+  # banned call pass too.
+  printf 'pub fn style(el: gpui_kit::Div) -> gpui_kit::Div {\n    shadowed_text(el.rounded_sm().rounded_none().shadow_none(), rounded_full_hint())\n}\npub const BG: gpui_kit::WindowBackgroundAppearance = gpui_kit::WindowBackgroundAppearance::Opaque;\n' > "$d/src/tint.rs"
+  (cd "$d" && CHECK_CI=0 DESKTOP_FILE_VALIDATE_BIN=/nonexistent bash scripts/check.d/omarchy.sh) >"$d.guard" 2>&1 \
+    || fail "flat, square styling failed the guard: $(cat "$d.guard")" || return 1
   rm -f "$d/src/tint.rs"
   # The Omarchy guards ship only with Omarchy packs: no other pack, and not the
   # shared Rust gates, refuses colours or gradients.
@@ -3859,10 +3885,10 @@ test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_
     esac
   done
   # ...and a plain rust project's own guards, the Rust gates included, accept
-  # colour and gradient text (needs a Rust toolchain, as the rust pack's tests do).
+  # colour, gradient and shadow text (needs a Rust toolchain, as the rust pack's tests do).
   if [ -z "$(rust_ready)" ]; then
     bootstrap_rust "$d.rust" || return 1
-    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
+    printf '// rgb(0) white() red() linear_gradient( Color::Rgb( shadow_lg( rounded_full( are fine outside Omarchy packs\n' >> "$d.rust/src/lib.rs"
     (cd "$d.rust" && for g in scripts/check.d/*.sh; do rust_env bash "$g" || exit 1; done) >"$d.rust.guard" 2>&1 \
       || fail "a plain rust project refused colour text: $(tail -20 "$d.rust.guard")" || return 1
   fi
