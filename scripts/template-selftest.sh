@@ -5776,6 +5776,12 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   expect_guard_failure 'src/domain/leak.ts:1: loads "foldkit/schema"' "a foldkit subpath import in src/domain" || return 1
   printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"
   expect_guard_failure "no vi.mock" "vi.mock( in a test" || return 1
+  # Regression test (#20 item 8): nothing showed that type-aware Oxlint and Oxfmt
+  # fail the guard. tsc passes both files below.
+  printf 'export const start = (): void => {\n  Promise.resolve(1)\n}\n' > "$d/src/domain/floating.ts"
+  expect_guard_failure "src/domain/floating.ts:2:3: error typescript(no-floating-promises)" "an unawaited promise in src" || return 1
+  printf 'export const spaced   =   1;\n' > "$d/src/domain/spaced.ts"
+  expect_guard_failure "Format issues found" "a file Oxfmt would reformat" || return 1
   perl -pi -e 's/foldkit\((?:\{ devToolsMcpPort: false \})?\)/foldkit({ devToolsMcpPort: 9988 })/' "$d/vite.config.ts" || return 1
   grep -q 'devToolsMcpPort: 9988' "$d/vite.config.ts" || fail "the devToolsMcpPort mutation did not apply" || return 1
   expect_guard_failure "unauthenticated DevTools relay" "a numeric devToolsMcpPort in vite.config.ts" || return 1
