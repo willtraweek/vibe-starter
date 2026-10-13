@@ -4997,7 +4997,7 @@ rejected('journeys must be a nonempty array', c => { delete c.journeys })
 rejected('journeys must be a nonempty array', c => { c.journeys = [] })
 rejected('journeys: each must be a nonempty string', c => { c.journeys = [1] })
 rejected('is listed twice', c => { c.journeys = [c.journeys[0], c.journeys[0]] })
-rejected('journeys: no test("a journey nobody wrote") in e2e/**/*.spec.ts', c => { c.journeys.push('a journey nobody wrote') })
+rejected('journeys: no test("a journey nobody wrote") in e2e/', c => { c.journeys.push('a journey nobody wrote') })
 // Journey titles come from plain test('...') calls, quoted either way; a skipped test is not a journey.
 writeFileSync('e2e/more.spec.ts', "import { test } from '@playwright/test'\n\ntest(\"it's double-quoted\", async () => {})\ntest('say \\'hi\\'', async () => {})\ntest.skip('skipped journey', async () => {})\n")
 try {
@@ -5006,6 +5006,37 @@ try {
 } finally {
   rmSync('e2e/more.spec.ts')
 }
+// Regression test. The scan read raw source, so a commented-out test still
+// counted as a journey. Comments are stripped; a // or /* inside a string,
+// template or regex literal is not a comment, and what follows it still counts.
+writeFileSync('e2e/comments.test.ts', [
+  "import { expect, test } from '@playwright/test'",
+  "// test('line comment journey', async () => {})",
+  "/* test('block comment journey', async () => {})",
+  "   test('second line of the block', async () => {}) */",
+  "const url = 'http://example.invalid/*'; test('after a string', async () => {})",
+  "const path = `//${url}/*`; test('after a template', async () => {})",
+  "test('after a regex', async () => { expect('//').toMatch(/\\/\\/|'|`|\\/\\*/) }); test('second on the line', async () => {})",
+  "test('trailing comment', async () => {}) // test('in the trailing comment', async () => {})",
+  '',
+].join('\n'))
+try {
+  const kept = ['after a string', 'after a template', 'after a regex', 'second on the line', 'trailing comment']
+  assert.deepEqual(tiers.validate({ ...config, journeys: [...config.journeys, ...kept] }), [])
+  for (const title of ['line comment journey', 'block comment journey', 'second line of the block', 'in the trailing comment']) {
+    rejected(`no test(${JSON.stringify(title)}) in e2e/`, c => { c.journeys.push(title) })
+  }
+} finally {
+  rmSync('e2e/comments.test.ts')
+}
+// retired_journeys: titles, each once, never also a journey (its test-file rule
+// is tested with the ratchet).
+rejected('retired_journeys must be an array of journey titles', c => { c.retired_journeys = 'old' })
+rejected('retired_journeys: each must be a nonempty string', c => { c.retired_journeys = [' '] })
+rejected('retired_journeys: each must be a nonempty string', c => { c.retired_journeys = [7] })
+rejected('"old" is listed twice across journeys and retired_journeys', c => { c.retired_journeys = ['old', 'old'] })
+rejected('is listed twice across journeys and retired_journeys', c => { c.retired_journeys = [c.journeys[0]] })
+assert.deepEqual(tiers.validate({ ...config, retired_journeys: ['a journey since deleted'] }), [])
 writeFileSync('coverage-tiers.json', original.replace('"minimum": 90', '"minimum": 91'))
 result = cli('--validate')
 assert.ok(result.status === 1 && result.stderr.includes('main_components: need 0 <= minimum <= target <= 100'), result.stderr)
@@ -5079,6 +5110,41 @@ test_stack_foldkit_coverage_tiers_ratchet() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.node.out" 'api_surface: retired "src/command.ts" still exists' || return 1
   cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
+  # Regression test. The ratchet compared tiers only: a journey dropped from
+  # coverage-tiers.json left the gate unnoticed. It leaves only through
+  # retired_journeys, once no test in e2e/ declares its title, skipped or not.
+  local journey spec_form
+  journey="$(node -p 'require(process.argv[1]).journeys[0]' "$d/coverage-tiers.json")" || return 1
+  cp "$d/e2e/home.spec.ts" "$d.home.spec.ts" || return 1
+  OLD="$journey" perl -pi -e 's/\Q$ENV{OLD}\E/renamed journey/' "$d/e2e/home.spec.ts" || return 1
+  OLD="$journey" fk_json "$d/coverage-tiers.json" 'c.journeys[c.journeys.indexOf(process.env.OLD)] = "renamed journey"' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.node.out" "journeys removed since HEAD: [\"$journey\"] (to rename or delete one, list its old title in retired_journeys)" || return 1
+  # A reviewed rename: the old title goes to retired_journeys.
+  OLD="$journey" fk_json "$d/coverage-tiers.json" 'c.retired_journeys = [process.env.OLD]' || return 1
+  fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  # A retired title still declared as a test, in any form, is not retired; a
+  # commented-out one is gone.
+  while IFS= read -r spec_form; do
+    OLD="$journey" node -e 'require("fs").writeFileSync(process.argv[1], "import { test } from \"@playwright/test\"\n\n" + process.argv[2].replaceAll("TITLE", JSON.stringify(process.env.OLD)) + "\n")' \
+      "$d/e2e/old.spec.ts" "$spec_form" || return 1
+    fk_node "$d" scripts/coverage-tiers.mjs --ratchet HEAD; rc=$?
+    case "$spec_form" in
+      //*) assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; } ;;
+      *) assert_exit 1 "$rc" || { echo "    retired while declared: $spec_form"; return 1; }
+        assert_contains "$d.node.out" "retired_journeys: \"$journey\" is still a test in e2e/ (skipped or not)" || return 1 ;;
+    esac
+  done <<'FORMS'
+test(TITLE, async () => {})
+test.skip(TITLE, async () => {})
+test.fixme(TITLE, async () => {})
+test.describe.skip('group', () => { test(TITLE, async () => {}) })
+test.fail.only(TITLE, async () => {})
+// test(TITLE, async () => {})
+FORMS
+  rm -f "$d/e2e/old.spec.ts" && cp "$d.home.spec.ts" "$d/e2e/home.spec.ts" && cp "$d.tiers.json" "$d/coverage-tiers.json" || return 1
   # Bases whose file is malformed, invalid, or unreadable fail (only a confirmed absence passes).
   base_with() {  # $1 = branch, $2 = coverage-tiers.json content
     (cd "$d" && git branch -f "$1" "$(git commit-tree -m "$1" "$(printf '100644 blob %s\tcoverage-tiers.json\n' \
@@ -5098,6 +5164,90 @@ test_stack_foldkit_coverage_tiers_ratchet() {
   fk_node "$d" scripts/coverage-tiers.mjs --ratchet invalid; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.node.out" "cannot read coverage-tiers.json at invalid"
+}
+test_stack_foldkit_journeys_must_run_and_pass() {
+  # Regression test. A journey counted once its title appeared in e2e/ source, so
+  # one inside test.describe.skip, or one calling test.skip() at runtime, kept
+  # the gate green without running. --journeys reads Playwright's JSON report:
+  # every attempt of every test with a journey's title must have passed, in
+  # every project and repeat. Hand-written reports in the format of
+  # @playwright/test's reporters/json stand in for real runs.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-journeys/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  cat > "$d/probe.mjs" <<'PROBE'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+
+const journeys = JSON.parse(readFileSync('coverage-tiers.json', 'utf8')).journeys
+const [journey] = journeys
+const name = JSON.stringify(journey)
+const attempt = (status, retry) => ({ workerIndex: 0, parallelIndex: 0, status, duration: 5, errors: [], stdout: [], stderr: [], retry, startTime: '2026-10-13T00:00:00.000Z', attachments: [], annotations: [] })
+const test = (statuses = ['passed'], project = 'chromium', expectedStatus = 'passed') =>
+  ({ timeout: 30000, annotations: [], expectedStatus, projectId: project, projectName: project, results: statuses.map(attempt), status: 'expected' })
+const spec = (title, tests = [test()], line = 5) => ({ title, ok: true, tags: [], tests, id: `${title}-${line}`, file: 'home.spec.ts', line, column: 1 })
+// A passing run of every journey, with `specs` (the first journey's) swapped in.
+const report = ({ specs = [spec(journey)], errors = [], nested = [] } = {}) => ({
+  config: { rootDir: '/project/e2e' },
+  suites: [{ title: 'home.spec.ts', file: 'home.spec.ts', line: 0, column: 0, specs: [...specs, ...journeys.slice(1).map((title, index) => spec(title, [test()], 20 + index))], suites: nested.length > 0 ? nested : undefined }],
+  errors,
+  stats: { startTime: '2026-10-13T00:00:00.000Z', duration: 9, expected: 1, skipped: 0, unexpected: 0, flaky: 0 },
+})
+const run = (data, expected, text, args = ['--journeys']) => {
+  mkdirSync('test-results', { recursive: true })
+  writeFileSync('test-results/journeys.json', typeof data === 'string' ? data : JSON.stringify(data))
+  const result = spawnSync(process.execPath, ['scripts/coverage-tiers.mjs', ...args], { encoding: 'utf8' })
+  const out = result.stdout + result.stderr
+  assert.equal(result.status, expected, out)
+  assert.ok(out.includes(text), `expected ${JSON.stringify(text)} in: ${out}`)
+  assert.ok(!/^\s+at /m.test(out), `stack trace in: ${out}`)
+}
+
+// Passed, in one project or several, and once per --repeat-each copy.
+run(report(), 0, `coverage-tiers: journey ${name} passed`)
+run(report({ specs: [spec(journey, [test(['passed'], 'chromium'), test(['passed'], 'firefox')])] }), 0, 'coverage-tiers: ok')
+run(report({ specs: [spec(journey), spec(journey)] }), 0, 'coverage-tiers: ok')
+// Every attempt counts, in every project and every copy.
+run(report({ specs: [spec(journey, [test(['skipped'])])] }), 1, `journey ${name} did not pass in project "chromium": skipped`)
+run(report({ specs: [spec(journey, [test(['failed'])])] }), 1, `journey ${name} did not pass in project "chromium": failed`)
+run(report({ specs: [spec(journey, [test(['failed', 'failed'])])] }), 1, 'did not pass in project "chromium": failed, then failed')
+run(report({ specs: [spec(journey, [test(['failed', 'passed'])])] }), 1, 'failed, then passed (flaky: a journey must pass on every attempt')
+run(report({ specs: [spec(journey, [test(['timedOut'])])] }), 1, `journey ${name} did not pass in project "chromium": timedOut`)
+run(report({ specs: [spec(journey, [test(['interrupted'])])] }), 1, `journey ${name} did not pass in project "chromium": interrupted`)
+run(report({ specs: [spec(journey, [test(['passed'], 'chromium'), test(['failed'], 'firefox')])] }), 1, `journey ${name} did not pass in project "firefox": failed`)
+run(report({ specs: [spec(journey), spec(journey, [test(['skipped'])])] }), 1, 'did not pass in project "chromium": skipped')
+run(report({ specs: [spec(journey, [test([]), test(['passed'], 'firefox')])] }), 1, `journey ${name} did not run in project "chromium" (no results)`)
+run(report({ specs: [spec(journey, [test(['passed'], 'chromium', 'failed')])] }), 1, `journey ${name} is expected to end "failed"`)
+// Missing: renamed, filtered out by --grep, or never declared.
+run(report({ specs: [spec('another test')] }), 1, `journey ${name} has no results in the Playwright report`)
+// The same title declared twice in one project: in two places, or two describes.
+run(report({ specs: [spec(journey, [test()], 5), spec(journey, [test()], 9)] }), 1, `journey ${name} is declared 2 times in project "chromium": home.spec.ts:5:1; home.spec.ts:9:1`)
+const describe = title => ({ title, file: 'home.spec.ts', line: 3, column: 1, specs: [spec(journey)] })
+run(report({ specs: [], nested: [describe('first'), describe('second')] }), 1, `journey ${name} is declared 2 times in project "chromium": home.spec.ts:5:1 (home.spec.ts › first); home.spec.ts:5:1 (home.spec.ts › second)`)
+// A report that is not a complete run fails whatever it says about journeys.
+run(report({ errors: [{ message: 'Error: http://localhost:4000 is already used\n  more detail' }] }), 1, 'the Playwright run reported errors: Error: http://localhost:4000 is already used')
+run({ ...report(), suites: [] }, 1, 'the Playwright report has no suites: no test ran')
+run({ ...report(), suites: [{ title: 'home.spec.ts', file: 'home.spec.ts', line: 0, column: 0, specs: journeys.map(title => spec(title, [test([])])) }] }, 1, 'the Playwright report has no test results: no test ran')
+run({ ...report(), errors: undefined }, 1, 'is it a Playwright JSON report?')
+run({ ...report(), suites: [{ title: 'home.spec.ts' }] }, 1, 'the Playwright report is malformed')
+run([], 1, 'the Playwright report must be a JSON object')
+run('{', 1, 'coverage-tiers: FAIL cannot load valid configuration/report')
+rmSync('test-results', { recursive: true, force: true })
+let result = spawnSync(process.execPath, ['scripts/coverage-tiers.mjs', '--journeys'], { encoding: 'utf8' })
+assert.ok(result.status === 1 && result.stderr.includes('no Playwright report at test-results/journeys.json: run pnpm exec playwright test first'), result.stderr)
+// --input reads another report; --journeys takes no value of its own.
+writeFileSync('other.json', JSON.stringify(report()))
+run('{', 0, 'coverage-tiers: ok', ['--journeys', '--input', 'other.json'])
+run('{', 0, 'coverage-tiers: ok', ['--journeys', '--input=other.json'])
+for (const args of [['--journeys=yes'], ['--journeys', '--check']]) {
+  result = spawnSync(process.execPath, ['scripts/coverage-tiers.mjs', ...args], { encoding: 'utf8' })
+  assert.equal(result.status, 2, `${JSON.stringify(args)}: ${result.stdout}${result.stderr}`)
+}
+console.log('journeys probes passed')
+PROBE
+  fk_node "$d" probe.mjs || fail "journeys probes failed: $(tail -25 "$d.node.out")" || return 1
+  assert_contains "$d.node.out" "journeys probes passed"
 }
 test_stack_foldkit_pin_guard_fails_closed() {
   # scripts/check-pins.mjs keeps package.json in gstack's byte form and in step with
@@ -5134,6 +5284,8 @@ test_stack_foldkit_pin_guard_fails_closed() {
   cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
   # Each case: a mutation (run in the project, with the pins in its environment)
   # and the text its failure must contain (@FK@ and friends are the pins).
+  # Regression case (the last): @foldkit/ui, a peer of @foldkit/devtools, had no
+  # pin, so pnpm resolved it on its own and no check held it to the train.
   while IFS='|' read -r bad want; do
     for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
     rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
@@ -5171,6 +5323,7 @@ node -e 'const fs=require("fs");const f="node_modules/@foldkit/devtools-mcp/pack
 node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.effect="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|@foldkit/vite-plugin @VP@ needs effect 0.0.1, package.json pins @EFFECT@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.peerDependencies={"left-pad":"github:alice-example/left-pad"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "github:alice-example/left-pad"
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));delete p.devDependencies["@foldkit/ui"];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools needs @foldkit/ui as a peer: pin @foldkit/ui to foldkit @FK@
 CASES
   # Regression test. gstack's four-part VERSION (a MICRO release) leaves
   # package.json at its npm form, the first three parts; check-pins refused it.
@@ -5222,6 +5375,81 @@ test_stack_foldkit_gitignore_covers_what_its_scripts_write() {
     coverage/coverage-summary.json test-results/x playwright-report/index.html blob-report/x tsconfig.tsbuildinfo; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit $f" || return 1
   done
+}
+test_stack_foldkit_design_md_records_every_token() {
+  # Regression test (design review). styles.css says its tokens come from
+  # DESIGN.md, but the pack shipped none, so a new project kept the template's
+  # placeholder DESIGN.md. The pack's own replaces it: no placeholder left, and
+  # every token styles.css defines is named with its value.
+  local d="$WORK/stack-foldkit-design/demo-app" t token value n=0
+  mkdir -p "$d.stub" || return 1
+  for t in pnpm node; do
+    printf '#!/bin/sh\nexit 1\n' > "$d.stub/$t" && chmod +x "$d.stub/$t" || return 1
+  done
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack foldkit --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d/DESIGN.md" "# Design System — Demo App" || return 1
+  assert_not_contains "$d/DESIGN.md" '{{' || return 1
+  while IFS='|' read -r token value; do
+    n=$((n + 1))
+    assert_contains "$d/DESIGN.md" "\`$token\`" || return 1
+    assert_contains "$d/DESIGN.md" "\`$value\`" || return 1
+  done < <(sed -n 's/^  \(--[a-z0-9-]*\): \(.*\);$/\1|\2/p' "$d/src/styles.css")
+  [ "$n" -ge 10 ] || fail "found only $n tokens in src/styles.css" || return 1
+  assert_contains "$d/DESIGN.md" "Light only" || return 1
+  assert_contains "$d/DESIGN.md" "system-ui"
+}
+test_stack_foldkit_button_has_states_and_a_44px_target() {
+  # Regression test (design review). .button had no :hover, :focus-visible or
+  # :active rule and stood about 27px tall. A static check of styles.css: each
+  # state has its own rule, through tokens; focus shows an accent outline 2px
+  # off the button; the button is at least 44px each way; every var() names a
+  # :root token.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  node -e '
+    const css = require("fs").readFileSync(process.argv[1], "utf8").replace(/\/\*[\s\S]*?\*\//g, "")
+    const rules = new Map()
+    for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const declarations = Object.fromEntries(body.split(";").filter(line => line.includes(":"))
+        .map(line => [line.slice(0, line.indexOf(":")).trim(), line.slice(line.indexOf(":") + 1).trim()]))
+      for (const selector of selectors.split(",")) rules.set(selector.trim(), { ...rules.get(selector.trim()), ...declarations })
+    }
+    const rule = selector => rules.get(selector) ?? {}
+    const root = rule(":root")
+    const resolve = value => value?.replace(/var\((--[\w-]+)\)/g, (_, name) => root[name] ?? "undefined")
+    const px = value => { const m = /^([\d.]+)(px|rem)$/.exec(resolve(value) ?? ""); return m ? Number(m[1]) * (m[2] === "rem" ? 16 : 1) : 0 }
+    const problems = []
+    for (const state of [":hover", ":active"]) {
+      const background = rule(".button" + state).background
+      if (!/^var\(--[\w-]+\)$/.test(background ?? "") || background === rule(".button").background) problems.push(".button" + state + " needs its own background token, got " + background)
+    }
+    const focus = rule(".button:focus-visible")
+    if (focus.outline !== "2px solid var(--color-accent)" || focus["outline-offset"] !== "2px") problems.push(".button:focus-visible needs outline: 2px solid var(--color-accent) and outline-offset: 2px, got " + JSON.stringify(focus))
+    for (const size of ["min-height", "min-width"]) {
+      if (!/^var\(--[\w-]+\)$/.test(rule(".button")[size] ?? "") || px(rule(".button")[size]) < 44) problems.push(".button " + size + " must be a token of at least 44px, got " + rule(".button")[size])
+    }
+    for (const [, name] of css.matchAll(/var\((--[\w-]+)\)/g)) if (root[name] === undefined) problems.push("var(" + name + ") is not a :root token")
+    if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1) }
+  ' "$REPO/template/stacks/foldkit/files/src/styles.css" >"$WORK/foldkit-button.out" 2>&1 \
+    || fail "styles.css: $(cat "$WORK/foldkit-button.out")"
+}
+test_stack_foldkit_ship_gate_runs_every_ci_gate() {
+  # Regression test. Neither gate checked that the named journeys ran: Playwright
+  # exits 0 when a journey is skipped. SHIP_GATE runs CI's gate steps in CI's
+  # order, and both read the journeys report right after the Playwright run
+  # (Playwright empties test-results/ when a run starts, so it is that run's).
+  local gate steps
+  gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/foldkit/commands")"
+  [ -n "$gate" ] || fail "no SHIP_GATE in the foldkit pack" || return 1
+  # Every single-line run: step but the browser install; the PR-only ratchet is a block.
+  steps="$(sed -n 's/^ *run: //p' "$REPO/template/stacks/foldkit/files/.github/workflows/ci.yml" \
+    | grep -v -e '^|' -e '^pnpm exec playwright install ' | awk 'NR > 1 { printf " && " } { printf "%s", $0 }')"
+  [ "$steps" = "$gate" ] || fail "SHIP_GATE ($gate) does not run ci.yml's gate steps in order ($steps)" || return 1
+  case " && $gate && " in
+    *" && pnpm exec playwright test && node scripts/coverage-tiers.mjs --journeys && "*) ;;
+    *) fail "SHIP_GATE must check the journeys right after pnpm exec playwright test: $gate" ;;
+  esac
 }
 test_stack_foldkit_template_ci_matches_the_pack() {
   # The heavy job's pnpm is the version new projects pin, and both workflows pin
@@ -5278,11 +5506,23 @@ test_heavy_stack_foldkit_project_is_green_on_first_run() {
     && stack_env ./scripts/coverage.sh \
     && stack_env pnpm exec playwright install $pw_deps chromium \
     && stack_env pnpm exec playwright test \
+    && stack_env node scripts/coverage-tiers.mjs --journeys \
     && stack_env pnpm build) >"$d.gate.out" 2>&1 \
     || fail "the new project's own gate failed: $(tail -25 "$d.gate.out")" || return 1
   assert_contains "$d.gate.out" "OK: checks passed." || return 1
   assert_contains "$d.gate.out" "coverage-tiers: ok" || return 1
-  assert_contains "$d.gate.out" "1 passed" || return 1
+  # Every named journey ran and passed, read from Playwright's own JSON report
+  # (a "1 passed" anywhere in the output proved neither).
+  (cd "$d" && node -e '
+    const report = require("./test-results/journeys.json")
+    const specs = suite => [...suite.specs, ...(suite.suites ?? []).flatMap(specs)]
+    const all = report.suites.flatMap(specs)
+    if (report.errors.length > 0) throw new Error("the run reported errors: " + JSON.stringify(report.errors))
+    for (const title of require("./coverage-tiers.json").journeys) {
+      const statuses = all.filter(spec => spec.title === title).flatMap(spec => spec.tests).flatMap(test => test.results).map(result => result.status)
+      if (statuses.length === 0 || statuses.some(status => status !== "passed")) throw new Error(title + ": " + JSON.stringify(statuses))
+      console.log("journey passed: " + title)
+    }') >"$d.journeys.out" 2>&1 || fail "a named journey did not pass: $(cat "$d.journeys.out")" || return 1
   [ -z "$(git -C "$d" status --porcelain)" ] || fail "the gate left files git would commit: $(git -C "$d" status --porcelain | head -5)"
 }
 test_heavy_stack_foldkit_longest_name_passes_guards_and_tests() {
@@ -5300,7 +5540,7 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
   # gstack /ship writes VERSION and package.json's version (as
   # JSON.stringify(p, null, 2) + "\n"). The lockfile holds neither, so the frozen
   # install still passes, the guards pass, and the build shows the new version.
-  local d="$WORK/heavy-foldkit-bump/demo" why
+  local d="$WORK/heavy-foldkit-bump/demo" why pw_deps=""
   why="$(foldkit_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   foldkit_project "$d" demo || return 1
@@ -5309,7 +5549,15 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
   (cd "$d" && stack_env pnpm install --frozen-lockfile && stack_env bash scripts/check.d/foldkit.sh \
     && stack_env pnpm build) >"$d.gate.out" 2>&1 || fail "the gate failed after a version bump: $(tail -25 "$d.gate.out")" || return 1
   cmp -s "$REPO/template/stacks/foldkit/files/pnpm-lock.yaml" "$d/pnpm-lock.yaml" || fail "the bump changed pnpm-lock.yaml" || return 1
-  grep -qF '0.1.0' "$d"/dist/assets/*.js || fail "the build does not carry VERSION 0.1.0"
+  grep -qF '0.1.0' "$d"/dist/assets/*.js || fail "the build does not carry VERSION 0.1.0" || return 1
+  # Regression test. A gstack MICRO release writes VERSION 0.1.0.1 and leaves
+  # package.json at its npm form, 0.1.0; the page said "Version unknown". The
+  # E2E journey compares the page with package.json's version.
+  printf '0.1.0.1\n' > "$d/VERSION"
+  [ "${CI:-}" != "true" ] || pw_deps="--with-deps"
+  (cd "$d" && stack_env bash scripts/check.d/foldkit.sh && stack_env pnpm exec playwright install $pw_deps chromium \
+    && stack_env pnpm exec playwright test && stack_env node scripts/coverage-tiers.mjs --journeys) >"$d.micro.out" 2>&1 \
+    || fail "the gate failed on the MICRO VERSION 0.1.0.1: $(tail -25 "$d.micro.out")"
 }
 test_heavy_stack_foldkit_guards_fail_closed() {
   # Each guard fails closed on the change it exists to stop, and passes again
@@ -5329,6 +5577,21 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   }
   perl -pi -e 's/^\/\/ UPDATE$/export const now = () => Date.now()\n\n\/\/ UPDATE/' "$d/src/main.ts" || return 1
   expect_guard_failure "effect(globalDate)" "Date.now() in src/main.ts" || return 1
+  # tsconfig's src/** override (production files) lists only the rules it adds:
+  # the patched tsc merges it with the base rule by rule, so the base's errors
+  # still hold there. Production and test files are checked one at a time.
+  printf "import { Effect } from 'effect'\n\nexport const leak = () => {\n  Effect.log('lost')\n}\n" > "$d/src/domain/floating.ts"
+  expect_guard_failure "effect(floatingEffect)" "a floating Effect in src/domain" || return 1
+  printf "import { Effect } from 'effect'\n\nimport { it } from '@effect/vitest'\n\nit('floats', () => {\n  Effect.log('lost')\n})\n" > "$d/src/floating.test.ts"
+  expect_guard_failure "effect(floatingEffect)" "a floating Effect in a test file" || return 1
+  # outdatedApi defaults to a warning: reported as an error in a production
+  # file, the base's severity reached a file the override matches.
+  printf "import { Effect } from 'effect'\n\nexport const legacy = Effect.succeed(1).pipe(\n  Effect.catchAll(() => Effect.succeed(2)),\n)\n" > "$d/src/domain/legacy.ts"
+  guard; rc=$?
+  [ "$rc" -ne 0 ] || fail "the guard passed with an Effect v3 API in src/domain" || return 1
+  grep -qE '^src/domain/legacy\.ts\([0-9]+,[0-9]+\): error TS[0-9]+: .*effect\(outdatedApi\)' "$d.guard.out" \
+    || fail "outdatedApi is not an error in a production file: $(grep -F 'legacy.ts' "$d.guard.out" | head -3)" || return 1
+  (cd "$d" && git checkout -q -- . && git clean -qfd -e node_modules -e repos) || return 1
   printf "import { Command } from 'foldkit'\n\nexport const leak = Command\n" > "$d/src/domain/leak.ts"
   expect_guard_failure "src/domain and src/api must not import foldkit" "a foldkit import in src/domain" || return 1
   printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"

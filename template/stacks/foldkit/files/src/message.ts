@@ -16,5 +16,6 @@ export const Message = defineMessageUnion({
   ClickedRetryStatus: {},
   SucceededFetchStatus: { payload: StatusPayload },
   FailedFetchStatus: { reason: FailureReason, detail: Schema.String },
+  CompletedFocusStatusPanel: {},
 })
 export type Message = typeof Message.Type

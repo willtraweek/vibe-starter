@@ -35,6 +35,7 @@
     "@foldkit/devtools": "0.165.0",
     "@foldkit/devtools-mcp": "0.24.0",
     "@foldkit/oxlint-plugin": "0.15.1",
+    "@foldkit/ui": "0.165.0",
     "@foldkit/vite-plugin": "0.26.0",
     "@playwright/test": "1.63.0",
     "@vitest/coverage-v8": "5.0.1",

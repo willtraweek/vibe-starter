@@ -2,16 +2,28 @@
 // Independent global and tier coverage gates; Node standard library only (TESTING.md).
 //
 // Config lives in coverage-tiers.json: tiers (explicit src/**/*.ts members) and the
-// named E2E journeys. Empty tiers require allow_empty. A metric with nothing to
-// measure (total 0) is n/a. --ratchet REF forbids lowering floors or targets and
-// removing tiers or members; renaming, moving or deleting a member means listing
-// its old path, which must no longer exist, in the tier's `retired`.
+// named E2E journeys (Playwright test titles). Empty tiers require allow_empty. A
+// metric with nothing to measure (total 0) is n/a. --ratchet REF forbids lowering
+// floors or targets and removing tiers, members or journeys; renaming, moving or
+// deleting a member means listing its old path, which must no longer exist, in the
+// tier's `retired`, and a journey leaves through `retired_journeys` once no test in
+// e2e/ declares its title (skipped or not).
+//
+// --journeys reads Playwright's JSON report (playwright.config.ts writes it into
+// test-results/, which Playwright empties when a run starts) and fails unless every
+// journey ran and passed: every attempt of every test with that title, in every
+// project and repeat. A retry that passed after a failure still fails the gate (a
+// journey must not break, and the config runs with retries: 0), as do skipped,
+// interrupted and timed-out runs, a journey with no results, a title declared twice
+// in one project, and a report with errors, no suites or no results. Run it right
+// after a successful `pnpm exec playwright test`.
 //
 //   node scripts/coverage-tiers.mjs --validate          # config only (before tests)
 //   node scripts/coverage-tiers.mjs --check             # after vitest --coverage
 //   node scripts/coverage-tiers.mjs --report            # markdown snapshot table
+//   node scripts/coverage-tiers.mjs --journeys          # after playwright test
 //   node scripts/coverage-tiers.mjs --ratchet origin/main
-//   ... --input coverage/coverage-summary.json          # the default
+//   ... --input FILE  # default coverage/coverage-summary.json (--journeys: test-results/journeys.json)
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
@@ -19,15 +31,15 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const CONFIG = 'coverage-tiers.json'
+const JOURNEYS_REPORT = 'test-results/journeys.json'
 const GLOBAL_MINIMUM = 90
 const METRICS = ['lines', 'branches', 'functions']
 const GLOBAL_METRICS = ['lines', 'branches']
 const TIER_KEYS = new Set(['title', 'minimum', 'target', 'include', 'allow_empty', 'retired'])
-const TOP_KEYS = new Set(['tiers', 'journeys'])
+const TOP_KEYS = new Set(['tiers', 'journeys', 'retired_journeys'])
 
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value)
 const isNumber = value => typeof value === 'number' && Number.isFinite(value)
-const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
 
 export const validPath = path =>
   typeof path === 'string' &&
@@ -48,6 +60,9 @@ const insideRoot = path => {
   }
 }
 
+// Playwright's default testMatch, which playwright.config.ts keeps.
+const TEST_FILE = /\.(?:spec|test)\.[cm]?[jt]sx?$/
+
 const specFiles = dir => {
   if (!existsSync(dir)) {
     return []
@@ -57,21 +72,123 @@ const specFiles = dir => {
     if (entry.isDirectory()) {
       return specFiles(path)
     }
-    return entry.isFile() && entry.name.endsWith('.spec.ts') ? [path] : []
+    return entry.isFile() && TEST_FILE.test(entry.name) ? [path] : []
   })
 }
 
-// Titles of plain test('...') calls: test.skip/fixme/only do not count as journeys.
-export const journeyTitles = () => {
+// Where the string, template text or regex literal that starts at `start` ends (the
+// index after it). An unterminated string or regex stops at the end of its line.
+const endOfQuoted = (source, start) => {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === '\\') {
+      index += 1
+    } else if (source[index] === '\n') {
+      return index
+    } else if (source[index] === source[start]) {
+      return index + 1
+    }
+  }
+  return source.length
+}
+const endOfTemplateText = (source, start) => {
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === '\\') {
+      index += 1
+    } else if (source[index] === '`') {
+      return { end: index + 1, substitution: false }
+    } else if (source.startsWith('${', index)) {
+      return { end: index + 2, substitution: true }
+    }
+  }
+  return { end: source.length, substitution: false }
+}
+const endOfRegex = (source, start) => {
+  let inClass = false
+  for (let index = start + 1; index < source.length && source[index] !== '\n'; index += 1) {
+    if (source[index] === '\\') {
+      index += 1
+    } else if (source[index] === '[' || source[index] === ']') {
+      inClass = source[index] === '['
+    } else if (source[index] === '/' && !inClass) {
+      const flags = /[a-z]*/y
+      flags.lastIndex = index + 1
+      flags.test(source)
+      return flags.lastIndex
+    }
+  }
+  return -1
+}
+// Words after which a / starts a regex literal rather than a division.
+const BEFORE_REGEX = /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/
+
+// The source with every comment blanked out (line breaks kept), so a commented-out
+// test() declares nothing. Strings, template literals and regex literals are read
+// whole, so a // or /* inside one is not taken for a comment.
+export const stripComments = source => {
+  const word = /[A-Za-z_$][\w$]*|\d[\w.]*/y
+  const substitutions = [] // the { depth inside each open template ${...}
+  let out = ''
+  let index = 0
+  let regexAllowed = true
+  const take = (end, allowsRegex) => {
+    out += source.slice(index, end)
+    index = end
+    regexAllowed = allowsRegex
+  }
+  while (index < source.length) {
+    const char = source[index]
+    word.lastIndex = index
+    if (source.startsWith('//', index) || source.startsWith('/*', index)) {
+      const line = source[index + 1] === '/'
+      const close = line ? source.indexOf('\n', index) : source.indexOf('*/', index + 2)
+      const end = close === -1 ? source.length : close + (line ? 0 : 2)
+      out += source.slice(index, end).replace(/[^\n]/g, ' ')
+      index = end
+    } else if (char === '`' || (char === '}' && substitutions.at(-1) === 0)) {
+      if (char === '}') {
+        substitutions.pop()
+      }
+      const text = endOfTemplateText(source, index + 1)
+      if (text.substitution) {
+        substitutions.push(0)
+      }
+      take(text.end, text.substitution)
+    } else if (char === '"' || char === "'") {
+      take(endOfQuoted(source, index), false)
+    } else if (char === '/' && regexAllowed && endOfRegex(source, index) !== -1) {
+      take(endOfRegex(source, index), false)
+    } else if (word.test(source)) {
+      take(word.lastIndex, BEFORE_REGEX.test(source.slice(index, word.lastIndex)))
+    } else if (/\s/.test(char)) {
+      take(index + 1, regexAllowed)
+    } else {
+      if (substitutions.length > 0 && (char === '{' || char === '}')) {
+        substitutions[substitutions.length - 1] += char === '{' ? 1 : -1
+      }
+      take(index + 1, !/[)\]}]/.test(char))
+    }
+  }
+  return out
+}
+
+const TITLE = String.raw`\(\s*(['"])((?:\\.|(?!\1)[^\\\n])*)\1`
+const titlesIn = call => {
   const titles = new Set()
-  const call = /(?<![.\w])test\(\s*(['"])((?:\\.|(?!\1)[^\\\n])*)\1/g
   for (const file of specFiles(join(ROOT, 'e2e'))) {
-    for (const match of readFileSync(file, 'utf8').matchAll(call)) {
+    for (const match of stripComments(readFileSync(file, 'utf8')).matchAll(call)) {
       titles.add(match[2].replace(/\\(.)/g, '$1'))
     }
   }
   return titles
 }
+
+// Titles of plain test('...') calls: test.skip/fixme/only do not count as journeys.
+export const journeyTitles = () => titlesIn(new RegExp(String.raw`(?<![.\w$])test\s*${TITLE}`, 'g'))
+
+// Titles of every test declaration, skipped or not (test.skip, test.fixme, test.only,
+// test.fail, and a test inside test.describe.skip): a retired journey must have none.
+export const declaredTitles = () =>
+  titlesIn(new RegExp(String.raw`(?<![.\w$])test(?:\s*\.\s*(?:only|skip|fixme|fail))*\s*${TITLE}`, 'g'))
 
 export const validate = (config, { checkFiles = true } = {}) => {
   if (!isObject(config)) {
@@ -107,11 +224,11 @@ export const validate = (config, { checkFiles = true } = {}) => {
       if (typeof tier.title !== 'string' || tier.title.trim() === '') {
         errors.push(`${key}: title must be a nonempty string`)
       }
-      if (own(tier, 'allow_empty') && typeof tier.allow_empty !== 'boolean') {
+      if (Object.hasOwn(tier, 'allow_empty') && typeof tier.allow_empty !== 'boolean') {
         errors.push(`${key}: allow_empty must be boolean`)
       }
       const members = tier.include
-      let retired = own(tier, 'retired') ? tier.retired : []
+      let retired = Object.hasOwn(tier, 'retired') ? tier.retired : []
       if (!Array.isArray(retired)) {
         errors.push(`${key}: retired must be an array`)
         retired = []
@@ -166,8 +283,28 @@ export const validate = (config, { checkFiles = true } = {}) => {
       } else {
         seen.add(journey)
         if (checkFiles && !titles.has(journey)) {
-          errors.push(`journeys: no test(${JSON.stringify(journey)}) in e2e/**/*.spec.ts`)
+          errors.push(`journeys: no test(${JSON.stringify(journey)}) in e2e/ (commented-out and skipped tests do not count)`)
         }
+      }
+    }
+  }
+  let retiredJourneys = Object.hasOwn(config, 'retired_journeys') ? config.retired_journeys : []
+  if (!Array.isArray(retiredJourneys)) {
+    errors.push('retired_journeys must be an array of journey titles')
+    retiredJourneys = []
+  }
+  const declared = checkFiles && retiredJourneys.length > 0 ? declaredTitles() : new Set()
+  const retiredSeen = new Set()
+  for (const title of retiredJourneys) {
+    if (typeof title !== 'string' || title.trim() === '') {
+      errors.push(`retired_journeys: each must be a nonempty string: ${JSON.stringify(title)}`)
+    } else if (retiredSeen.has(title) || (Array.isArray(journeys) && journeys.includes(title))) {
+      errors.push(`retired_journeys: ${JSON.stringify(title)} is listed twice across journeys and retired_journeys`)
+    } else {
+      retiredSeen.add(title)
+      // Retiring a journey whose test is still there would drop it out of the gate.
+      if (declared.has(title)) {
+        errors.push(`retired_journeys: ${JSON.stringify(title)} is still a test in e2e/ (skipped or not): only a renamed or deleted journey is retired`)
       }
     }
   }
@@ -254,7 +391,7 @@ export const measure = (config, report) => {
     for (const path of tier.include) {
       const value = files.get(path)
       if (value === undefined) {
-        if (!own(report, join(root, path))) {
+        if (!Object.hasOwn(report, join(root, path))) {
           errors.push(`${key}: ${path} is not in the coverage report (never imported, or excluded from coverage)`)
         }
         continue
@@ -382,19 +519,124 @@ export const ratchet = (config, ref) => {
       )
     }
   }
+  // A journey leaves the gate only through retired_journeys, once its test is gone.
+  const keptJourneys = new Set([...config.journeys, ...(config.retired_journeys ?? [])])
+  const droppedJourneys = old.journeys.filter(title => !keptJourneys.has(title)).toSorted()
+  if (droppedJourneys.length > 0) {
+    errors.push(
+      `journeys removed since ${ref}: ${JSON.stringify(droppedJourneys)} ` +
+        '(to rename or delete one, list its old title in retired_journeys)',
+    )
+  }
+  return errors
+}
+
+const firstLine = value => String(value ?? '').split('\n').find(line => line.trim() !== '') ?? ''
+
+// Each test in a Playwright JSON report (reporters/json in @playwright/test:
+// suites > specs > tests > results), with the path of suite titles that
+// declared it, so a --repeat-each copy (same path) differs from a duplicate.
+const reportedTests = (report, errors) => {
+  const found = []
+  const visit = (suite, path) => {
+    if (!isObject(suite) || !Array.isArray(suite.specs) || (suite.suites !== undefined && !Array.isArray(suite.suites))) {
+      errors.push(`the Playwright report is malformed: a suite under ${JSON.stringify(path.join(' › '))} has no specs array`)
+      return
+    }
+    const here = [...path, String(suite.title)]
+    const context = here.join(' › ')
+    for (const spec of suite.specs) {
+      if (!isObject(spec) || typeof spec.title !== 'string' || !Array.isArray(spec.tests)) {
+        errors.push(`the Playwright report is malformed: a spec in ${JSON.stringify(context)} has no title or tests`)
+        continue
+      }
+      const at = `${spec.file}:${spec.line}:${spec.column}`
+      const declaration = context === spec.file ? at : `${at} (${context})`
+      for (const test of spec.tests) {
+        if (!isObject(test) || !Array.isArray(test.results)) {
+          errors.push(`the Playwright report is malformed: ${JSON.stringify(spec.title)} has a test without a results array`)
+          continue
+        }
+        found.push({
+          title: spec.title,
+          declaration,
+          project: String(test.projectName ?? ''),
+          expectedStatus: test.expectedStatus,
+          statuses: test.results.map(result => (typeof result?.status === 'string' ? result.status : 'no status')),
+        })
+      }
+    }
+    for (const child of suite.suites ?? []) {
+      visit(child, here)
+    }
+  }
+  for (const suite of report.suites) {
+    visit(suite, [])
+  }
+  return found
+}
+
+export const checkJourneys = (config, report) => {
+  if (!isObject(report)) {
+    return ['the Playwright report must be a JSON object']
+  }
+  const errors = []
+  if (!Array.isArray(report.errors)) {
+    errors.push('the Playwright report has no errors array: is it a Playwright JSON report?')
+  } else if (report.errors.length > 0) {
+    errors.push(`the Playwright run reported errors: ${report.errors.map(error => firstLine(isObject(error) ? error.message : error)).join('; ')}`)
+  }
+  if (!Array.isArray(report.suites) || report.suites.length === 0) {
+    return [...errors, 'the Playwright report has no suites: no test ran']
+  }
+  const tests = reportedTests(report, errors)
+  if (tests.every(test => test.statuses.length === 0)) {
+    errors.push('the Playwright report has no test results: no test ran')
+  }
+  if (errors.length > 0) {
+    return errors
+  }
+  for (const title of config.journeys) {
+    const name = JSON.stringify(title)
+    const runs = tests.filter(test => test.title === title)
+    if (runs.length === 0) {
+      errors.push(`journey ${name} has no results in the Playwright report: it did not run (renamed, filtered out, or never declared?)`)
+      continue
+    }
+    const declarations = new Map()
+    for (const run of runs) {
+      declarations.set(run.project, (declarations.get(run.project) ?? new Set()).add(run.declaration))
+    }
+    for (const [project, where] of declarations) {
+      if (where.size > 1) {
+        errors.push(`journey ${name} is declared ${where.size} times in project ${JSON.stringify(project)}: ${[...where].join('; ')} (give each journey one test with a unique title)`)
+      }
+    }
+    for (const run of runs) {
+      const where = `in project ${JSON.stringify(run.project)}`
+      if (run.statuses.length === 0) {
+        errors.push(`journey ${name} did not run ${where} (no results)`)
+      } else if (run.statuses.some(status => status !== 'passed')) {
+        const flaky = run.statuses.at(-1) === 'passed' ? ' (flaky: a journey must pass on every attempt, retries included)' : ''
+        errors.push(`journey ${name} did not pass ${where}: ${run.statuses.join(', then ')}${flaky}`)
+      } else if (run.expectedStatus !== 'passed') {
+        errors.push(`journey ${name} is expected to end ${JSON.stringify(run.expectedStatus)} ${where} (test.fail or test.skip): a journey must be expected to pass`)
+      }
+    }
+  }
   return errors
 }
 
 const usage = message => {
   console.error(`coverage-tiers: ${message}`)
-  console.error('usage: node scripts/coverage-tiers.mjs (--validate | --check | --report | --ratchet REF) [--input FILE]')
+  console.error('usage: node scripts/coverage-tiers.mjs (--validate | --check | --report | --journeys | --ratchet REF) [--input FILE]')
   process.exit(2)
 }
 
 const parseArgs = argv => {
   let mode
   let ref
-  let input = 'coverage/coverage-summary.json'
+  let input
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     const [flag, inline] = arg.startsWith('--') && arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, undefined]
@@ -408,9 +650,9 @@ const parseArgs = argv => {
       }
       return argv[index]
     }
-    if (['--validate', '--check', '--report', '--ratchet'].includes(flag)) {
+    if (['--validate', '--check', '--report', '--journeys', '--ratchet'].includes(flag)) {
       if (mode !== undefined) {
-        usage('choose exactly one of --validate, --check, --report, --ratchet')
+        usage('choose exactly one of --validate, --check, --report, --journeys, --ratchet')
       }
       mode = flag
       if (flag === '--ratchet') {
@@ -428,9 +670,9 @@ const parseArgs = argv => {
     }
   }
   if (mode === undefined) {
-    usage('choose one of --validate, --check, --report, --ratchet')
+    usage('choose one of --validate, --check, --report, --journeys, --ratchet')
   }
-  return { mode, ref, input }
+  return { mode, ref, input: input ?? (mode === '--journeys' ? JOURNEYS_REPORT : 'coverage/coverage-summary.json') }
 }
 
 const main = argv => {
@@ -451,6 +693,16 @@ const main = argv => {
       }
       if (errors.length === 0) {
         errors = check(config, measured.measured, measured.files)
+      }
+    } else if (errors.length === 0 && mode === '--journeys') {
+      // Playwright empties test-results/ when a run starts: no report, no run.
+      errors = existsSync(join(ROOT, input))
+        ? checkJourneys(config, JSON.parse(readFileSync(join(ROOT, input), 'utf8')))
+        : [`no Playwright report at ${input}: run pnpm exec playwright test first`]
+      if (errors.length === 0) {
+        for (const title of config.journeys) {
+          console.log(`coverage-tiers: journey ${JSON.stringify(title)} passed`)
+        }
       }
     }
   } catch (error) {

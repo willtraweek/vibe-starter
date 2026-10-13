@@ -179,6 +179,10 @@ if (foldkit !== undefined) {
       errors.push(`${name} ${deps[name]} must equal foldkit ${deps.foldkit} (they release together)`)
     }
   }
+  // Unpinned, the peer is whatever version pnpm resolves.
+  if (deps['@foldkit/devtools'] !== undefined && deps['@foldkit/ui'] === undefined) {
+    errors.push(`@foldkit/devtools needs @foldkit/ui as a peer: pin @foldkit/ui to foldkit ${deps.foldkit}`)
+  }
 }
 
 for (const error of errors) {

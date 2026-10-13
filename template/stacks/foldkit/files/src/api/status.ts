@@ -44,6 +44,10 @@ const toRequestFailure = (
 const toMalformed = (error: { readonly message: string }) =>
   new StatusMalformedError({ detail: error.message })
 
+// NOTE: the timeout covers the whole exchange, body included, so a server that
+// sends its headers and then stalls the body times out too.
+const STATUS_TIMEOUT = '10 seconds'
+
 export const fetchStatus: Effect.Effect<
   StatusPayload,
   StatusError,
@@ -57,4 +61,14 @@ export const fetchStatus: Effect.Effect<
   return yield* Schema.decodeUnknownEffect(StatusPayload)(body).pipe(
     Effect.mapError(toMalformed),
   )
-})
+}).pipe(
+  Effect.timeoutOrElse({
+    duration: STATUS_TIMEOUT,
+    orElse: () =>
+      Effect.fail(
+        new StatusUnreachableError({
+          detail: `timed out after ${STATUS_TIMEOUT}`,
+        }),
+      ),
+  }),
+)
