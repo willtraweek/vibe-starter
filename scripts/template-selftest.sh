@@ -5214,6 +5214,40 @@ test_stack_foldkit_gitignore_covers_what_its_scripts_write() {
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit $f" || return 1
   done
 }
+test_stack_foldkit_button_has_states_and_a_44px_target() {
+  # Regression test (design review). .button had no :hover, :focus-visible or
+  # :active rule and stood about 27px tall. A static check of styles.css: each
+  # state has its own rule, through tokens; focus shows an accent outline 2px
+  # off the button; the button is at least 44px each way; every var() names a
+  # :root token.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  node -e '
+    const css = require("fs").readFileSync(process.argv[1], "utf8").replace(/\/\*[\s\S]*?\*\//g, "")
+    const rules = new Map()
+    for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const declarations = Object.fromEntries(body.split(";").filter(line => line.includes(":"))
+        .map(line => [line.slice(0, line.indexOf(":")).trim(), line.slice(line.indexOf(":") + 1).trim()]))
+      for (const selector of selectors.split(",")) rules.set(selector.trim(), { ...rules.get(selector.trim()), ...declarations })
+    }
+    const rule = selector => rules.get(selector) ?? {}
+    const root = rule(":root")
+    const resolve = value => value?.replace(/var\((--[\w-]+)\)/g, (_, name) => root[name] ?? "undefined")
+    const px = value => { const m = /^([\d.]+)(px|rem)$/.exec(resolve(value) ?? ""); return m ? Number(m[1]) * (m[2] === "rem" ? 16 : 1) : 0 }
+    const problems = []
+    for (const state of [":hover", ":active"]) {
+      const background = rule(".button" + state).background
+      if (!/^var\(--[\w-]+\)$/.test(background ?? "") || background === rule(".button").background) problems.push(".button" + state + " needs its own background token, got " + background)
+    }
+    const focus = rule(".button:focus-visible")
+    if (focus.outline !== "2px solid var(--color-accent)" || focus["outline-offset"] !== "2px") problems.push(".button:focus-visible needs outline: 2px solid var(--color-accent) and outline-offset: 2px, got " + JSON.stringify(focus))
+    for (const size of ["min-height", "min-width"]) {
+      if (!/^var\(--[\w-]+\)$/.test(rule(".button")[size] ?? "") || px(rule(".button")[size]) < 44) problems.push(".button " + size + " must be a token of at least 44px, got " + rule(".button")[size])
+    }
+    for (const [, name] of css.matchAll(/var\((--[\w-]+)\)/g)) if (root[name] === undefined) problems.push("var(" + name + ") is not a :root token")
+    if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1) }
+  ' "$REPO/template/stacks/foldkit/files/src/styles.css" >"$WORK/foldkit-button.out" 2>&1 \
+    || fail "styles.css: $(cat "$WORK/foldkit-button.out")"
+}
 test_stack_foldkit_ship_gate_runs_every_ci_gate() {
   # Regression test. Neither gate checked that the named journeys ran: Playwright
   # exits 0 when a journey is skipped. SHIP_GATE runs CI's gate steps in CI's
