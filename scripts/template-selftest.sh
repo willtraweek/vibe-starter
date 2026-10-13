@@ -4718,6 +4718,15 @@ fk_guard() {  # $1 = dir, rest = env assignments: the guard there, the stub pnpm
   local dir="$1"; shift
   (cd "$dir" && env PATH="$dir.bin:$(printenv PATH)" "$@" bash scripts/check.d/foldkit.sh) >"$dir.guard.out" 2>&1
 }
+# pnpm's supply-chain settings, read from the environment as pnpm_config_<name>
+# and PNPM_CONFIG_<NAME>: the guard and after-bootstrap clear every one first.
+FK_POLICY_SETTINGS="minimum_release_age minimum_release_age_exclude minimum_release_age_strict
+  minimum_release_age_ignore_missing_time trust_lockfile trust_policy trust_policy_exclude
+  trust_policy_ignore_after strict_dep_builds block_exotic_subdeps allow_builds dangerously_allow_all_builds"
+fk_policy_kept() {  # $1 = an `env` dump: fails if it holds any of those settings
+  ! grep -iE '^pnpm_config_(minimum_release_age|trust_|strict_dep_builds|block_exotic_subdeps|allow_builds|dangerously)' "$1" \
+    || fail "pnpm ran with a supply-chain setting from the environment"
+}
 foldkit_project() {  # $1 = dir, $2 = project name: a fresh copy bootstrapped with the foldkit pack
   fresh_copy "$1" || return 1
   (cd "$1" && HOME="$WORK/home" stack_env ./bootstrap --name "$2" --stack foldkit --yes </dev/null >"$1.out" 2>&1) \
@@ -5023,9 +5032,10 @@ test_stack_foldkit_coverage_tiers_ratchet() {
 test_stack_foldkit_pin_guard_fails_closed() {
   # scripts/check-pins.mjs keeps package.json in gstack's byte form and in step with
   # VERSION, every dependency exact and installed at its pin, and the Foldkit +
-  # Effect train aligned with what node_modules holds. A synthetic node_modules
-  # stands in for pnpm install. Every version comes from the pack's package.json,
-  # so the test survives a train move.
+  # Effect train aligned with what node_modules holds, and pnpm-workspace.yaml's
+  # supply-chain policy as the pack ships it (age exemptions only for pinned train
+  # releases). A synthetic node_modules stands in for pnpm install. Every version
+  # comes from the pack's package.json, so the test survives a train move.
   command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
   local d="$WORK/stack-foldkit-pins/demo" rc bad want f fk vp dt mcp ox effect vite_major fk_next
   foldkit_files "$d" || fail "copying the pack failed" || return 1
@@ -5051,14 +5061,14 @@ test_stack_foldkit_pin_guard_fails_closed() {
   fk_node "$d" scripts/check-pins.mjs; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok" || return 1
-  for f in package.json VERSION .node-version; do cp "$d/$f" "$d.$f.orig" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d/$f" "$d.$f.orig" || return 1; done
   cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
   # Each case: a mutation (run in the project, with the pins in its environment)
   # and the text its failure must contain (@FK@ and friends are the pins).
   while IFS='|' read -r bad want; do
-    for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+    for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
     rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
-    (cd "$d" && FK="$fk" FK_NEXT="$fk_next" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
+    (cd "$d" && FK="$fk" FK_NEXT="$fk_next" EFFECT="$effect" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
       || fail "mutation failed: $bad" || return 1
     want="$(printf '%s' "$want" | sed "s/@FK_NEXT@/$fk_next/g; s/@FK@/$fk/g; s/@VP@/$vp/g; s/@EFFECT@/$effect/g; s/@VITE_NEXT@/^$((vite_major + 1)).0.0/g")"
     fk_node "$d" scripts/check-pins.mjs; rc=$?
@@ -5092,14 +5102,47 @@ node -e 'const fs=require("fs");const f="node_modules/@foldkit/devtools-mcp/pack
 node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/package.json";const p=JSON.parse(fs.readFileSync(f));p.peerDependencies.effect="0.0.1";fs.writeFileSync(f,JSON.stringify(p))'|@foldkit/vite-plugin @VP@ needs effect 0.0.1, package.json pins @EFFECT@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.peerDependencies={"left-pad":"github:alice-example/left-pad"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "github:alice-example/left-pad"
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
+perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 1439/' pnpm-workspace.yaml|pnpm-workspace.yaml: minimumReleaseAge must be a whole number of minutes, at least 1440 (a day), got "1439"
+perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 0x5a0/' pnpm-workspace.yaml|minimumReleaseAge must be a whole number of minutes, at least 1440 (a day), got "0x5a0"
+perl -ni -e 'print unless /^minimumReleaseAge:/' pnpm-workspace.yaml|pnpm-workspace.yaml must set minimumReleaseAge: a whole number of minutes
+printf 'minimumReleaseAge: 2880\n' >> pnpm-workspace.yaml|pnpm-workspace.yaml:8: minimumReleaseAge is given twice
+perl -pi -e "s/^trustPolicy: .*/trustPolicy: 'no-downgrade'/" pnpm-workspace.yaml|trustPolicy must be no-downgrade, got "'no-downgrade'"
+perl -pi -e 's/^trustPolicy: .*/trustPolicy: off/' pnpm-workspace.yaml|trustPolicy must be no-downgrade, got "off"
+perl -pi -e 's/^strictDepBuilds: .*/strictDepBuilds: false/' pnpm-workspace.yaml|strictDepBuilds must be true, got "false"
+perl -pi -e 's/^blockExoticSubdeps: .*/blockExoticSubdeps: false/' pnpm-workspace.yaml|blockExoticSubdeps must be true, got "false"
+perl -pi -e 's/^allowBuilds: .*/allowBuilds: { esbuild: true }/' pnpm-workspace.yaml|allowBuilds must be {}, got "{ esbuild: true }"
+printf 'dangerouslyAllowAllBuilds: true\n' >> pnpm-workspace.yaml|dangerouslyAllowAllBuilds is not a policy setting check-pins knows: adding one is a reviewed change to scripts/check-pins.mjs
+printf 'overrides:\n  vite: 1.0.0\n' >> pnpm-workspace.yaml|overrides is not a policy setting check-pins knows
+printf '\tminimumReleaseAge: 1440\n' >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+printf -- '---\n' >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+printf '  - foldkit@%s\n' "$FK" >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+rm pnpm-workspace.yaml|pnpm-workspace.yaml is missing
+printf 'minimumReleaseAgeExclude:\n  - foldkit\n' >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit" must be an exact name@version (no bare name, scope or range)
+printf "minimumReleaseAgeExclude:\n  - '@foldkit/*'\n" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "@foldkit/*" must be an exact name@version
+printf 'minimumReleaseAgeExclude:\n  - foldkit@^%s\n' "$FK" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit@^@FK@" must be an exact name@version
+printf 'minimumReleaseAgeExclude:\n  - foldkit@%s\n' "$FK_NEXT" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit@@FK_NEXT@": package.json pins foldkit @FK@
+printf 'minimumReleaseAgeExclude:\n  - vite@1.0.0\n' >> pnpm-workspace.yaml|only the Foldkit and Effect train (foldkit, @foldkit/*, effect, @effect/*) may skip the age rule
+printf "minimumReleaseAgeExclude:\n  - '@effect/platform-node@%s'\n" "$EFFECT" >> pnpm-workspace.yaml|package.json pins no @effect/platform-node
+printf 'minimumReleaseAgeExclude:\n  - foldkit@%s\n  - foldkit@%s\n' "$FK" "$FK" >> pnpm-workspace.yaml|minimumReleaseAgeExclude lists "foldkit@@FK@" twice
+printf 'minimumReleaseAgeExclude: [foldkit]\n' >> pnpm-workspace.yaml|write minimumReleaseAgeExclude as a block list
+printf 'minimumReleaseAgeExclude:\n  - @effect/vitest@%s\n' "$EFFECT" >> pnpm-workspace.yaml|quote a scoped name
 CASES
   # Regression test. gstack's four-part VERSION (a MICRO release) leaves
   # package.json at its npm form, the first three parts; check-pins refused it.
   # An exactly pinned optional dependency may be absent: pnpm skips one off-platform.
-  for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
   rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
   printf '%s.7\n' "$(cat "$d/VERSION")" > "$d/VERSION"
   fk_json "$d/package.json" 'c.optionalDependencies = { fsevents: "2.3.3" }' || return 1
+  fk_node "$d" scripts/check-pins.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  assert_contains "$d.node.out" "check-pins: ok" || return 1
+  # Exact exemptions for the train releases package.json pins pass, quoted or not,
+  # with a note on when they go; so does a stricter age rule.
+  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 2880/' "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - foldkit@%s  # remove once it is a day old\n  - '@foldkit/vite-plugin@%s'\n  - \"effect@%s\"\n" \
+    "$fk" "$vp" "$effect" >> "$d/pnpm-workspace.yaml"
   fk_node "$d" scripts/check-pins.mjs; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok"
@@ -5409,16 +5452,39 @@ OUT
   assert_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date with package.json" || return 1
   assert_not_contains "$d.guard.out" "tampered" || return 1
   # Every policy setting, in both spellings pnpm reads, is cleared; others stay.
-  for setting in minimum_release_age minimum_release_age_exclude minimum_release_age_strict \
-    minimum_release_age_ignore_missing_time trust_lockfile trust_policy trust_policy_exclude \
-    trust_policy_ignore_after strict_dep_builds block_exotic_subdeps allow_builds dangerously_allow_all_builds; do
+  for setting in $FK_POLICY_SETTINGS; do
     policy+=("pnpm_config_$setting=1" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')=1")
   done
   fk_guard "$d" "${policy[@]}" pnpm_config_store_dir=/tmp/kept FK_PNPM_INSTALL="env > '$d.env'"; rc=$?
   assert_exit 0 "$rc" || { cat "$d.guard.out"; return 1; }
   assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
-  ! grep -iE '^pnpm_config_(minimum_release_age|trust_|strict_dep_builds|block_exotic_subdeps|allow_builds|dangerously)' "$d.env" \
-    || fail "the guard ran pnpm with a policy setting from the environment"
+  fk_policy_kept "$d.env"
+}
+test_stack_foldkit_bootstrap_installs_under_the_file_policy() {
+  # Regression test (#20 items 11 and 26). pnpm reads pnpm_config_* settings from
+  # the environment over pnpm-workspace.yaml, so a shell that exported
+  # pnpm_config_minimum_release_age=0 (as the guide advised) resolved bootstrap's
+  # install without the age rule. Network tools are stubs; pnpm logs its env.
+  local d="$WORK/stack-foldkit-bootstrap-policy/demo-app" setting policy=()
+  mkdir -p "$d.stub" "$WORK/home" || return 1
+  cat > "$d.stub/pnpm" <<'STUB'
+#!/bin/sh
+[ "$1" != install ] || env > "$FK_ENV"
+exit 1
+STUB
+  printf '#!/bin/sh\nexit 1\n' > "$d.stub/node"
+  chmod +x "$d.stub/pnpm" "$d.stub/node" || return 1
+  fresh_copy "$d" || return 1
+  for setting in $FK_POLICY_SETTINGS; do
+    policy+=("pnpm_config_$setting=1" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')=1")
+  done
+  # run_bootstrap's sandbox, with the settings in bootstrap's environment.
+  (cd "$d" && env "${policy[@]}" pnpm_config_store_dir=/tmp/kept FK_ENV="$d.env" PATH="$d.stub:$(printenv PATH)" \
+    HOME="$WORK/home" ./bootstrap --name "Demo App" --stack foldkit --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "pnpm install failed" || return 1
+  assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
+  fk_policy_kept "$d.env"
 }
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
@@ -5551,7 +5617,7 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
 test_heavy_stack_foldkit_guards_fail_closed() {
   # Each guard fails closed on the change it exists to stop, and passes again
   # once the change is reverted.
-  local d="$WORK/heavy-foldkit-guards/demo" why rc
+  local d="$WORK/heavy-foldkit-guards/demo" why rc pin all
   why="$(foldkit_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   foldkit_project "$d" demo || return 1
@@ -5611,6 +5677,31 @@ test_heavy_stack_foldkit_guards_fail_closed() {
     pnpm_config_trust_lockfile=true bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
+  # The pinned pnpm (devEngines switches the project to it) honors an exact
+  # name@version exemption: under that rule it takes exactly that release off the
+  # report, and another version of the package takes nothing off. check-pins
+  # accepts the exact entry and refuses a bare name.
+  [ "$(cd "$d" && stack_env pnpm --version)" = "$(node -p 'require(process.argv[1]).devEngines.packageManager.version' "$d/package.json")" ] \
+    || fail "pnpm in the project is not the pinned one" || return 1
+  rejected() { (cd "$d" && stack_env pnpm install --frozen-lockfile --lockfile-only 2>&1) | sed -n 's/.* \([0-9][0-9]*\) lockfile entries failed verification.*/\1/p'; }
+  pin="$(node -p 'require(process.argv[1]).devDependencies["@effect/vitest"]' "$d/package.json")"
+  all="$(rejected)"
+  [ -n "$all" ] || fail "no count of rejected releases in pnpm's report" || return 1
+  cp "$d/pnpm-workspace.yaml" "$d.policy.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest@0.0.1'\n" >> "$d/pnpm-workspace.yaml"
+  [ "$(rejected)" = "$all" ] || fail "an exemption for another version took a release off the report" || return 1
+  cp "$d.policy.yaml" "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest@%s'\n" "$pin" >> "$d/pnpm-workspace.yaml"
+  [ "$(rejected)" = "$((all - 1))" ] || fail "exempting @effect/vitest@$pin did not take exactly it off the report ($all rejected without it)" || return 1
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "check-pins: ok" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than" || return 1
+  cp "$d.policy.yaml" "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest'\n" >> "$d/pnpm-workspace.yaml"
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" 'minimumReleaseAgeExclude entry "@effect/vitest" must be an exact name@version' || return 1
   (cd "$d" && git checkout -q -- pnpm-workspace.yaml) || return 1
   # A tarball URL the registry never published for that release may be a tamper,
   # not a young release: pnpm's report and help pass through whole.
