@@ -3526,7 +3526,7 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
   # rust-toolchain.toml (rust_env's rustup run overrides the toolchain file and
   # template CI installs components by hand, so the suite would stay green);
   # why_new=nothing read the pins together; seam=none
-  local f pin comps c tool n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
+  local f pin comps c tool stale n=0 m=0 wf="$REPO/.github/workflows/template-selftest.yml"
   for f in "$REPO"/template/stacks/*/files/rust-toolchain.toml; do
     [ -f "$f" ] || continue
     n=$((n + 1))
@@ -3535,6 +3535,14 @@ test_stack_rust_template_ci_tests_the_pinned_toolchain() {
     assert_contains "$wf" "rustup toolchain install $pin " || return 1
     assert_contains "$wf" "SELFTEST_RUST_TOOLCHAIN: \"$pin\"" || return 1
     assert_contains "$REPO/template/stacks/rust/commands" "STACK=Rust ${pin%.*} " || return 1
+    # Every pack that names its Rust (STACK lines, --help descriptions) names this
+    # one, and so do TEMPLATE.md's commands for running the Rust tests locally.
+    stale="$(grep -ohE 'Rust 1\.[0-9]+' "$REPO"/template/stacks/*/commands "$REPO"/template/stacks/*/description \
+      | grep -vxF "Rust ${pin%.*}" || true)"
+    [ -z "$stale" ] || fail "a pack names another Rust than ${pin%.*}: $stale" || return 1
+    stale="$(grep -ohE 'SELFTEST_RUST_TOOLCHAIN(=|: ")[0-9.]+' "$REPO/TEMPLATE.md" "$wf" \
+      | grep -vE "(=|: \")${pin//./\\.}\$" || true)"
+    [ -z "$stale" ] || fail "a SELFTEST_RUST_TOOLCHAIN pin is not $pin: $stale" || return 1
     # A new project's CI gets only the components its toolchain file lists.
     comps="$(sed -n "s/^ *run: rustup toolchain install $pin .*--component \([^ ]*\).*/\1/p" "$wf")"
     [ -n "$comps" ] || fail "template CI installs no components for $pin" || return 1
@@ -3865,12 +3873,9 @@ omarchy_app_heavy_ready() {  # why the heavy omarchy-app build can't run here; e
     echo "builds GPUI (minutes): set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
     return
   fi
-  local why minor
+  local why
   why="$(rust_ready)"
   [ -z "$why" ] || { echo "$why"; return; }
-  minor="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
-  [ "${minor:-0}" -ge 98 ] \
-    || { echo "the test toolchain is older than the pack's rust-version 1.98 (set SELFTEST_RUST_TOOLCHAIN=1.98.1)"; return; }
   rust_env cargo llvm-cov --version >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed"; return; }
   if [ "$(uname -s)" = Linux ] && ! pkg-config --exists fontconfig xkbcommon-x11 2>/dev/null; then
     echo "GPUI's build libraries are missing (apt: pkg-config libfontconfig-dev libxkbcommon-x11-dev)"
@@ -4088,12 +4093,9 @@ omarchy_tui_heavy_ready() {  # why the heavy omarchy-tui build can't run here; e
     echo "builds a real project: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
     return
   fi
-  local why minor
+  local why
   why="$(rust_ready)"
   [ -z "$why" ] || { echo "$why"; return; }
-  minor="$(rust_env rustc --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9][0-9]*\)\..*/\1/p')"
-  [ "${minor:-0}" -ge 98 ] \
-    || { echo "the test toolchain is older than the pack's rust-version 1.98 (set SELFTEST_RUST_TOOLCHAIN=1.98.1)"; return; }
   rust_env cargo llvm-cov --version >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed"; return; }
   command -v python3 >/dev/null 2>&1 || echo "python3 not installed (it drives the pseudo-terminal)"
 }
