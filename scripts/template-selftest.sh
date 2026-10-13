@@ -1828,6 +1828,22 @@ stack_env() {  # run "$@" with the real uv/cargo/pnpm/Playwright homes, so a san
     PNPM_HOME="$REAL_PNPM_HOME" \
     PLAYWRIGHT_BROWSERS_PATH="$REAL_PLAYWRIGHT_BROWSERS_PATH" "$@"
 }
+pack_files() {  # rest = pack parts: each file they ship, relative to the new project. A
+  # pack file deleted but not yet staged is left out, as fresh_copy leaves it out.
+  local part
+  for part in "$@"; do
+    git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
+      | while IFS= read -r f; do [ ! -f "$REPO/$f" ] || printf '%s\n' "$f"; done \
+      | sed "s|^template/stacks/$part/files/||" || return 1
+  done
+}
+assert_committed() {  # $1 = project dir, $2 = a file listing the paths git must commit there
+  local f
+  [ -s "$2" ] || fail "no files listed in ${2#"$WORK"/}" || return 1
+  while IFS= read -r f; do
+    git -C "$1" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
+  done < "$2"
+}
 py_tiers() {  # $1 = python-pack project dir, rest = coverage_tiers.py args -> "$1.tiers.out"
   local dir="$1"; shift
   (cd "$dir" && stack_env uv run --locked --quiet python scripts/coverage_tiers.py "$@" >"$dir.tiers.out" 2>&1)
@@ -2545,14 +2561,10 @@ STUB
   done
   d="$root/python/demo"
   (cd "$d" && git add -A) || fail "git add failed" || return 1
-  { git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/python/files \
-      | while IFS= read -r f; do [ ! -f "$REPO/$f" ] || printf '%s\n' "$f"; done \
-      | sed 's|^template/stacks/python/files/||; s|__package__|demo|g'
+  { pack_files python | sed 's|__package__|demo|g'
     printf '%s\n' uv.lock .github/workflows/ci.yml .github/actions/install-gitleaks/action.yml
   } > "$root/committed" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$root/committed"
+  assert_committed "$d" "$root/committed" || return 1
   for f in .venv/bin/python src/demo/__pycache__/cli.cpython-314.pyc .coverage coverage.json \
     .pytest_cache/v .ruff_cache/v dist/demo-0.0.0.tar.gz; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
@@ -2932,15 +2944,8 @@ test_stack_rust_project_is_green_on_first_run() {
     || fail "--version does not print VERSION" || return 1
   # git commits the lockfile CI's --locked steps need and ignores the build output.
   git -C "$d" ls-files --error-unmatch -- Cargo.lock >/dev/null 2>&1 || fail "Cargo.lock is not committed" || return 1
-  for part in _rust-gates rust; do
-    git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
-      | while IFS= read -r f; do [ ! -f "$REPO/$f" ] || printf '%s\n' "$f"; done \
-      | sed "s|^template/stacks/$part/files/||" || return 1
-  done > "$d.files" || return 1
-  [ -s "$d.files" ] || fail "cannot list the pack's files" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$d.files"
+  pack_files _rust-gates rust > "$d.files" || return 1
+  assert_committed "$d" "$d.files" || return 1
   for f in coverage.json lcov.info default.profraw; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit the coverage output $f" || return 1
   done
@@ -3718,7 +3723,7 @@ STUB
     || fail "bootstrap exited $?: $(tail -20 "$1.out")"
 }
 test_stack_omarchy_app_bootstrap_installs_the_pack() {
-  local d="$WORK/omarchy-app/demo-app" f s part
+  local d="$WORK/omarchy-app/demo-app" f s
   omarchy_app_project "$d" || return 1
   assert_contains "$d/Cargo.toml" 'name = "demo_app"' || return 1
   assert_contains "$d/src/lib.rs" 'pub const APP_ID: &str = "demo_app";' || return 1
@@ -3742,15 +3747,10 @@ test_stack_omarchy_app_bootstrap_installs_the_pack() {
   # git commits every pack file and the lockfile, and ignores the build output.
   : > "$d/Cargo.lock"
   (cd "$d" && git add -A) || fail "git add failed" || return 1
-  { for part in _rust-gates omarchy-app; do
-      git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
-        | sed "s|^template/stacks/$part/files/||"
-    done
+  { pack_files _rust-gates omarchy-app
     printf '%s\n' Cargo.lock .github/actions/install-gitleaks/action.yml
   } > "$d.expected" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$d.expected"
+  assert_committed "$d" "$d.expected" || return 1
   for f in target/debug/demo_app coverage.json lcov.info default_1.profraw; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
   done
@@ -3984,6 +3984,22 @@ test_stack_pack_ci_jobs_have_timeouts() {
   done
   [ "$n" -ge 6 ] || fail "expected every pack's ci.yml; found $n"
 }
+test_stack_packs_set_every_shared_command_key() {
+  # The python and rust tests spell out the shared keys so a misspelled one can't
+  # hide a leftover placeholder; the other packs' tests check fewer, so a pack
+  # missing SHIP_GATE left {{SHIP_GATE: ...}} in a new project's AGENTS.md.
+  local pack key n=0
+  for pack in "$REPO"/template/stacks/*/; do
+    pack="$(basename "$pack")"
+    case "$pack" in _*) continue ;; esac
+    n=$((n + 1))
+    for key in INSTALL_CMD DEV_CMD BUILD_CMD CHECK_CMD TEST_CMD SHIP_GATE STACK COVERAGE_ENFORCEMENT; do
+      grep -q "^$key=." "$REPO/template/stacks/$pack/commands" \
+        || fail "template/stacks/$pack/commands does not set $key" || return 1
+    done
+  done
+  [ "$n" -ge 6 ] || fail "expected at least six packs; found $n"
+}
 test_rust_packs_share_one_copy_of_their_gates() {
   # Three Rust packs include _rust-gates (the rule of three): none carries its own
   # copy of a gate file, and each project still gets them.
@@ -4056,15 +4072,10 @@ test_stack_omarchy_tui_bootstrap_installs_the_pack() {
   done
   : > "$d/Cargo.lock"
   (cd "$d" && git add -A) || fail "git add failed" || return 1
-  { for part in _rust-gates omarchy-tui; do
-      git -C "$REPO" ls-files --cached --others --exclude-standard -- "template/stacks/$part/files" \
-        | sed "s|^template/stacks/$part/files/||"
-    done
+  { pack_files _rust-gates omarchy-tui
     printf '%s\n' Cargo.lock .github/actions/install-gitleaks/action.yml
   } > "$d.expected" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$d.expected"
+  assert_committed "$d" "$d.expected" || return 1
   for f in target/debug/demo_app coverage.json default_1.profraw; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
   done
@@ -4229,11 +4240,8 @@ test_stack_omarchy_plugin_bootstrap_installs_the_pack() {
   git -C "$d" ls-files --error-unmatch -- .gstack/package-json-path >/dev/null 2>&1 \
     || fail "git would not commit .gstack/package-json-path" || return 1
   git -C "$d" check-ignore -q -- .gstack/state || fail "git would commit other .gstack/ state" || return 1
-  git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/omarchy-plugin/files \
-    | sed 's|^template/stacks/omarchy-plugin/files/||' > "$d.expected" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$d.expected"
+  pack_files omarchy-plugin > "$d.expected" || return 1
+  assert_committed "$d" "$d.expected"
 }
 test_stack_omarchy_plugin_rejects_the_omarchy_name() {
   local d="$WORK/omarchy-plugin-name/proj" before rc
@@ -4913,11 +4921,8 @@ test_heavy_stack_foldkit_project_is_green_on_first_run() {
     ! (cd "$d" && git grep -qF "{{$key") || fail "{{$key is left in: $(cd "$d" && git grep -lF "{{$key" | tr '\n' ' ')" || return 1
   done
   # git commits every pack file and ignores every build artifact.
-  git -C "$REPO" ls-files --cached --others --exclude-standard -- template/stacks/foldkit/files \
-    | sed 's|^template/stacks/foldkit/files/||' > "$d.expected" || return 1
-  while IFS= read -r f; do
-    git -C "$d" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || fail "git would not commit $f" || return 1
-  done < "$d.expected"
+  pack_files foldkit > "$d.expected" || return 1
+  assert_committed "$d" "$d.expected" || return 1
   for f in node_modules/x dist/index.html coverage/coverage-summary.json test-results/x playwright-report/index.html \
     blob-report/x tsconfig.tsbuildinfo repos/foldkit/README.md; do
     git -C "$d" check-ignore -q -- "$f" || fail "git would commit the build artifact $f" || return 1
