@@ -3294,16 +3294,8 @@ test_stack_rust_after_bootstrap_formats_before_locking() {
   # locks, and without cargo it names both steps. The stub cargo fails and logs
   # its calls, so no toolchain or network is needed.
   local d="$WORK/stack-rust-hook/demo-app" rc
-  mkdir -p "$d.stub" "$d.empty" || return 1
-  cat > "$d.stub/cargo" <<STUB || return 1
-#!/bin/sh
-echo "cargo \$*" >> "$d.cargo-calls"
-exit 101
-STUB
-  chmod +x "$d.stub/cargo" || return 1
-  fresh_copy "$d" || return 1
-  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack rust --yes \
-    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  mkdir -p "$d.empty" || return 1
+  stub_cargo_project "$d" rust || return 1
   [ "$(cat "$d.cargo-calls")" = "$(printf 'cargo fmt --all\ncargo generate-lockfile --offline --quiet')" ] \
     || fail "after-bootstrap ran: $(cat "$d.cargo-calls")" || return 1
   # Both steps failed, and the hook says so instead of claiming a lockfile.
@@ -3732,7 +3724,7 @@ test_selftest_exclude_skips_matching_tests_without_counting_them() {
   assert_not_contains "$out" "- test_bootstrap_rejects_unknown_arg" || return 1
   assert_contains "$out" "selftest: 1 passed, 0 failed, 0 skipped (1 excluded by SELFTEST_EXCLUDE=_unknown_arg)"
 }
-omarchy_app_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-app
+stub_cargo_project() {  # $1 = dir, $2 = pack: a fresh copy bootstrapped as "Demo App"
   # cargo is a stub that fails and logs its calls to "$1.cargo-calls": no
   # network, and after-bootstrap has to report that it couldn't lock.
   mkdir -p "$1.stub" || return 1
@@ -3743,9 +3735,10 @@ exit 101
 STUB
   chmod +x "$1.stub/cargo" || return 1
   fresh_copy "$1" || return 1
-  PATH="$1.stub:$(printenv PATH)" run_bootstrap "$1" --name "Demo App" --stack omarchy-app --yes \
+  PATH="$1.stub:$(printenv PATH)" run_bootstrap "$1" --name "Demo App" --stack "$2" --yes \
     || fail "bootstrap exited $?: $(tail -20 "$1.out")"
 }
+omarchy_app_project() { stub_cargo_project "$1" omarchy-app; }
 test_stack_omarchy_app_bootstrap_installs_the_pack() {
   local d="$WORK/omarchy-app/demo-app" f s
   omarchy_app_project "$d" || return 1
@@ -4201,19 +4194,7 @@ test_stack_omarchy_scripts_stay_in_the_project_under_cdpath() {
   bad="$(git -C "$REPO" grep -n 'cd [^|;&]*dirname' -- template/stacks | grep -v "CDPATH=''" || true)"
   [ -z "$bad" ] || fail "a cd without CDPATH='': $bad"
 }
-omarchy_tui_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo App" with omarchy-tui
-  # cargo is a stub that fails and logs its calls to "$1.cargo-calls".
-  mkdir -p "$1.stub" || return 1
-  cat > "$1.stub/cargo" <<STUB || return 1
-#!/bin/sh
-echo "cargo \$*" >> "$1.cargo-calls"
-exit 101
-STUB
-  chmod +x "$1.stub/cargo" || return 1
-  fresh_copy "$1" || return 1
-  PATH="$1.stub:$(printenv PATH)" run_bootstrap "$1" --name "Demo App" --stack omarchy-tui --yes \
-    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
-}
+omarchy_tui_project() { stub_cargo_project "$1" omarchy-tui; }
 test_stack_omarchy_tui_bootstrap_installs_the_pack() {
   local d="$WORK/omarchy-tui/demo-app" f s
   omarchy_tui_project "$d" || return 1
