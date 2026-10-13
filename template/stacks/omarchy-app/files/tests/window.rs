@@ -91,7 +91,7 @@ fn the_window_draws_in_dark_and_light_themes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn starting_opens_one_focused_window_under_the_app_id(cx: &mut TestAppContext) {
+fn starting_opens_one_focused_window(cx: &mut TestAppContext) {
     cx.update(app::start);
     let windows = cx.windows();
     assert_eq!(windows.len(), 1);
@@ -100,11 +100,17 @@ fn starting_opens_one_focused_window_under_the_app_id(cx: &mut TestAppContext) {
         .expect("the main window");
     let focused = window
         .update(cx, |view, window, cx| {
-            gpui_kit::Focusable::focus_handle(view, cx).is_focused(window)
+            view.focus_handle(cx).is_focused(window)
         })
         .expect("the window is open");
     assert!(focused);
-    // Hyprland window rules and the desktop entry match this class.
+}
+
+#[test]
+fn window_options_carry_the_app_id() {
+    // Hyprland window rules and the desktop entry match this class. GPUI's test
+    // window ignores the app id it is opened with, so this checks the options
+    // `open_window` passes, not the window.
     assert_eq!(
         app::window_options().app_id.as_deref(),
         Some(::{{PACKAGE_NAME}}::APP_ID)
