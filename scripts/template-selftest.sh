@@ -4926,6 +4926,34 @@ CASES
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok"
 }
+test_stack_foldkit_bootstrap_takes_its_offline_path() {
+  # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
+  # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
+  # failing, bootstrap still finishes, says what to run, and keeps exec bits.
+  local d="$WORK/stack-foldkit-offline/demo-app" t f
+  mkdir -p "$d.stub" || return 1
+  for t in pnpm node; do
+    printf '#!/bin/sh\nexit 1\n' > "$d.stub/$t" && chmod +x "$d.stub/$t" || return 1
+  done
+  fresh_copy "$d" || return 1
+  PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack foldkit --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "pnpm install failed" || return 1
+  assert_contains "$d.out" "Vendoring Foldkit failed (offline?)" || return 1
+  assert_contains "$d/.bootstrapped" "with the foldkit stack pack" || return 1
+  for f in scripts/coverage.sh scripts/check.d/foldkit.sh scripts/vendor-foldkit.sh; do
+    [ -x "$d/$f" ] || fail "$f lost its exec bit" || return 1
+  done
+  assert_absent "$d/repos" || return 1
+  # Without pnpm at all, the hook says how to install it (the system PATH has
+  # bootstrap's own tools; pnpm lives elsewhere).
+  PATH=/usr/bin:/bin command -v pnpm >/dev/null 2>&1 && return 0
+  d="$WORK/stack-foldkit-offline/no-pnpm"
+  fresh_copy "$d" || return 1
+  (cd "$d" && PATH=/usr/bin:/bin ./bootstrap --name "Demo App" --stack foldkit --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap without pnpm exited $?: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "pnpm not found: install pnpm 12"
+}
 test_stack_foldkit_gitignore_covers_what_its_scripts_write() {
   # Regression test. vendor-foldkit.sh parks the old copy in repos/foldkit.previous
   # while it swaps in the new one; the pack ignored only /repos/foldkit/, so a run
