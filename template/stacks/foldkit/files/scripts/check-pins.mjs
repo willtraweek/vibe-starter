@@ -182,6 +182,18 @@ if (foldkit !== undefined) {
   }
 }
 
+// .foldkit-ref records the pinned Foldkit release and the commit its tag named,
+// one line: vendor-foldkit.sh refuses a tag that moved. A train move updates it.
+const ref = existsSync(join(ROOT, '.foldkit-ref')) ? read('.foldkit-ref') : undefined
+const recorded = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) ([0-9a-f]{40})\n$/.exec(ref ?? '')
+if (ref === undefined) {
+  errors.push('.foldkit-ref is missing: it records the pinned Foldkit release and its commit for vendor-foldkit.sh')
+} else if (recorded === null) {
+  errors.push(`.foldkit-ref must be one line, "<version> <40-character lowercase commit>", got ${JSON.stringify(ref)}`)
+} else if (recorded[1] !== deps.foldkit) {
+  errors.push(`.foldkit-ref records foldkit ${recorded[1]}, package.json pins ${deps.foldkit}: a train move updates both (git ls-remote https://github.com/foldkit/foldkit.git refs/tags/foldkit@${deps.foldkit} gives the commit)`)
+}
+
 // pnpm-workspace.yaml holds the supply-chain policy every install runs under,
 // read without a YAML library: flat `key: value` lines, and an optional
 // minimumReleaseAgeExclude block list. A line it can't read unambiguously fails,

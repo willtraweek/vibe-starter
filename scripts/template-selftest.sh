@@ -5032,10 +5032,11 @@ test_stack_foldkit_coverage_tiers_ratchet() {
 test_stack_foldkit_pin_guard_fails_closed() {
   # scripts/check-pins.mjs keeps package.json in gstack's byte form and in step with
   # VERSION, every dependency exact and installed at its pin, and the Foldkit +
-  # Effect train aligned with what node_modules holds, and pnpm-workspace.yaml's
-  # supply-chain policy as the pack ships it (age exemptions only for pinned train
-  # releases). A synthetic node_modules stands in for pnpm install. Every version
-  # comes from the pack's package.json, so the test survives a train move.
+  # Effect train aligned with what node_modules holds, .foldkit-ref on the pinned
+  # release, and pnpm-workspace.yaml's supply-chain policy as the pack ships it
+  # (age exemptions only for pinned train releases). A synthetic node_modules
+  # stands in for pnpm install. Every version comes from the pack's package.json,
+  # so the test survives a train move.
   command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
   local d="$WORK/stack-foldkit-pins/demo" rc bad want f fk vp dt mcp ox effect vite_major fk_next
   foldkit_files "$d" || fail "copying the pack failed" || return 1
@@ -5061,12 +5062,12 @@ test_stack_foldkit_pin_guard_fails_closed() {
   fk_node "$d" scripts/check-pins.mjs; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok" || return 1
-  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d/$f" "$d.$f.orig" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d/$f" "$d.$f.orig" || return 1; done
   cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
   # Each case: a mutation (run in the project, with the pins in its environment)
   # and the text its failure must contain (@FK@ and friends are the pins).
   while IFS='|' read -r bad want; do
-    for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
+    for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
     rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
     (cd "$d" && FK="$fk" FK_NEXT="$fk_next" EFFECT="$effect" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
       || fail "mutation failed: $bad" || return 1
@@ -5126,11 +5127,18 @@ printf "minimumReleaseAgeExclude:\n  - '@effect/platform-node@%s'\n" "$EFFECT" >
 printf 'minimumReleaseAgeExclude:\n  - foldkit@%s\n  - foldkit@%s\n' "$FK" "$FK" >> pnpm-workspace.yaml|minimumReleaseAgeExclude lists "foldkit@@FK@" twice
 printf 'minimumReleaseAgeExclude: [foldkit]\n' >> pnpm-workspace.yaml|write minimumReleaseAgeExclude as a block list
 printf 'minimumReleaseAgeExclude:\n  - @effect/vitest@%s\n' "$EFFECT" >> pnpm-workspace.yaml|quote a scoped name
+printf '%s 0123456789abcdef0123456789abcdef01234567\n' "$FK_NEXT" > .foldkit-ref|.foldkit-ref records foldkit @FK_NEXT@, package.json pins @FK@: a train move updates both
+printf '%s 0123456789abcdef0123456789abcdef01234567\n\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line, "<version> <40-character lowercase commit>"
+printf '%s 0123456789abcdef0123456789abcdef01234567' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf '%s 0123456789ABCDEF0123456789abcdef01234567\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf '%s 0123456789abcdef\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf 'foldkit@%s 0123456789abcdef0123456789abcdef01234567\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+rm .foldkit-ref|.foldkit-ref is missing
 CASES
   # Regression test. gstack's four-part VERSION (a MICRO release) leaves
   # package.json at its npm form, the first three parts; check-pins refused it.
   # An exactly pinned optional dependency may be absent: pnpm skips one off-platform.
-  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
   rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
   printf '%s.7\n' "$(cat "$d/VERSION")" > "$d/VERSION"
   fk_json "$d/package.json" 'c.optionalDependencies = { fsevents: "2.3.3" }' || return 1
@@ -5139,7 +5147,7 @@ CASES
   assert_contains "$d.node.out" "check-pins: ok" || return 1
   # Exact exemptions for the train releases package.json pins pass, quoted or not,
   # with a note on when they go; so does a stricter age rule.
-  for f in package.json VERSION .node-version pnpm-workspace.yaml; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
   perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 2880/' "$d/pnpm-workspace.yaml" || return 1
   printf "minimumReleaseAgeExclude:\n  - foldkit@%s  # remove once it is a day old\n  - '@foldkit/vite-plugin@%s'\n  - \"effect@%s\"\n" \
     "$fk" "$vp" "$effect" >> "$d/pnpm-workspace.yaml"
@@ -5552,6 +5560,65 @@ STUB
     run_bootstrap "$b" --name "Demo App" --stack foldkit --yes || fail "bootstrap exited $?: $(tail -5 "$b.out")" || return 1
   assert_contains "$b.out" "pnpm install timed out after 1s (offline?)"
 }
+test_stack_foldkit_vendoring_checks_the_release_commit() {
+  # Regression test (#20 item 12; security review SE2). vendor-foldkit.sh trusted
+  # the release tag, which can move, and deleted the clone's .git: repos/foldkit
+  # then sat in this project's repository, and Foldkit's `prepare`
+  # (simple-git-hooks) run there wrote this project's .git/hooks. A stub git
+  # stands in for GitHub.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-vendor/demo" real_git commit pin rc
+  real_git="$(command -v git)"
+  { foldkit_files "$d" && git -C "$d" init -q; } || fail "fixture setup failed" || return 1
+  read -r pin commit < "$d/.foldkit-ref" || fail "cannot read .foldkit-ref" || return 1
+  mkdir -p "$d.bin" || return 1
+  cat > "$d.bin/git" <<STUB && chmod +x "$d.bin/git" || return 1
+#!/bin/sh
+# clone: a new repository holding Foldkit's hook-installing package.json and
+# agent files vendoring must drop; rev-parse HEAD: \$FK_COMMIT. Logs clones.
+[ "\$1" = -c ] && shift 2
+case "\$1" in
+  clone) echo clone >> "\$FK_LOG"; for a; do dest="\$a"; done
+    "$real_git" init -q "\$dest" || exit 1
+    echo '{"scripts":{"prepare":"simple-git-hooks"},"simple-git-hooks":{"commit-msg":"exit 1"}}' > "\$dest/package.json"
+    mkdir -p "\$dest/.claude" "\$dest/packages/app" || exit 1
+    touch "\$dest/AGENTS.md" "\$dest/.mcp.json" "\$dest/.claude/settings.json" "\$dest/packages/app/CLAUDE.md"
+    exit ;;
+  -C) [ "\$3" = sparse-checkout ] && exit 0
+    [ "\$3 \$4" = "rev-parse HEAD" ] && { echo "\$FK_COMMIT"; exit 0; } ;;
+esac
+exec "$real_git" "\$@"
+STUB
+  vendor() {  # $1 = the commit the tag names now
+    rm -f "$d.log"
+    (cd "$d" && FK_COMMIT="$1" FK_LOG="$d.log" PATH="$d.bin:$(printenv PATH)" bash scripts/vendor-foldkit.sh) >"$d.out" 2>&1
+  }
+  vendor 1111111111111111111111111111111111111111; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "the tag foldkit@$pin is commit 1111111111111111111111111111111111111111, but .foldkit-ref records $commit" || return 1
+  assert_absent "$d/repos" || return 1
+  vendor "$commit"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.out"; return 1; }
+  assert_exists "$d/repos/foldkit/.git" || return 1
+  [ -z "$(find "$d/repos/foldkit" \( -name AGENTS.md -o -name CLAUDE.md -o -name .mcp.json -o -name .claude \) -print)" ] \
+    || fail "vendoring kept Foldkit's agent files" || return 1
+  # A hook installer run in the clone writes into the nearest .git above it, as
+  # simple-git-hooks 2.14 does: the clone's own, not this project's.
+  (cd "$d/repos/foldkit" && node -e 'const fs = require("fs"); const path = require("path"); let dir = process.cwd(); while (!fs.existsSync(path.join(dir, ".git"))) { dir = path.dirname(dir) } fs.mkdirSync(path.join(dir, ".git", "hooks"), { recursive: true }); fs.writeFileSync(path.join(dir, ".git", "hooks", "commit-msg"), "exit 1\n")') \
+    || fail "the hook installer failed" || return 1
+  assert_exists "$d/repos/foldkit/.git/hooks/commit-msg" || return 1
+  assert_absent "$d/.git/hooks/commit-msg" || return 1
+  # .foldkit-ref is read strictly, before any clone.
+  printf '0.0.1 %s\n' "$commit" > "$d/.foldkit-ref"
+  vendor "$commit"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".foldkit-ref records foldkit 0.0.1, package.json pins $pin" || return 1
+  printf '%s %s\n# reviewed\n' "$pin" "$commit" > "$d/.foldkit-ref"
+  vendor "$commit"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".foldkit-ref must be one line" || return 1
+  assert_absent "$d.log"
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
@@ -5631,6 +5698,10 @@ test_heavy_stack_foldkit_project_is_green_on_first_run() {
     || fail "repos/foldkit is not the pinned release: $(tail -5 "$d.out")" || return 1
   [ -z "$(find "$d/repos/foldkit" \( -name AGENTS.md -o -name CLAUDE.md -o -name .mcp.json -o -name .claude -o -name .agents -o -path "$d/repos/foldkit/repos" \) -print)" ] \
     || fail "the vendored Foldkit carries agent files or its Effect copy" || return 1
+  # repos/foldkit is its own repository, checked out at the commit .foldkit-ref records.
+  assert_exists "$d/repos/foldkit/.git" || return 1
+  [ "$(git -C "$d/repos/foldkit" rev-parse HEAD 2>/dev/null)" = "$(cut -d' ' -f2 "$d/.foldkit-ref")" ] \
+    || fail "repos/foldkit is not at .foldkit-ref's commit" || return 1
   (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
   # No placeholder survives in what git commits (node_modules and repos/ are ignored).
   for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/foldkit/commands") PROJECT_NAME PACKAGE_NAME YEAR; do
