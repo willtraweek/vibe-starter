@@ -3584,33 +3584,46 @@ test_stack_rust_ship_gate_runs_every_ci_gate() {
   # Value: protects=AGENTS.md's SHIP_GATE runs each gate the new project's CI
   # runs, in every pack built on the Rust gates; fails_when=a CI gate step is
   # added or changed without SHIP_GATE (the doctest drift the first review fixed,
-  # which came back in the Omarchy packs), including one in a multi-line or
-  # prefixed run: step; why_new=nothing compared them; seam=none
-  local pack gate step n packs=0 ci
+  # which came back in the Omarchy packs), including a command inside a
+  # multi-line run: step; why_new=nothing compared them; seam=none
+  local pack gate kind step packs=0 n ci
   for pack in $(grep -lxF _rust-gates "$REPO"/template/stacks/*/includes | sed 's|/includes$||; s|.*/||'); do
     packs=$((packs + 1))
     ci="$REPO/template/stacks/$pack/files/.github/workflows/ci.yml"
     gate="$(sed -n 's/^SHIP_GATE=//p' "$REPO/template/stacks/$pack/commands")"
     [ -n "$gate" ] || fail "no SHIP_GATE in the $pack pack" || return 1
     n=0
-    while IFS= read -r step; do
-      n=$((n + 1))
-      case " && $gate && " in
-        *" && $step && "*) ;;
-        *) fail "$pack: SHIP_GATE lacks the CI step: $step" || return 1 ;;
-      esac
-    done < <(sed -n 's/^ *run: \(\.\/scripts\/.*\)$/\1/p; s/^ *run: \(cargo .*\)$/\1/p' "$ci")
-    [ "$n" -gt 0 ] || fail "no gate steps found in $pack's ci.yml" || return 1
-    # The sed above reads one-line steps only: every other run: step must be the
-    # toolchain install, the system packages or the PR-only ratchet.
-    while IFS= read -r step; do
-      case "$step" in
-        "rustup toolchain install"|./scripts/*|"cargo "*) ;;
-        "| sudo apt-get update"|'| git fetch --depth=1 origin "$GITHUB_BASE_REF"') ;;
+    # One line per command of every run: step, multi-line (| or >) ones read to
+    # their end: "step|cmd" for a command, "cont|text" for a line continuing the
+    # previous one (it ended in a backslash).
+    while IFS='|' read -r kind step; do
+      case "$kind|$step" in
+        "step|rustup toolchain install"|"step|sudo apt-get update") ;;
+        "step|sudo apt-get install -y --no-install-recommends "*)
+          case "${step#sudo apt-get install -y --no-install-recommends }" in
+            *[!a-z0-9.+\ \\-]*|'') fail "$pack: not a package list in the apt-get step: $step" || return 1 ;;
+          esac ;;
+        'step|git fetch --depth=1 origin "$GITHUB_BASE_REF"') ;;
+        'step|./scripts/coverage_tiers.sh --ratchet "origin/$GITHUB_BASE_REF"') ;;  # PR-only
+        "step|./scripts/"*|"step|cargo "*)
+          n=$((n + 1))
+          case " && $gate && " in
+            *" && $step && "*) ;;
+            *) fail "$pack: SHIP_GATE lacks the CI step: $step" || return 1 ;;
+          esac ;;
+        cont\|*[!a-z0-9.+\ \\-]*) fail "$pack: not a package list in the apt-get step: $step" || return 1 ;;
+        cont\|*) ;;
         *) fail "$pack: unclassified ci.yml run: step: $step" || return 1 ;;
       esac
-    done < <(awk '/^ *run: *[|>] *$/ { getline nxt; sub(/^ */, "", nxt); print "| " nxt; next }
-      /^ *run: / { sub(/^ *run: /, ""); print }' "$ci")
+    done < <(awk '
+      function indent(l) { match(l, /^ */); return RLENGTH }
+      function emit(l) { sub(/^ */, "", l); print (cont ? "cont|" : "step|") l; cont = (l ~ /\\$/) }
+      inblock && $0 !~ /^ *$/ && indent($0) <= depth { inblock = 0 }
+      inblock { if ($0 !~ /^ *$/) emit($0); next }
+      /^ *run: *[|>][-+]? *$/ { inblock = 1; depth = indent($0); cont = 0; next }
+      /^ *run: / { cont = 0; line = $0; sub(/^ *run: /, "", line); emit(line) }
+    ' "$ci")
+    [ "$n" -gt 0 ] || fail "no gate steps found in $pack's ci.yml" || return 1
   done
   [ "$packs" -ge 3 ] || fail "expected the rust, omarchy-app and omarchy-tui packs; found $packs"
 }
