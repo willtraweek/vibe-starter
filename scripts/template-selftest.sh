@@ -4007,9 +4007,13 @@ test_template_gitignore_ignores_no_tracked_file() {
   # and the omarchy-plugin pack's .gstack/package-json-path survived only because it
   # was force-added: a ZIP or degit copy committed with `git add -A` dropped it, and
   # the new plugin's first /ship then bumped VERSION alone.
-  local hits
-  hits="$(cd "$REPO" && git ls-files -z | git check-ignore --no-index -z --stdin | tr '\0' ' ')"
-  [ -z "$hits" ] || fail "a .gitignore ignores tracked files: $hits"
+  local rc
+  git -C "$REPO" ls-files -z > "$WORK/tracked.z" || fail "git ls-files failed" || return 1
+  [ -s "$WORK/tracked.z" ] || fail "git ls-files listed nothing" || return 1
+  git -C "$REPO" check-ignore --no-index -z --stdin < "$WORK/tracked.z" > "$WORK/ignored.z"; rc=$?
+  # check-ignore exits 1 when nothing matched, 0 when something did, 128 on error.
+  [ "$rc" -ne 0 ] || fail "a .gitignore ignores tracked files: $(tr '\0' ' ' < "$WORK/ignored.z")" || return 1
+  [ "$rc" -eq 1 ] || fail "git check-ignore failed with $rc"
 }
 test_stack_pack_ci_jobs_have_timeouts() {
   # Regression test. The rust, python and foldkit packs' CI jobs had no
@@ -4365,6 +4369,10 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   # Without the gstack pin, /ship would bump VERSION alone: the guard says so first.
   (cd "$d" && git checkout -q -- manifest.json) || return 1
   rm "$d/.gstack/package-json-path" || return 1
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" ".gstack/package-json-path must hold the line manifest.json" || return 1
+  printf 'package.json\n' > "$d/.gstack/package-json-path"
   (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
   (cd "$d" && git checkout -q -- .gstack/package-json-path) || return 1
   assert_exit 1 "$rc" || return 1
