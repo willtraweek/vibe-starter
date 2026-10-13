@@ -37,6 +37,9 @@ jobs:
       - name: E2E journeys (Playwright, against the production build)
         run: pnpm exec playwright test
 
+      - name: Every named journey ran and passed (Playwright's JSON report)
+        run: node scripts/coverage-tiers.mjs --journeys
+
       - name: Coverage tiers never slip (pull requests)
         if: github.event_name == 'pull_request'
         run: |
