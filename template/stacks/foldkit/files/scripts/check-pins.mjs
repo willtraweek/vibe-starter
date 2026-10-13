@@ -86,11 +86,12 @@ if (!RELEASE.test(version)) {
   errors.push(`package.json version ${JSON.stringify(pkg.version)} differs from VERSION ${version}${form}: set it to ${npmVersion}`)
 }
 
-// Optional dependencies are pinned like the rest; pnpm may skip one on a platform
-// it doesn't support, so only those may be missing from node_modules. Each
-// section is checked on its own: merged, one section's entry would hide another's.
-const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies']
-const optional = pkg.optionalDependencies ?? {}
+// Optional and peer dependencies are pinned like the rest; pnpm may skip an
+// optional one on a platform it doesn't support, and installs no root peer, so
+// only those may be missing from node_modules. Each section is checked on its
+// own: merged, one section's entry would hide another's.
+const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+const optional = { ...pkg.optionalDependencies, ...pkg.peerDependencies }
 const section = new Map()
 for (const key of SECTIONS) {
   for (const [name, spec] of Object.entries(pkg[key] ?? {})) {
