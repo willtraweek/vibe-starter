@@ -4544,7 +4544,13 @@ STUB
     REF="$ref" OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/d.out" 2>&1); rca=$?
   assert_exit 1 "$rca" || return 1
   assert_contains "$r/d.out" "is in no Omarchy release" || return 1
-  [ -z "$(ls -A "$r/cache" 2>/dev/null)" ] || fail "a refused commit left: $(ls -A "$r/cache")"
+  [ -z "$(ls -A "$r/cache" 2>/dev/null)" ] || fail "a refused commit left: $(ls -A "$r/cache")" || return 1
+  # ...and so is one already in the cache (put there before this check existed).
+  mkdir -p "$kit/bin" && printf '%s\n' "$ref" > "$kit/.head" || return 1
+  (cd "$d" && PATH="$r/bin:$(printenv PATH)" PROBE_ROOT="$r" PROBE_ID=e PROBE_BARRIER=0 PROBE_RELEASED=0 KIT="$kit" \
+    REF="$ref" OMARCHY_KIT_DIR="$r/cache" bash scripts/omarchy-kit >"$r/e.out" 2>&1); rca=$?
+  assert_exit 1 "$rca" || return 1
+  assert_contains "$r/e.out" "is in no Omarchy release"
 }
 omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empty = run it
   if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
