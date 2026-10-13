@@ -3965,6 +3965,20 @@ test_partial_packs_are_not_offered_as_stacks() {
   run_bootstrap "$d" --name proj --stack _rust-gates --yes; rc=$?
   assert_exit 2 "$rc"
 }
+test_stack_pack_ci_jobs_have_timeouts() {
+  # Regression test. The rust, python and foldkit packs' CI jobs had no
+  # timeout-minutes, so a hung test or download held a runner for GitHub's
+  # 6-hour default on every push of every new project.
+  local ci jobs timeouts n=0
+  for ci in "$REPO"/template/stacks/*/files/.github/workflows/ci.yml; do
+    n=$((n + 1))
+    jobs="$(awk '/^jobs:/ { in_jobs = 1; next } in_jobs && /^[^ #]/ { in_jobs = 0 } in_jobs && /^  [A-Za-z0-9_-]+:$/ { n++ } END { print n + 0 }' "$ci")"
+    timeouts="$(grep -cE '^    timeout-minutes: [1-9][0-9]*$' "$ci")"
+    [ "$jobs" -gt 0 ] && [ "$jobs" = "$timeouts" ] \
+      || fail "${ci#"$REPO"/}: $jobs job(s), $timeouts with timeout-minutes" || return 1
+  done
+  [ "$n" -ge 6 ] || fail "expected every pack's ci.yml; found $n"
+}
 test_rust_packs_share_one_copy_of_their_gates() {
   # Three Rust packs include _rust-gates (the rule of three): none carries its own
   # copy of a gate file, and each project still gets them.
