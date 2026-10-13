@@ -23,6 +23,10 @@ desktop shell, and the active theme in `~/.local/state/omarchy/current`.
 
 `./scripts/install.sh --uninstall` removes exactly those three files. To install system-wide,
 build as yourself, then run `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
+`--no-build` takes `target/release/{{PACKAGE_NAME}}` (or the one under `$CARGO_TARGET_DIR`) and
+refuses it unless its `--version` names this `VERSION`. That is all it can check: an older build
+of the same version still gets through, while the default build installs exactly what cargo
+just built.
 
 ## Keybinding and window rule
 

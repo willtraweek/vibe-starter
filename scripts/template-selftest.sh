@@ -3832,6 +3832,18 @@ STUB
     || fail "install with a build exited $?: $(cat "$d.install")" || return 1
   assert_contains "$w/cargo.args" "cargo build --locked --release --message-format=json-render-diagnostics" || return 1
   cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "install did not take the binary cargo reported" || return 1
+  # Regression test. A binary built before the last VERSION bump installed under
+  # the new version's entry: its --version must name this app at this VERSION.
+  cp "$d/VERSION" "$d.VERSION" && printf '0.0.1\n' > "$d/VERSION" || return 1
+  for f in "" --no-build; do
+    (cd "$d" && PATH="$w/bin:$(printenv PATH)" CARGO_TARGET_DIR="$w/elsewhere" PREFIX="$p" ./scripts/install.sh ${f:+"$f"}) \
+      >"$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: install.sh $f"; return 1; }
+    assert_contains "$d.install" "reports 'demo_app 0.0.0', not 'demo_app 0.0.1': rebuild it" || return 1
+  done
+  cp "$d.VERSION" "$d/VERSION" || return 1
+  assert_contains "$entry" "X-AppVersion=0.0.0" || return 1
+  cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "a refused install changed the installed binary" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \

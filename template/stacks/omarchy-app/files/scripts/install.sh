@@ -34,9 +34,10 @@ CDPATH='' cd -- "$(dirname -- "$0")/.."
 case "$BINDIR" in
   *[\"\`\$\\%]*|*$'\n'*) echo "install.sh: unsupported character in BINDIR: $BINDIR" >&2; exit 2 ;;
 esac
+version="$(head -n 1 VERSION)"
 
 desktop_entry() {
-  BINDIR="$BINDIR" VERSION="$(head -n 1 VERSION)" perl -pe \
+  BINDIR="$BINDIR" VERSION="$version" perl -pe \
     's/\@BINDIR\@/$ENV{BINDIR}/g; s/\@VERSION\@/$ENV{VERSION}/g' packaging/app.desktop.in
 }
 
@@ -66,6 +67,15 @@ case "$mode" in
       binary="${CARGO_TARGET_DIR:-target}/release/$APP_ID"
     fi
     [ -x "$binary" ] || { echo "install.sh: $binary is missing; build it first" >&2; exit 1; }
+    # It must be this app at this VERSION: a build from before the last bump
+    # would install under the new version's entry. That is all --no-build can
+    # check, so an older build of the same VERSION still gets through; the
+    # default path installs exactly what cargo just built.
+    reported="$("$binary" --version 2>/dev/null || true)"
+    if [ "$reported" != "$APP_ID $version" ]; then
+      echo "install.sh: $binary reports '$reported', not '$APP_ID $version': rebuild it" >&2
+      exit 1
+    fi
     install -d "$BINDIR" "$APPDIR" "$ICONDIR"
     install -m 755 "$binary" "$BINDIR/$APP_ID"
     install -m 644 assets/icon.svg "$ICONDIR/$APP_ID.svg"
@@ -73,7 +83,7 @@ case "$mode" in
     chmod 644 "$APPDIR/$APP_ID.desktop.tmp"
     mv "$APPDIR/$APP_ID.desktop.tmp" "$APPDIR/$APP_ID.desktop"
     refresh_launcher
-    echo "Installed $APP_ID $(head -n 1 VERSION):"
+    echo "Installed $APP_ID $version:"
     echo "  $BINDIR/$APP_ID"
     echo "  $APPDIR/$APP_ID.desktop"
     echo "  $ICONDIR/$APP_ID.svg"

@@ -26,6 +26,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     match args.first().map(String::as_str) {
         None => Ok(Command::Open),
+        // scripts/install.sh refuses a binary whose answer here isn't `APP_ID VERSION`.
         Some("--version") => Ok(Command::Print(format!(
             "{} {}\n",
             crate::APP_ID,
