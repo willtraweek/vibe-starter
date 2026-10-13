@@ -27,6 +27,11 @@ widget's width to its `barSize`, so show less there (the starter shows only its 
 The shell's own; add none.
 
 ## Anti-slop rules
-- No hex colours or fixed pixel sizes in QML: tokens only.
+- No hex colours or fixed pixel sizes in QML: tokens only. In QML outside `tests/`,
+  `scripts/check.d/omarchy-plugin.sh` refuses a hex colour string (`"#…"`), `Qt.rgba()`,
+  `Qt.rgb()`, `Qt.hsla()` and `Qt.hsva()`, any `Gradient`, and a whole number other than 0 and
+  1 bound on its own to `width`, `height`, `implicitWidth`, `implicitHeight`, `pixelSize`,
+  `pointSize`, `spacing`, `margins`, a `*Margin` or `radius`. It reads text, not types, so
+  `width: 2 * 12` gets past it; the rule still holds.
 - Logic lives in `Logic.js`, plain JavaScript at 100% coverage, not in QML handlers.
 - Never build a shell command from a setting: run argv lists (`Util.execArgv`), never `sh -c`.

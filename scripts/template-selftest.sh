@@ -4447,6 +4447,66 @@ test_stack_omarchy_plugin_guard_keeps_version_and_manifest_in_step() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard" "omarchy-plugin-validate: rejected"
 }
+test_stack_omarchy_plugin_guard_refuses_fixed_colours_and_sizes_in_qml() {
+  # Regression test. DESIGN.md says "No hex colours or fixed pixel sizes in QML:
+  # tokens only", but nothing enforced it: each of these passed the guard.
+  command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
+  local d="$WORK/omarchy-plugin-tokens/demo-app" rc lit want
+  omarchy_plugin_project "$d" || return 1
+  stub_omarchy_kit "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  mkdir -p "$d/bar" || return 1
+  while IFS='|' read -r lit want; do
+    printf 'import QtQuick\n\nRectangle {\n  %s\n}\n' "$lit" > "$d/bar/Extra.qml"
+    (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $lit"; return 1; }
+    assert_contains "$d.guard" "bar/Extra.qml:4:" || return 1
+    assert_contains "$d.guard" "$want" || return 1
+  done <<'CASES'
+color: "#ff0000"|fixed colours in QML
+border.color: '#fff'|fixed colours in QML
+color: "#80ff0000"|fixed colours in QML
+color: Qt.rgba(1, 0, 0, 1)|fixed colours in QML
+color: Qt.rgb(1, 0, 0)|fixed colours in QML
+color: Qt.hsla(0.5, 1, 0.5, 1)|fixed colours in QML
+color: Qt.hsva(0.5, 1, 1, 1)|fixed colours in QML
+gradient: Gradient { GradientStop { position: 0; color: Color.accent } }|gradients in QML
+LinearGradient {|gradients in QML
+width: 24|fixed pixel sizes in QML
+height: 2|fixed pixel sizes in QML
+implicitWidth: 120;|fixed pixel sizes in QML
+implicitHeight: 30 // the bar's|fixed pixel sizes in QML
+font.pixelSize: 14|fixed pixel sizes in QML
+font { pointSize: 10 }|fixed pixel sizes in QML
+spacing: 4|fixed pixel sizes in QML
+anchors.margins: 8|fixed pixel sizes in QML
+anchors.leftMargin: -6|fixed pixel sizes in QML
+Layout.topMargin: 12|fixed pixel sizes in QML
+radius: 4|fixed pixel sizes in QML
+CASES
+  # Tokens pass, and so do 0 and 1, sizes worked out from tokens, a # in text,
+  # and the tests' own QML.
+  cat > "$d/bar/Extra.qml" <<'QML'
+import QtQuick
+import qs.Commons
+
+Rectangle {
+  width: Style.space(8)
+  height: Style.bar.sizeHorizontal
+  implicitWidth: 2 * Style.spacing.md
+  spacing: Style.spacing.sm
+  radius: 0
+  border.width: 1
+  anchors.margins: 0
+  color: Color.accent
+  Text { text: "#1 in the queue"; textFormat: Text.PlainText; font.pixelSize: Style.font.body }
+}
+QML
+  printf 'import QtQuick\n\nRectangle { width: 24; color: "#ffffff" }\n' > "$d/tests/qml/Fixture.qml"
+  (cd "$d" && bash scripts/check.d/omarchy-plugin.sh) >"$d.guard" 2>&1 \
+    || fail "tokens failed the guard: $(cat "$d.guard")"
+}
 test_stack_omarchy_plugin_dev_link_links_rescans_and_enables() {
   command -v jq >/dev/null 2>&1 || { skip "jq not installed"; return; }
   local d="$WORK/omarchy-plugin-link/demo-app" home="$WORK/omarchy-plugin-link/home" rc
