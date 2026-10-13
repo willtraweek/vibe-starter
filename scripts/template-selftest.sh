@@ -5415,6 +5415,21 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   }
   perl -pi -e 's/^\/\/ UPDATE$/export const now = () => Date.now()\n\n\/\/ UPDATE/' "$d/src/main.ts" || return 1
   expect_guard_failure "effect(globalDate)" "Date.now() in src/main.ts" || return 1
+  # tsconfig's src/** override (production files) lists only the rules it adds:
+  # the patched tsc merges it with the base rule by rule, so the base's errors
+  # still hold there. Production and test files are checked one at a time.
+  printf "import { Effect } from 'effect'\n\nexport const leak = () => {\n  Effect.log('lost')\n}\n" > "$d/src/domain/floating.ts"
+  expect_guard_failure "effect(floatingEffect)" "a floating Effect in src/domain" || return 1
+  printf "import { Effect } from 'effect'\n\nimport { it } from '@effect/vitest'\n\nit('floats', () => {\n  Effect.log('lost')\n})\n" > "$d/src/floating.test.ts"
+  expect_guard_failure "effect(floatingEffect)" "a floating Effect in a test file" || return 1
+  # outdatedApi defaults to a warning: reported as an error in a production
+  # file, the base's severity reached a file the override matches.
+  printf "import { Effect } from 'effect'\n\nexport const legacy = Effect.succeed(1).pipe(\n  Effect.catchAll(() => Effect.succeed(2)),\n)\n" > "$d/src/domain/legacy.ts"
+  guard; rc=$?
+  [ "$rc" -ne 0 ] || fail "the guard passed with an Effect v3 API in src/domain" || return 1
+  grep -qE '^src/domain/legacy\.ts\([0-9]+,[0-9]+\): error TS[0-9]+: .*effect\(outdatedApi\)' "$d.guard.out" \
+    || fail "outdatedApi is not an error in a production file: $(grep -F 'legacy.ts' "$d.guard.out" | head -3)" || return 1
+  (cd "$d" && git checkout -q -- . && git clean -qfd -e node_modules -e repos) || return 1
   printf "import { Command } from 'foldkit'\n\nexport const leak = Command\n" > "$d/src/domain/leak.ts"
   expect_guard_failure "src/domain and src/api must not import foldkit" "a foldkit import in src/domain" || return 1
   printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"

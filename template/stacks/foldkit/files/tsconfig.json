@@ -28,10 +28,6 @@
             "exclude": ["src/**/*.test.ts"],
             "options": {
               "diagnosticSeverity": {
-                "outdatedApi": "error",
-                "floatingEffect": "error",
-                "floatingEffectInVitest": "error",
-                "obsoleteSchemaImport": "error",
                 "globalDate": "error",
                 "globalDateInEffect": "error",
                 "globalRandom": "error",
