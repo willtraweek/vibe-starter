@@ -4038,6 +4038,17 @@ test_rust_packs_share_one_copy_of_their_gates() {
   done
   [ -x "$d/scripts/coverage_tiers.sh" ] || fail "an included script lost its exec bit"
 }
+test_rust_gates_packs_name_jq_in_their_stack() {
+  # _rust-gates' coverage_tiers.sh fails without jq; README's Stack line is the
+  # only prerequisite list a new project gets, so every pack including it says so.
+  local pack n=0
+  for pack in $(grep -lxF _rust-gates "$REPO"/template/stacks/*/includes | sed 's|/includes$||; s|.*/||'); do
+    n=$((n + 1))
+    grep -q '^STACK=.*jq (scripts/coverage_tiers.sh)' "$REPO/template/stacks/$pack/commands" \
+      || fail "$pack's STACK does not name jq, which scripts/coverage_tiers.sh needs" || return 1
+  done
+  [ "$n" -ge 3 ] || fail "expected the three Rust packs; found $n"
+}
 test_omarchy_packs_share_one_install_script() {
   # Two copies (rule of three: not yet shared); they must not drift apart.
   cmp -s "$REPO/template/stacks/omarchy-app/files/scripts/install.sh" \
