@@ -4719,7 +4719,7 @@ omarchy_plugin_heavy_ready() {  # why the heavy plugin test can't run here; empt
 test_heavy_stack_omarchy_plugin_project_is_green() {
   # The new project's own gate, for real: Omarchy's validator and Text-format
   # scanner at .omarchy-ref (fetched), then Logic.js at 100% and the QML tests.
-  local d="$WORK/heavy-omarchy-plugin/demo-app" why kit
+  local d="$WORK/heavy-omarchy-plugin/demo-app" why kit fmt rc line
   why="$(omarchy_plugin_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   omarchy_plugin_project "$d" || return 1
@@ -4734,7 +4734,23 @@ test_heavy_stack_omarchy_plugin_project_is_green() {
   if (cd "$d" && OMARCHY_KIT_DIR="$kit" bash scripts/check.d/omarchy-plugin.sh) >"$d.guard.out" 2>&1; then
     fail "a Text without textFormat passed the guard" || return 1
   fi
-  assert_contains "$d.guard.out" "without textFormat"
+  assert_contains "$d.guard.out" "without textFormat" || return 1
+  # Regression test. A QtQuick.Controls Label is a Text whose textFormat also
+  # defaults to AutoText, but Omarchy's scanner reads only Text, so a Label
+  # showing a setting passed. It must be plain text: no textFormat and a
+  # RichText one both fail, Text.PlainText passes.
+  for fmt in "" "textFormat: Text.RichText" "textFormat: Text.PlainText"; do
+    (cd "$d" && git checkout -q HEAD -- Widget.qml) || return 1
+    LABEL_FORMAT="$fmt" perl -0pi -e 's/  WidgetButton \{/  Label {\n    text: root.setting("label", "Pressed")\n    $ENV{LABEL_FORMAT}\n  }\n  WidgetButton {/' "$d/Widget.qml"
+    line="$(grep -n '^    text: root\.setting("label", "Pressed")$' "$d/Widget.qml" | cut -d: -f1)"
+    (cd "$d" && OMARCHY_KIT_DIR="$kit" bash scripts/check.d/omarchy-plugin.sh) >"$d.guard.out" 2>&1; rc=$?
+    case "$fmt" in
+      *PlainText) assert_exit 0 "$rc" || { tail -5 "$d.guard.out"; return 1; } ;;
+      *) assert_exit 1 "$rc" || { echo "    for a Label with '${fmt:-no textFormat}'"; return 1; }
+        assert_contains "$d.guard.out" "shell/Widget.qml:$line: text binding without textFormat" || return 1
+        assert_contains "$d.guard.out" "give it textFormat: Text.PlainText" || return 1 ;;
+    esac
+  done
 }
 
 # --- tests: foldkit stack pack (plan 011) ---------------------------------------

@@ -15,8 +15,11 @@ property of your own: the shell replaces them on every theme change. No hex colo
 
 ## Typography
 `Style.font.*` (`family`, `body`, `caption`, `title`, ...), which follow `omarchy font set`.
-Every `Text` whose text isn't a literal sets `textFormat: Text.PlainText`: Omarchy's scanner
-(run by `scripts/check.d/omarchy-plugin.sh`) and the plugin directory's reviewers require it.
+Every `Text` whose text isn't a literal sets `textFormat: Text.PlainText`, and so does every type
+derived from `Text`, such as QtQuick.Controls' `Label`: left at `AutoText`, it renders markup that
+comes from outside the shell. `scripts/check.d/omarchy-plugin.sh` runs Omarchy's scanner, which
+the plugin directory's reviewers also apply and which requires a `textFormat` on such a `Text`,
+and holds each such `Label` to `Text.PlainText`.
 
 ## Spacing & layout
 `Style.space(px)` and `Style.spacing.*`, which scale with `omarchy display text size`; bar
