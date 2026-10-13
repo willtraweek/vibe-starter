@@ -2,10 +2,12 @@
 # Reject names a foldkit project can't use, before bootstrap writes anything.
 # $1 is the package name (package.json "name"), $2 the project name.
 # node_modules is reserved by Node.js.
-# Then the pack's direct dependencies without a scope or hyphen (the only ones
-# a normalized package name can equal). pnpm installs such a project, but tools
-# that find packages by name see two: named `effect`, the Effect language
-# service reports a duplicate package on every file and tsc fails.
+# Then the package names a normalized project name can equal (no scope, no
+# hyphen): the pack's direct dependencies, and `playwright`, the package behind
+# @playwright/test and the `pnpm exec playwright` command the gate runs. pnpm
+# installs such a project, but tools that find packages by name see two: named
+# `effect`, the Effect language service reports a duplicate package on every
+# file and tsc fails.
 # Last, the length: src/build-info.ts holds
 # `export const PROJECT_NAME = '<name>'`, and past 50 characters Oxfmt's 80
 # columns wrap it, so the first `oxfmt --check` fails.
