@@ -5,7 +5,7 @@ import { defineTaggedUnion } from 'foldkit/schema'
 import { modifyFields } from 'foldkit/struct'
 
 import { StatusPayload } from './api/status'
-import { FetchStatus } from './command'
+import { FetchStatus, FocusStatusPanel } from './command'
 import { FailureReason, Message } from './message'
 
 // MODEL
@@ -42,7 +42,7 @@ export const update = (model: Model, message: Message) =>
   Message.match<UpdateReturn>(message, {
     ClickedRetryStatus: () => ({
       model: modifyFields(model, { status: () => StatusState.Loading() }),
-      commands: [FetchStatus()],
+      commands: [FetchStatus(), FocusStatusPanel()],
     }),
     SucceededFetchStatus: ({ payload }) => ({
       model: modifyFields(model, {
@@ -54,4 +54,5 @@ export const update = (model: Model, message: Message) =>
         status: () => StatusState.Failed({ reason, detail }),
       }),
     }),
+    CompletedFocusStatusPanel: () => ({ model }),
   })

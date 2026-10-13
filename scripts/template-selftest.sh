@@ -5066,7 +5066,7 @@ run(report({ specs: [], nested: [describe('first'), describe('second')] }), 1, `
 // A report that is not a complete run fails whatever it says about journeys.
 run(report({ errors: [{ message: 'Error: http://localhost:4000 is already used\n  more detail' }] }), 1, 'the Playwright run reported errors: Error: http://localhost:4000 is already used')
 run({ ...report(), suites: [] }, 1, 'the Playwright report has no suites: no test ran')
-run(report({ specs: [spec(journey, [test([])])] }), 1, 'the Playwright report has no test results: no test ran')
+run({ ...report(), suites: [{ title: 'home.spec.ts', file: 'home.spec.ts', line: 0, column: 0, specs: journeys.map(title => spec(title, [test([])])) }] }, 1, 'the Playwright report has no test results: no test ran')
 run({ ...report(), errors: undefined }, 1, 'is it a Playwright JSON report?')
 run({ ...report(), suites: [{ title: 'home.spec.ts' }] }, 1, 'the Playwright report is malformed')
 run([], 1, 'the Playwright report must be a JSON object')

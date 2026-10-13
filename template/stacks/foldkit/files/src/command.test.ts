@@ -3,7 +3,7 @@ import { HttpClient, HttpClientError, HttpClientResponse } from 'effect/http'
 
 import { assert, describe, it } from '@effect/vitest'
 
-import { FetchStatus } from './command'
+import { FetchStatus, FocusStatusPanel, STATUS_PANEL_ID } from './command'
 import { Message } from './message'
 
 // Tier 2: FetchStatus maps every outcome of the status request to a Message.
@@ -70,6 +70,32 @@ describe('FetchStatus', () => {
       assert.deepStrictEqual(
         result._tag === 'FailedFetchStatus' ? result.reason : result._tag,
         'unreachable',
+      )
+    }),
+  )
+})
+
+describe('FocusStatusPanel', () => {
+  it.effect('focuses the status panel', () =>
+    Effect.gen(function* () {
+      const panel = document.createElement('section')
+      panel.id = STATUS_PANEL_ID
+      panel.tabIndex = -1
+      document.body.append(panel)
+      assert.deepStrictEqual(
+        yield* FocusStatusPanel().effect,
+        Message.CompletedFocusStatusPanel(),
+      )
+      assert.strictEqual(document.activeElement, panel)
+      panel.remove()
+    }),
+  )
+
+  it.effect('completes when there is no status panel to focus', () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* FocusStatusPanel().effect,
+        Message.CompletedFocusStatusPanel(),
       )
     }),
   )

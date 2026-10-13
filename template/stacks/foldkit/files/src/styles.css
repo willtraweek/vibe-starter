@@ -42,6 +42,12 @@ body {
   margin: 0 0 var(--space-2);
 }
 
+.status-panel:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
 .status-ok {
   color: var(--color-ok);
 }

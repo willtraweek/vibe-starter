@@ -19,5 +19,8 @@
       "include": ["src/view.ts", "src/components/status.ts"]
     }
   },
-  "journeys": ["home renders the project name, version and status"]
+  "journeys": [
+    "home renders the project name, version and status",
+    "retrying a failed status check keeps keyboard focus"
+  ]
 }

@@ -6,7 +6,7 @@ import { Command, given, message, model, story } from 'foldkit/story'
 import { describe, expect, it, test } from '@effect/vitest'
 
 import type { StatusPayload } from './api/status'
-import { FetchStatus } from './command'
+import { FetchStatus, FocusStatusPanel } from './command'
 import { Model, StatusState, init, update } from './main'
 import { Message } from './message'
 
@@ -71,7 +71,11 @@ describe('update', () => {
       model(model => {
         expect(model.status).toEqual(StatusState.Loading())
       }),
-      Command.expectExact(FetchStatus()),
+      Command.expectExact(FetchStatus(), FocusStatusPanel()),
+      Command.resolve(FocusStatusPanel, Message.CompletedFocusStatusPanel()),
+      model(model => {
+        expect(model.status).toEqual(StatusState.Loading())
+      }),
       Command.resolve(FetchStatus, Message.SucceededFetchStatus({ payload })),
       model(model => {
         expect(model.status).toEqual(StatusState.Loaded({ payload }))
@@ -84,6 +88,7 @@ describe('update', () => {
       update,
       given(failed),
       message(Message.ClickedRetryStatus()),
+      Command.resolve(FocusStatusPanel, Message.CompletedFocusStatusPanel()),
       Command.resolve(
         FetchStatus,
         Message.FailedFetchStatus({ reason: 'unreachable', detail: 'offline' }),
@@ -120,7 +125,8 @@ describe('update', () => {
           )
         }),
         message(Message.ClickedRetryStatus()),
-        Command.expectExact(FetchStatus()),
+        Command.expectExact(FetchStatus(), FocusStatusPanel()),
+        Command.resolve(FocusStatusPanel, Message.CompletedFocusStatusPanel()),
         Command.resolve(FetchStatus, Message.SucceededFetchStatus({ payload })),
         model(model => {
           expect(model.status).toEqual(StatusState.Loaded({ payload }))
