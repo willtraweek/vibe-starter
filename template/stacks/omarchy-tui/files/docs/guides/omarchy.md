@@ -23,8 +23,9 @@ themed by Omarchy, and the launcher on `Super + Space`.
   `TUI.float` class.
 - `~/.local/share/icons/hicolor/scalable/apps/{{PACKAGE_NAME}}.svg`
 
-`./scripts/install.sh --uninstall` removes exactly those three files. To install system-wide,
-build as yourself, then run `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
+`./scripts/install.sh --uninstall` removes exactly those three files. `PREFIX` moves all three;
+nothing else in the environment does. To install system-wide, build as yourself, then run
+`sudo PREFIX=/usr/local ./scripts/install.sh --no-build`.
 `--no-build` takes `target/release/{{PACKAGE_NAME}}` (or the one under `$CARGO_TARGET_DIR`) and
 refuses it unless its `--version` names this `VERSION`. That is all it can check: an older build
 of the same version still gets through, while the default build installs exactly what cargo

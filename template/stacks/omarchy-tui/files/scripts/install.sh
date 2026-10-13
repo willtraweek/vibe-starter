@@ -10,10 +10,9 @@
 set -euo pipefail
 
 APP_ID="{{PACKAGE_NAME}}"
+# PREFIX is the one setting. Generic names such as APPDIR, which every AppImage
+# exports to its children, are never read from the environment.
 PREFIX="${PREFIX:-$HOME/.local}"
-BINDIR="${BINDIR:-$PREFIX/bin}"
-APPDIR="${APPDIR:-$PREFIX/share/applications}"
-ICONDIR="${ICONDIR:-$PREFIX/share/icons/hicolor/scalable/apps}"
 
 mode=install
 build=1
@@ -31,19 +30,22 @@ CDPATH='' cd -- "$(dirname -- "$0")/.."
 
 # Exec quotes the binary's path; these characters would need escaping there
 # (desktop entry spec), so refuse them rather than write a broken entry.
-case "$BINDIR" in
-  *[\"\`\$\\%]*|*$'\n'*) echo "install.sh: unsupported character in BINDIR: $BINDIR" >&2; exit 2 ;;
+case "$PREFIX" in
+  *[\"\`\$\\%]*|*$'\n'*) echo "install.sh: unsupported character in PREFIX: $PREFIX" >&2; exit 2 ;;
 esac
+bindir="$PREFIX/bin"
+appdir="$PREFIX/share/applications"
+icondir="$PREFIX/share/icons/hicolor/scalable/apps"
 version="$(head -n 1 VERSION)"
 
 desktop_entry() {
-  BINDIR="$BINDIR" VERSION="$version" perl -pe \
+  BINDIR="$bindir" VERSION="$version" perl -pe \
     's/\@BINDIR\@/$ENV{BINDIR}/g; s/\@VERSION\@/$ENV{VERSION}/g' packaging/app.desktop.in
 }
 
 refresh_launcher() {
   if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database "$APPDIR" 2>/dev/null || true
+    update-desktop-database "$appdir" 2>/dev/null || true
   fi
 }
 
@@ -51,7 +53,7 @@ case "$mode" in
   print)
     desktop_entry ;;
   uninstall)
-    rm -f "$BINDIR/$APP_ID" "$APPDIR/$APP_ID.desktop" "$ICONDIR/$APP_ID.svg"
+    rm -f "$bindir/$APP_ID" "$appdir/$APP_ID.desktop" "$icondir/$APP_ID.svg"
     refresh_launcher
     echo "Removed $APP_ID from $PREFIX." ;;
   install)
@@ -76,17 +78,17 @@ case "$mode" in
       echo "install.sh: $binary reports '$reported', not '$APP_ID $version': rebuild it" >&2
       exit 1
     fi
-    install -d "$BINDIR" "$APPDIR" "$ICONDIR"
-    install -m 755 "$binary" "$BINDIR/$APP_ID"
-    install -m 644 assets/icon.svg "$ICONDIR/$APP_ID.svg"
-    desktop_entry > "$APPDIR/$APP_ID.desktop.tmp"
-    chmod 644 "$APPDIR/$APP_ID.desktop.tmp"
-    mv "$APPDIR/$APP_ID.desktop.tmp" "$APPDIR/$APP_ID.desktop"
+    install -d "$bindir" "$appdir" "$icondir"
+    install -m 755 "$binary" "$bindir/$APP_ID"
+    install -m 644 assets/icon.svg "$icondir/$APP_ID.svg"
+    desktop_entry > "$appdir/$APP_ID.desktop.tmp"
+    chmod 644 "$appdir/$APP_ID.desktop.tmp"
+    mv "$appdir/$APP_ID.desktop.tmp" "$appdir/$APP_ID.desktop"
     refresh_launcher
     echo "Installed $APP_ID $version:"
-    echo "  $BINDIR/$APP_ID"
-    echo "  $APPDIR/$APP_ID.desktop"
-    echo "  $ICONDIR/$APP_ID.svg"
-    case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "Note: $BINDIR is not on PATH in this shell." ;; esac
+    echo "  $bindir/$APP_ID"
+    echo "  $appdir/$APP_ID.desktop"
+    echo "  $icondir/$APP_ID.svg"
+    case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: $bindir is not on PATH in this shell." ;; esac
     echo "Keybinding and window rule: docs/guides/omarchy.md" ;;
 esac

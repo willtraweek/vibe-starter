@@ -3844,13 +3844,21 @@ STUB
   cp "$d.VERSION" "$d/VERSION" || return 1
   assert_contains "$entry" "X-AppVersion=0.0.0" || return 1
   cmp -s "$w/built/demo_app" "$p/bin/demo_app" || fail "a refused install changed the installed binary" || return 1
+  # Regression test. BINDIR, APPDIR and ICONDIR came from the environment, and
+  # every AppImage exports APPDIR to its children: only PREFIX moves the install.
+  (cd "$d" && BINDIR="$w/env" APPDIR="$w/env" ICONDIR="$w/env" PATH="$w/bin:$(printenv PATH)" PREFIX="$p" \
+    ./scripts/install.sh) >"$d.install" 2>&1 || fail "install with BINDIR, APPDIR and ICONDIR set exited $?: $(cat "$d.install")" || return 1
+  (cd "$d" && BINDIR="$w/env" PREFIX="$p" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$entry" \
+    || fail "BINDIR in the environment changed the desktop entry" || return 1
+  assert_absent "$w/env" || return 1
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \
     || fail "--help from scripts/ exited $?: $(cat "$d.help")" || return 1
   assert_contains "$d.help" "--print-desktop-entry" || return 1
-  (cd "$d" && BINDIR='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >/dev/null 2>&1; rc=$?
-  assert_exit 2 "$rc"
+  (cd "$d" && PREFIX='/tmp/a"b' ./scripts/install.sh --print-desktop-entry) >"$d.install" 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.install" "unsupported character in PREFIX"
 }
 test_stack_omarchy_app_guard_refuses_colour_literals_and_needs_its_validator_in_ci() {
   local d="$WORK/omarchy-app-guard/demo-app" rc lit f
