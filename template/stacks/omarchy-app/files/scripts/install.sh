@@ -55,29 +55,44 @@ refresh_launcher() {
   fi
 }
 
-# This app's desktop entry marks an install this script made (it writes the
-# entry last). A binary at its path without one is another tool's: install
-# never replaces it and --uninstall never removes it.
-unrelated_binary() {
-  { [ -e "$bindir/$APP_ID" ] || [ -L "$bindir/$APP_ID" ]; } && [ ! -e "$appdir/$APP_ID.desktop" ]
+# A marked entry with this launch command owns the three installed files.
+# Check before building or touching any destination; names alone prove nothing.
+# Versions may differ during an upgrade, and missing owned companions may be
+# restored or removed. Never follow a destination symlink or replace a directory.
+check_ownership() {
+  local path present=0 expected_exec entry="$appdir/$APP_ID.desktop"
+  for path in "$bindir/$APP_ID" "$entry" "$icondir/$APP_ID.svg"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      present=1
+      if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "install.sh: refusing to replace or remove $path: not a regular, non-symlink file" >&2
+        return 1
+      fi
+    fi
+  done
+  [ "$present" = 1 ] || return 0
+  expected_exec="$(desktop_entry | sed -n '/^Exec=/p')"
+  if [ -r "$entry" ] && [ -n "$expected_exec" ] && awk -v id="$APP_ID" -v expected="$expected_exec" '
+    /^\[/ { active = ($0 == "[Desktop Entry]"); if (active) groups++ }
+    active && /^X-Vibe-Starter-AppId=/ { markers++; if ($0 == "X-Vibe-Starter-AppId=" id) marker_ok++ }
+    active && /^Exec=/ { commands++; if ($0 == expected) command_ok++ }
+    END { exit !(groups == 1 && markers == 1 && marker_ok == 1 && commands == 1 && command_ok == 1) }
+  ' "$entry"; then
+    return 0
+  fi
+  echo "install.sh: refusing to replace or remove existing files: no valid ownership entry at $entry; move unrelated files aside first" >&2
+  return 1
 }
 
+case "$mode" in install|uninstall) check_ownership || exit 1 ;; esac
 case "$mode" in
   print)
     desktop_entry ;;
   uninstall)
-    if unrelated_binary; then
-      echo "install.sh: left $bindir/$APP_ID alone: it is not one this script installed (no $appdir/$APP_ID.desktop)" >&2
-      exit 1
-    fi
     rm -f "$bindir/$APP_ID" "$appdir/$APP_ID.desktop" "$icondir/$APP_ID.svg"
     refresh_launcher
     echo "Removed $APP_ID from $PREFIX." ;;
   install)
-    if unrelated_binary; then
-      echo "install.sh: $bindir/$APP_ID is not one this script installed (no $appdir/$APP_ID.desktop): move it aside first" >&2
-      exit 1
-    fi
     if [ "$build" = 1 ]; then
       # Install the binary cargo reports building: build.target-dir,
       # CARGO_BUILD_TARGET_DIR and build.target all move it, and sudo drops

@@ -21,10 +21,10 @@ desktop shell, and the active theme in `~/.local/state/omarchy/current`.
   (`Super + Space`) lists
 - `~/.local/share/icons/hicolor/scalable/apps/{{PACKAGE_NAME}}.svg`
 
-`./scripts/install.sh --uninstall` removes exactly those three files. Neither replaces nor
-removes a `~/.local/bin/{{PACKAGE_NAME}}` that came without this app's desktop entry: that one
-is another tool's. `PREFIX`, an absolute path, moves all three; nothing else in the environment
-does.
+`./scripts/install.sh --uninstall` removes exactly those three files. Before replacing or
+removing existing files, the script verifies its ownership marker and launch command in the
+desktop entry. Unrecognized files, directories and symlinks are left alone. `PREFIX`, an
+absolute path, moves all three; nothing else in the environment does.
 
 To install system-wide, build as yourself, then run
 `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`. `--no-build` takes

@@ -3880,10 +3880,69 @@ STUB
   for f in "" --no-build --uninstall; do
     (cd "$d" && PATH="$w/bin:$(printenv PATH)" PREFIX="$w/other" ./scripts/install.sh ${f:+"$f"}) >"$d.install" 2>&1; rc=$?
     assert_exit 1 "$rc" || { echo "    for: install.sh $f"; return 1; }
-    assert_contains "$d.install" "is not one this script installed (no $w/other/share/applications/demo_app.desktop)" || return 1
+    assert_contains "$d.install" "no valid ownership entry at $w/other/share/applications/demo_app.desktop" || return 1
     [ "$(cat "$w/other/bin/demo_app")" = "another tool" ] || fail "install.sh $f replaced or removed another tool's binary" || return 1
   done
   assert_absent "$w/other/share" || return 1
+  # A same-named desktop entry does not prove ownership. Check both launch
+  # formats, all three destinations, and every mutating mode without building.
+  local pack owned prefix kind mode path before after
+  for pack in omarchy-app omarchy-tui; do
+    owned="$w/ownership-$pack/demo-app"
+    stub_cargo_project "$owned" "$pack" || return 1
+    stub_app_binary "$owned/target/release/demo_app" "demo_app 0.0.0" || return 1
+    for kind in unrelated entry-only icon-only wrong-marker wrong-exec duplicate-marker duplicate-exec \
+      dir-binary dir-entry dir-icon link-binary link-entry link-icon dangling-binary dangling-entry dangling-icon; do
+      prefix="$w/collision-$pack-$kind"
+      mkdir -p "$prefix/bin" "$prefix/share/applications" "$prefix/share/icons/hicolor/scalable/apps" || return 1
+      path="$prefix/share/applications/demo_app.desktop"
+      case "$kind" in
+        unrelated)
+          printf 'another binary\n' > "$prefix/bin/demo_app"
+          printf '[Desktop Entry]\nName=Another app\nExec=/other/app\n' > "$path"
+          printf 'another icon\n' > "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg" ;;
+        entry-only) printf '[Desktop Entry]\nExec=/other/app\n' > "$path" ;;
+        icon-only) printf 'another icon\n' > "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg" ;;
+        *)
+          (cd "$owned" && PREFIX="$prefix" ./scripts/install.sh --print-desktop-entry) > "$path" || return 1
+          case "$kind" in
+            wrong-marker) sed 's/X-Vibe-Starter-AppId=demo_app/X-Vibe-Starter-AppId=other_app/' "$path" > "$path.new" && mv "$path.new" "$path" ;;
+            wrong-exec) sed 's|^Exec=.*|Exec=/other/app|' "$path" > "$path.new" && mv "$path.new" "$path" ;;
+            duplicate-marker) printf 'X-Vibe-Starter-AppId=demo_app\n' >> "$path" ;;
+            duplicate-exec) sed -n '/^Exec=/p' "$path" >> "$path.dup" && cat "$path.dup" >> "$path" && rm "$path.dup" ;;
+            *)
+              case "$kind" in
+                *-binary) path="$prefix/bin/demo_app" ;;
+                *-icon) path="$prefix/share/icons/hicolor/scalable/apps/demo_app.svg" ;;
+              esac
+              rm -f "$path"
+              case "$kind" in
+                dir-*) mkdir "$path" ;;
+                link-*) printf 'external file\n' > "$prefix/external"; ln -s "$prefix/external" "$path" ;;
+                dangling-*) ln -s "$prefix/missing" "$path" ;;
+              esac ;;
+          esac ;;
+      esac
+      before="$(tree_fingerprint "$prefix"; (cd "$prefix" && find . -type d -print && find . -type l -exec ls -ld {} +))"
+      for mode in "" --no-build --uninstall; do
+        (cd "$owned" && PATH="$w/bin:$(printenv PATH)" PREFIX="$prefix" ./scripts/install.sh ${mode:+"$mode"}) > "$owned.install" 2>&1; rc=$?
+        assert_exit 1 "$rc" || { echo "    for $pack $kind ${mode:-install}"; return 1; }
+        after="$(tree_fingerprint "$prefix"; (cd "$prefix" && find . -type d -print && find . -type l -exec ls -ld {} +))"
+        [ "$before" = "$after" ] || fail "$pack $kind ${mode:-install} changed unowned artifacts" || return 1
+      done
+    done
+    # A real owned install can advance its version and remove its managed set.
+    prefix="$w/upgrade-$pack"
+    (cd "$owned" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$owned.install" 2>&1 || return 1
+    printf '0.0.1\n' > "$owned/VERSION"
+    stub_app_binary "$owned/target/release/demo_app" "demo_app 0.0.1" || return 1
+    (cd "$owned" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$owned.install" 2>&1 || return 1
+    assert_contains "$prefix/share/applications/demo_app.desktop" 'X-AppVersion=0.0.1' || return 1
+    (cd "$owned" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$owned.install" 2>&1 || return 1
+    for path in bin/demo_app share/applications/demo_app.desktop share/icons/hicolor/scalable/apps/demo_app.svg; do
+      assert_absent "$prefix/$path" || return 1
+    done
+  done
   (cd "$d" && ./scripts/install.sh --bogus) >/dev/null 2>&1; rc=$?
   assert_exit 2 "$rc" || return 1
   (cd "$d/scripts" && ./install.sh --help) >"$d.help" 2>&1 \

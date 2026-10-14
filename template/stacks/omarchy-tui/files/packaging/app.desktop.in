@@ -9,3 +9,4 @@ Terminal=false
 Categories=Utility;
 StartupNotify=true
 X-AppVersion=@VERSION@
+X-Vibe-Starter-AppId={{PACKAGE_NAME}}

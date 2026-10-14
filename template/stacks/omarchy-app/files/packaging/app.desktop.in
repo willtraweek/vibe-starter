@@ -10,3 +10,4 @@ Categories=Utility;
 StartupNotify=true
 StartupWMClass={{PACKAGE_NAME}}
 X-AppVersion=@VERSION@
+X-Vibe-Starter-AppId={{PACKAGE_NAME}}
