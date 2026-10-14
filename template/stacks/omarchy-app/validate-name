@@ -1,0 +1,16 @@
+#!/bin/sh
+# Names an omarchy-app project can't use. Rust's rules come first (the shared
+# list in _rust-gates: keywords and Cargo-reserved names). Then the crates this
+# pack builds on: a crate can't depend on a crate with its own name. And
+# `omarchy`, the Omarchy command itself. bootstrap runs this from the template root.
+rust_rules=template/stacks/_rust-gates/validate-name
+if [ ! -f "$rust_rules" ]; then
+  echo "The omarchy-app pack needs $rust_rules." >&2
+  exit 2
+fi
+sh "$rust_rules" "$@" || exit 2
+case "$1" in
+  gpui|gpui_pre|gpui_base|gpui_kit|gpui_kit_assets|gpui_omarchy|omarchy)
+    echo "Package name '$1' is taken by a crate this pack builds on, or by the omarchy command; choose another project name." >&2
+    exit 2 ;;
+esac

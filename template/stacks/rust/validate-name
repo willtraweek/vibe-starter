@@ -1,0 +1,4 @@
+#!/bin/sh
+# The rust pack's names are exactly Rust's rules, kept once in _rust-gates.
+# bootstrap runs this from the template root.
+exec sh template/stacks/_rust-gates/validate-name "$@"

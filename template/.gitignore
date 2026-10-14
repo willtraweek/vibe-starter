@@ -1,0 +1,7 @@
+# Template-only (./bootstrap deletes template/). The root .gitignore, which every
+# new project keeps, ignores .gstack/; the omarchy-plugin pack ships one file from
+# there, so re-include exactly that file, or a copy committed with `git add -A`
+# drops it.
+!/stacks/omarchy-plugin/files/.gstack/
+/stacks/omarchy-plugin/files/.gstack/*
+!/stacks/omarchy-plugin/files/.gstack/package-json-path

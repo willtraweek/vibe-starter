@@ -1,0 +1,16 @@
+#!/bin/sh
+# Names an omarchy-tui project can't use. Rust's rules come first (the shared
+# list in _rust-gates: keywords and Cargo-reserved names). Then the crates this
+# pack builds on, and `omarchy`, the Omarchy command. bootstrap runs this from
+# the template root.
+rust_rules=template/stacks/_rust-gates/validate-name
+if [ ! -f "$rust_rules" ]; then
+  echo "The omarchy-tui pack needs $rust_rules." >&2
+  exit 2
+fi
+sh "$rust_rules" "$@" || exit 2
+case "$1" in
+  ratatui|ratatui_core|ratatui_widgets|ratatui_crossterm|crossterm|omarchy)
+    echo "Package name '$1' is taken by a crate this pack builds on, or by the omarchy command; choose another project name." >&2
+    exit 2 ;;
+esac

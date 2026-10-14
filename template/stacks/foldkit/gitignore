@@ -1,0 +1,11 @@
+# --- JavaScript / TypeScript (pnpm, Vite, Vitest, Playwright) ---
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+*.tsbuildinfo
+# Read-only Foldkit reference (and the copy it replaces), re-created by
+# scripts/vendor-foldkit.sh
+/repos/

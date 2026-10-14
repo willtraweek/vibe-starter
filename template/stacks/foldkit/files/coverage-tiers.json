@@ -1,0 +1,26 @@
+{
+  "tiers": {
+    "pure_logic": {
+      "title": "Pure logic & utilities",
+      "minimum": 100,
+      "target": 100,
+      "include": ["src/domain/version.ts", "src/main.ts"]
+    },
+    "api_surface": {
+      "title": "API / contract surface",
+      "minimum": 100,
+      "target": 100,
+      "include": ["src/api/status.ts", "src/command.ts"]
+    },
+    "main_components": {
+      "title": "Main UI components",
+      "minimum": 90,
+      "target": 90,
+      "include": ["src/view.ts", "src/components/status.ts"]
+    }
+  },
+  "journeys": [
+    "home renders the project name, version and status",
+    "retrying a failed status check keeps keyboard focus"
+  ]
+}

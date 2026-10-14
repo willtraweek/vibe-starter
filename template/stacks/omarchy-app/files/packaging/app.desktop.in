@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name={{PROJECT_NAME}}
+Comment={{PROJECT_NAME}}, an Omarchy app
+Exec="@BINDIR@/{{PACKAGE_NAME}}"
+Icon={{PACKAGE_NAME}}
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass={{PACKAGE_NAME}}
+X-AppVersion=@VERSION@
+X-Vibe-Starter-AppId={{PACKAGE_NAME}}

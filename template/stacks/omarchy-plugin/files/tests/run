@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# The test gate: Logic.js (and every other *.js or *.mjs module outside tests/)
+# under Node at 100% lines, branches and functions, then the QML tests under Qt
+# 6's qmltestrunner, offscreen. Fails closed: a missing tool, an old Node, a Qt 5
+# runner or zero QML tests is a failure, not a skip.
+set -euo pipefail
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
+
+node_version="$(node -p process.versions.node 2>/dev/null)" \
+  || { echo "tests/run: Node 22.8 or newer is required" >&2; exit 1; }
+major="${node_version%%.*}"
+minor="${node_version#*.}"
+minor="${minor%%.*}"
+if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 8 ]; }; then
+  echo "tests/run: Node 22.8 or newer is required (coverage thresholds)" >&2
+  exit 1
+fi
+node --test --experimental-test-coverage \
+  --test-coverage-include='**/*.js' --test-coverage-include='**/*.mjs' --test-coverage-exclude='tests/**' \
+  --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 \
+  'tests/unit/*.test.js'
+
+# Arch's /usr/bin/qmltestrunner is Qt 5's and runs nothing; Qt 6 keeps its own.
+runner="${QML_TEST_RUNNER:-/usr/lib/qt6/bin/qmltestrunner}"
+[ -x "$runner" ] || { echo "tests/run: Qt 6 qmltestrunner not found at $runner (set QML_TEST_RUNNER)" >&2; exit 1; }
+out="$(QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  "$runner" -import tests/qml/imports -input tests/qml -o -,txt 2>&1)" || { printf '%s\n' "$out"; exit 1; }
+printf '%s\n' "$out"
+# Here-strings, not pipes: grep -q stops reading early, which pipefail would turn
+# into a failure once the output outgrows the pipe.
+grep -q 'Using QtTest library 6\.' <<<"$out" || { echo "tests/run: not a Qt 6 runner" >&2; exit 1; }
+grep -Eq '^Totals: [0-9]+ passed, 0 failed' <<<"$out" || { echo "tests/run: QML tests failed" >&2; exit 1; }
+# QtTest counts initTestCase and cleanupTestCase as passes: require a real test.
+grep -Eq '^PASS +: .*::test_' <<<"$out" || { echo "tests/run: no QML tests ran" >&2; exit 1; }

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Prints the path of a sparse Omarchy checkout at the commit in .omarchy-ref:
+# Omarchy's own plugin validator, Text-format scanner and shell components. It
+# lives outside the plugin, in a cache (OMARCHY_KIT_DIR, else
+# ~/.cache/omarchy-kit), because Omarchy's validator refuses any symlink inside
+# a plugin folder and Omarchy's repository has some. Needs git and, once, the
+# network. Bump .omarchy-ref on purpose, to a released Omarchy commit.
+set -euo pipefail
+CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
+ref="$(tr -d '[:space:]' < .omarchy-ref)"
+case "$ref" in
+  *[!0123456789abcdef]*|'') echo "omarchy-kit: .omarchy-ref must be a full commit SHA" >&2; exit 1 ;;
+esac
+[ "${#ref}" -eq 40 ] || { echo "omarchy-kit: .omarchy-ref must be a full commit SHA" >&2; exit 1; }
+kit="${OMARCHY_KIT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-kit}/$ref"
+# Only a commit in an Omarchy release (a v* tag contains it): GitHub also serves
+# unmerged pull requests' commits by SHA, and this kit's code runs on every check.
+released() { [ -n "$(GIT_NO_LAZY_FETCH=1 git -C "$1" tag --list 'v*' --contains "$ref" 2>/dev/null)" ]; }
+refuse_unreleased() {
+  echo "omarchy-kit: $ref is in no Omarchy release (a v* tag); pin .omarchy-ref to a released commit" >&2
+  exit 1
+}
+if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+  # Clone beside the cache, then publish it with one rename, and only where
+  # nothing is: a checkout already at $kit (another check's, maybe already in
+  # use) is never deleted or swapped out. If one appears first, this rename
+  # lands inside it instead, and the trap removes that copy again.
+  mkdir -p "$(dirname "$kit")"
+  new="$(mktemp -d "$kit.XXXXXX")"
+  [ -n "$new" ] || exit 1
+  trap 'rm -rf "$new" "$kit/${new##*/}"' EXIT
+  git clone --quiet --filter=blob:none --no-checkout https://github.com/omacom/omarchy.git "$new" >&2
+  git -C "$new" sparse-checkout set --no-cone /bin/omarchy-plugin-validate \
+    /test/shell.d/qml-text-format-scan.py /shell/Commons/ /shell/Ui/ >&2
+  released "$new" || refuse_unreleased   # before its code is even checked out
+  git -C "$new" -c advice.detachedHead=false checkout --quiet "$ref" >&2
+  [ -e "$kit" ] || mv "$new" "$kit" 2>/dev/null || true
+  if [ "$(git -C "$kit" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+    echo "omarchy-kit: $kit is not Omarchy at $ref; delete it and run this again" >&2
+    exit 1
+  fi
+fi
+released "$kit" || refuse_unreleased   # a cached checkout too
+printf '%s\n' "$kit"

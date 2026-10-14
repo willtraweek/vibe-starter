@@ -16,6 +16,12 @@ has it in its initial commit (see `TEMPLATE.md`).
 
 ## Execution order & status
 
+**Integration update, 2026-10-13.** Plans 007–011 are being combined in one pull request
+against master at the maintainer's request. The original dependency order still explains
+their implementation, but separate landing PRs are no longer required for this integration.
+The review requirements below remain in force; prior branch DONE labels do not establish
+acceptance of the combined tree.
+
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | [001](001-template-selftest.md) | Template self-test suite + CI that runs only on the template repo | P1 | M | — | DONE (11 tests: the plan's 9 + 2 approved review fixes) |
@@ -24,21 +30,40 @@ has it in its initial commit (see `TEMPLATE.md`).
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (28 tests: the plan's 10 + 12 from review + 6 from /ship; suite: 108 passed, 0 failed, 0 skipped) |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | DONE (35 tests: the plan's 8 + 5 from review + 22 from /ship; suite: 143 passed, 0 failed, 0 skipped) |
-| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | TODO |
-| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | TODO |
-| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | TODO |
-| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | TODO |
-| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | TODO |
+| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | DONE (PR #22 integration; acceptance evidence below) |
+| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | DONE (PR #22 integration; acceptance evidence below) |
+| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | DONE (PR #22 integration; acceptance evidence below) |
+| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | DONE (PR #22 integration; acceptance evidence below) |
+| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | DONE (PR #22 integration; acceptance evidence below) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
-Current suite after 001–006: **143 tests** (live). Projected totals for the remaining plans:
-007 → **152**, 008 → **161**, 009 → **169**, 010 → **175** (the last three include 1, 2 and 3
-heavy tests). These totals are execution targets, not results of a new sequential rehearsal.
-Python tests need uv; the Rust coverage test skips locally without cargo-llvm-cov. Fully
-provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
+Historical suite after 001–007: **160 tests**. The remaining plans add 9, 8 and 6 tests:
+008 → **169**, 009 → **177**, 010 → **183** (1, 2 and 3 of them heavy). These totals are
+execution targets, not results of a new sequential rehearsal. Python tests need uv. Most Rust
+tests skip locally unless the test toolchain (`SELFTEST_RUST_TOOLCHAIN`, else the default stable)
+is at least as new as the packs' pinned channel, and the coverage test also needs cargo-llvm-cov.
+Fully provisioned CI must have zero failures and zero skips. Retain later approved tests and use the
 live predecessor baseline plus each plan's additions.
 Plan 011 adds 9 more: 5 in `selftest` and 4 heavy.
+
+**Combined validation, 2026-10-13.** The integrated suite has **192 tests**: the standard
+lane passed **185**, and all **7** heavy cases passed separately, with zero failures or skips.
+Heavy validation used isolated Ubuntu 24.04 ARM64 with the pinned tools; hosted x64 CI and a
+live Omarchy desktop session are separate evidence. Review still found unresolved Foldkit
+requirements from issue #20 and an Omarchy validator-cache publication race, so these results
+do not mark plans 007–011 accepted or ready to merge.
+
+**Integration acceptance, 2026-10-13.** PR #22 records dispositions for all 28 findings of
+issue #20 and the additional integration review findings. The integrated feature commit
+`995c8bcf924a2eba516b1b5dc2a9c98e0ccc2c14` passed **211 light tests** (the 7 heavy
+cases explicitly excluded) and **all 7 heavy tests**, with **0 failures and 0 skips**.
+`./scripts/check.sh` and CI's exact ShellCheck 0.11.0 command passed. Hosted `selftest`
+and `heavy` both passed in [run 38503356911](https://github.com/willtraweek/vibe-starter/actions/runs/38503356911).
+This satisfies Plan 011's replacement acceptance gate for plans 007–011. This index update
+is the final documentation revision; it must also pass hosted checks before merge. PR #22
+remains unmerged for the maintainer. Earlier validation entries and the "Not audited" list
+record the historical planning-stage evidence, not the current integration's results.
 
 **Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
 files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps
@@ -230,24 +255,16 @@ Open for the maintainer (none blocks execution):
 - a skeleton "Health Stack" section in CLAUDE.md, so gstack `/health` stops calling a bare
   `tsc` in every stack pack's projects.
 
-**Before plan 011 runs or ships.** Its pre-landing review (2026-10-04) left findings in the
-embedded pack and helpers, tracked in #20.
-- The local commits it names, `98b35eb` and `b185770`, are unpushed: plans 009 and 010 on the
-  tree it was written against. Its own implementation, including the rehearsed lockfile, is
-  on the unpushed branch `willtraweek/foldkit-stack-pack`.
-- Run `contracts.sh` on master once plans 007–010 have landed, before rebuilding the pack from
-  this plan or rebasing that branch. On a tree where step 1 is already applied, it only says so
-  and checks nothing.
-- Plan 007 as shipped (PR #19) rewrote TEMPLATE.md's skipped-locally line, so `contracts.sh`
-  will report `DIFFERS  TEMPLATE.md: the skipped-locally line`. That DIFFERS is expected, but
-  allowing it is not a repair: step 4.3 replaces that same old line, and step 4's verify grep
-  expects step 4.3's new text. Re-anchor `contracts.sh`, the Current state bullet and step 4.3
-  on 007's new sentence, update the verify grep to match (#20 item 1), and regenerate
-  `helpers.sha256`, which covers `contracts.sh`.
-- The branch's own index edits (row 011 DONE, an older "stays red" line) predate this section;
-  keep master's text when rebasing.
-- Every finding in #20 needs a disposition in the pack's implementation PR, with `pack.sha256`
-  and `helpers.sha256` regenerated, before row 011 is marked DONE.
+**Plan 011's acceptance.** PR #22 executes plan 011 together with plans 007–010, so the plan is
+not replayed: its embedded pack, helpers and `pack.sha256`/`helpers.sha256` stay as the record
+of the 2026-10-02 rehearsal (the plan says so at the top) instead of being regenerated, and its
+"Maintenance notes" now describe the pack as it is. That replaces the old requirement to
+regenerate both manifests and rerun preflight, steps 1–3 and `heavy.sh` before row 011 is DONE.
+Row 011 is DONE when every finding of #20 has a disposition in PR #22's description (each one
+fixed with a regression test, or declined with a reason) and the final tree passes the full
+light suite, every heavy test and hosted CI. Items 1–4 and 15 (the plan's own replay anchors,
+manifests and preview helper) are superseded by that: the maintenance notes carry the port
+check and the lockfile review that remain useful.
 
 **Plan 001 review, 2026-09-24.** Template CI now runs on GitHub's `ubuntu-slim` runner (1 vCPU
 container, 15-minute job cap, no Rust) and installs pinned, checksum-verified gitleaks and

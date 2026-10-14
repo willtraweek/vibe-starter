@@ -20,52 +20,33 @@ deferred an automatic generator ("Approach C").
 **Priority:** P2
 **Depends on:** None
 
-### Opt-in stack packs (Python, Rust)
-
-**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
-describes (coverage floor, tier checker, CI steps, `.gitignore` section).
-
-**Why:** Every project repeats the same four manual checklist steps.
-
-**Context:** Planned in `plans/006-stack-packs-python.md` and `plans/007-stack-pack-rust.md`.
-Must stay opt-in to keep the spine stack-agnostic. Plans 008–010 add three Omarchy packs (an
-app, a terminal app and a shell plugin) on the same mechanism.
-
-**Effort:** L
-**Priority:** P2
-**Depends on:** None
-
 ### Omarchy stack pack follow-ups from the plans' review
 
-**What:** Four gaps the pre-landing review of plans 008–010 left open, each done when its check
+**What:** Two gaps the pre-landing review of plans 008–010 left open, each done when its check
 holds:
 1. Decide the Rust packs' lockfile policy: ship a reviewed `Cargo.lock` per pack (its root
    entry renamed to the project's package at bootstrap, re-resolved with `cargo update
    --workspace`, refreshed with each pin bump) or record why they resolve fresh like the Python
-   pack. Done when `TEMPLATE.md`
-   states the policy (and, if adopted, the heavy tests build `--locked` against it) and the heavy
-   job's cache key changes when the dependency set does.
+   pack. Done when `TEMPLATE.md` states the policy (and, if adopted, the heavy tests build
+   `--locked` against it) and the heavy job's cache key changes when the dependency set does.
+   The five-pack review (PR #22) found both halves biting: omarchy-app and omarchy-tui resolve
+   about 860 crates fresh at bootstrap with no reviewed lockfile, release-age gate or
+   cargo-deny, and the heavy job's cache, keyed on the packs' `Cargo.toml` files only, never
+   re-saves as those crates drift.
 2. Test the rest of what generated Rust projects promise: their `ci.yml` steps, a `--release`
    build (which `install.sh` needs), doctests, and GPUI window tests that neither read nor watch
    the developer's `$HOME` theme. Done when a test exercises each.
-3. Harden `install.sh`: find the binary through cargo's configured target dir, stop reading
-   generic `APPDIR`/`BINDIR`/`ICONDIR` from the environment (AppImage exports `APPDIR`), never
-   silently replace an unrelated `~/.local/bin/<name>`, and clear `CDPATH` before `cd` there and
-   in the Python pack's scripts. Done when a test covers each.
-4. Make `omarchy-kit` require `.omarchy-ref` to be a commit in an upstream Omarchy release, not
-   just any SHA the upstream URL serves (a fork's commit can be fetched that way). Done when it
-   refuses such a commit and a test covers it.
 
-**Why:** Each is a real gap in a generated project, but none blocks executing the plans.
+**Why:** Each is a real gap in a generated project, but none blocks the packs.
 
 **Context:** Found by gstack `/ship`'s review of the Omarchy plans (see `plans/README.md` →
 "Pre-landing review, 2026-09-26"). The Python pack resolves its tools fresh on purpose (see the
-v0.1.0 follow-ups below), so item 1 starts with that policy call. Items 1–3 touch plans 008 and
-009, item 4 plan 010.
+v0.1.0 follow-ups below), so item 1 starts with that policy call. The other two items of that
+review (installer hardening and the release-only `.omarchy-ref`) landed in PR #22.
 
 **Effort:** M
 **Priority:** P2
-**Depends on:** Plans 008–010 landing
+**Depends on:** None
 
 ### Make the markdown pass editorconfig-checker
 
@@ -99,4 +80,77 @@ warning we want.
 **Priority:** P3
 **Depends on:** None
 
+### A second JavaScript pack: React 19.3 + TanStack Router on Effect v4
+
+**What:** A `react` stack pack beside `foldkit`, for browser apps that want React's component
+ecosystem and a router: React 19.3 and TanStack Router for the UI, an Effect v4 data and state
+layer (Atom through `@effect/atom-react`), Vitest Browser Mode on Playwright, and the foldkit
+pack's pins, shipped lockfile, tier checker and CI shape.
+
+**Why:** Packs are chosen by what the app does. foldkit suits apps whose state fits one
+Elm-style Model; many browser apps want React components and libraries instead.
+
+**Context:** Prototyped on 2026-09-25 while choosing the first JavaScript pack (every gate
+passed; Effect + Atom added about 51 kB gzip over plain React + Router). Lessons from that
+prototype, on Effect 4.0.0-rc.117, to re-check on the stable release: a component test that
+seeds the result atom through `RegistryProvider` still runs the live layer and makes a real
+`fetch` (seeded values count as stale), so seed the Atom runtime's layer with the service over a
+fake `HttpClient`; `@effect/atom-react` peered on `scheduler <0.28.0` while React 19.3 needs
+`^0.28.0`, so two schedulers got bundled; Vitest Browser Mode needs `optimizeDeps.include` for
+React on a cold cache.
+
+**Effort:** L
+**Priority:** P3
+**Depends on:** plan 011 (its pnpm, lockfile and tier-checker patterns; extract a shared
+partial pack when a third JavaScript pack appears)
+
+### Foldkit starter: plain-language status copy
+
+**What:** Map the status component's failure reasons to plain language ("Couldn't reach the
+server", "The server answered 503") and show `checkedAt` as a localized `<time>`, keeping the raw
+detail for logs.
+
+**Why:** The starter prints reason codes, library error messages and ISO timestamps as its copy,
+and agents copy the starter.
+
+**Context:** Found by the design review of PR #22 and deferred there as copy taste rather than a
+defect. Update the copy pinned in `scene.test.ts` and `e2e/home.spec.ts` with it.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### omarchy-plugin: one validator for BUILD_CMD and the gate
+
+**What:** `BUILD_CMD` is `omarchy plugin validate .`: the desktop's installed, unpinned Omarchy
+on the raw working tree. The gate runs Omarchy's validator at `.omarchy-ref` on what git would
+commit. Make both run the pinned one on the same files, or document `BUILD_CMD` as the
+live-desktop check.
+
+**Why:** The two can disagree, and `BUILD_CMD` doesn't exist off an Omarchy desktop.
+
+**Context:** A low-confidence note from the PR #22 review; not reproduced (no Omarchy desktop
+here).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
+
+### Opt-in stack packs (Python, Rust)
+
+**What:** `bootstrap --stack python|rust` overlays that set up the per-stack gates `TESTING.md`
+describes (coverage floor, tier checker, CI steps, `.gitignore` section).
+
+**Completed:** Python in v0.1.0 (plan 006); Rust in v0.3.0 (plan 007), with the omarchy-app,
+omarchy-tui, omarchy-plugin and foldkit packs (plans 008–011, PR #22).
+
+### Omarchy installer hardening and a release-only `.omarchy-ref`
+
+**What:** Items 3 and 4 of the Omarchy plans' review follow-ups: `install.sh` installs exactly
+what cargo built and refuses a stale or unrelated binary, reads only `PREFIX`, and clears
+`CDPATH`; `omarchy-kit` accepts only a commit inside an Omarchy release.
+
+**Completed:** v0.3.0 (PR #22).
+
