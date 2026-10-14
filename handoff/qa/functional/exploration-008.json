@@ -1,0 +1,20 @@
+{
+  "observationCapture": "007",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "exit": 0,
+    "first_line": "/var/folders/1j/_2c8zxt13kzb5rzmy5_yzymc0000gn/T/qa-p7.NyyVFb/decoy",
+    "mentions_decoy": true
+  },
+  "hypothesis": "install.sh printed the decoy directory path and the decoy entry, exit 0 (contract failure). Replay the exact command from the same fixture state before repair.",
+  "nextCapture": "008",
+  "nextArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ]
+}

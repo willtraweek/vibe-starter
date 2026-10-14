@@ -1,0 +1,20 @@
+{
+  "observationCapture": "008",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "exit": 0,
+    "first_line": "/var/folders/1j/_2c8zxt13kzb5rzmy5_yzymc0000gn/T/qa-p7.IojFE5/decoy",
+    "mentions_decoy": true
+  },
+  "hypothesis": "Revalidation after fixes (smoke budget spent; revalidation runs without it): replay capture 001 on the integrated fix tree, whose omarchy-tui pack and commands changed.",
+  "nextCapture": "009",
+  "nextArgv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p1-omarchy-tui-bootstrap.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ]
+}

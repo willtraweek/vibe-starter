@@ -1,0 +1,20 @@
+{
+  "observationCapture": "002",
+  "observationArgv": [
+    "python3",
+    ".context/integration/native-adversarial-race.py"
+  ],
+  "observed": {
+    "first_exit": 0,
+    "first_returned_valid_cache": true,
+    "first_returned_cache_exists_during_second_publish": false,
+    "second_exit": 0,
+    "race_reproduced": true
+  },
+  "hypothesis": "Capture 002 shows the first caller cache deleted during the second publish (contract failure). Replay the exact same command from the same initial fixture state to confirm it is deterministic before any repair.",
+  "nextCapture": "003",
+  "nextArgv": [
+    "python3",
+    ".context/integration/native-adversarial-race.py"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "observationCapture": "003",
+  "observationArgv": [
+    "python3",
+    ".context/integration/native-adversarial-race.py"
+  ],
+  "observed": {
+    "first_exit": 0,
+    "first_returned_valid_cache": true,
+    "first_returned_cache_exists_during_second_publish": false,
+    "second_exit": 0,
+    "race_reproduced": true
+  },
+  "hypothesis": "The race replays deterministically (product defect confirmed). Next highest-risk changed edge: the new partial-pack mechanism; a partial pack must never be choosable as a stack and must not write anything.",
+  "nextCapture": "004",
+  "nextArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p3-partial-pack-refused.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ]
+}

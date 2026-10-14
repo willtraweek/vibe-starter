@@ -1,0 +1,7 @@
+{
+  "first_exit": 0,
+  "first_returned_valid_cache": true,
+  "first_returned_cache_exists_during_second_publish": false,
+  "second_exit": 0,
+  "race_reproduced": true
+}

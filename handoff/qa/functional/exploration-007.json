@@ -1,0 +1,20 @@
+{
+  "observationCapture": "006",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p4-relay-alias.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "guard_exit": 0,
+    "expected_exit": 1,
+    "guard_output": ""
+  },
+  "hypothesis": "Relay bypass replays (product defect). Next changed edge with a durable effect: the shared Omarchy install.sh under an exported CDPATH, run by relative path, could act on another directory; check the printed desktop entry.",
+  "nextCapture": "007",
+  "nextArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ]
+}

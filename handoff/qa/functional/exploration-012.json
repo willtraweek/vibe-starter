@@ -1,0 +1,20 @@
+{
+  "observationCapture": "011",
+  "observationArgv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p3-partial-pack-refused.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ],
+  "observed": {
+    "exit": 2,
+    "unchanged": true,
+    "message": "Invalid stack name '_rust-gates'"
+  },
+  "hypothesis": "Partial packs still refused. Replay capture 007/008 on the fixed install.sh: under an exported CDPATH the project's own desktop entry must be printed.",
+  "nextCapture": "012",
+  "nextArgv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ]
+}

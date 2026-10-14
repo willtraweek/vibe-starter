@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "010",
+  "cwd": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt",
+  "argv": [
+    "./scripts/template-selftest.sh",
+    "kit_never_deletes_a_published_checkout"
+  ],
+  "deadline": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/.qa-evidence/010/deadline.json",
+  "timing": [
+    {
+      "guard": "qa-deadline",
+      "event": "started",
+      "version": 1,
+      "startedAt": "2026-10-13T23:33:14.387Z",
+      "deadlineAt": "2026-10-13T23:38:14.387Z",
+      "budgetMs": 300000,
+      "observedAt": "2026-10-13T23:33:14.388Z",
+      "remainingMs": 299999,
+      "expired": false
+    },
+    {
+      "guard": "qa-deadline",
+      "event": "finished",
+      "observedAt": "2026-10-13T23:33:16.308Z",
+      "deadlineAt": "2026-10-13T23:38:14.387Z",
+      "timedOut": false,
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-10-13T23:33:14.387Z",
+  "completedAt": "2026-10-13T23:33:16.309Z",
+  "exitCode": 0,
+  "signal": null,
+  "status": "complete",
+  "observation": {
+    "sha256": "fae010dfb284ed5569507b00951d48b2aba713defa3f4f09fb7e2b4f6da4c49a",
+    "bytes": 118
+  },
+  "publicOutput": false,
+  "stdout": {
+    "sha256": "0d4233e812ed1391294f5b785ad4c720f773e9be87bb0c656b896325e9837861",
+    "bytes": 112
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

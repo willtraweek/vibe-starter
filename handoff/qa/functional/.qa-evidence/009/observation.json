@@ -1,0 +1,7 @@
+{
+  "bootstrap_exit": 0,
+  "expected_files_present": "8/8",
+  "executable": "4/4",
+  "template_dir_left": 0,
+  "cargo_calls": "cargo fmt --all;cargo generate-lockfile --quiet;"
+}

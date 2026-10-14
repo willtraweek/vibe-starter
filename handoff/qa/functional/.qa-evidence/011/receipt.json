@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "011",
+  "cwd": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt",
+  "argv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p3-partial-pack-refused.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ],
+  "deadline": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/.qa-evidence/011/deadline.json",
+  "timing": [
+    {
+      "guard": "qa-deadline",
+      "event": "started",
+      "version": 1,
+      "startedAt": "2026-10-13T23:33:21.332Z",
+      "deadlineAt": "2026-10-13T23:38:21.332Z",
+      "budgetMs": 300000,
+      "observedAt": "2026-10-13T23:33:21.333Z",
+      "remainingMs": 299999,
+      "expired": false
+    },
+    {
+      "guard": "qa-deadline",
+      "event": "finished",
+      "observedAt": "2026-10-13T23:33:21.604Z",
+      "deadlineAt": "2026-10-13T23:38:21.332Z",
+      "timedOut": false,
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-10-13T23:33:21.332Z",
+  "completedAt": "2026-10-13T23:33:21.604Z",
+  "exitCode": 0,
+  "signal": null,
+  "status": "complete",
+  "observation": {
+    "sha256": "37117a3e17ec335c8763aa749f44d08881acb94bd2509bb14fe4a28ab0ef3cd4",
+    "bytes": 86
+  },
+  "publicOutput": false,
+  "stdout": {
+    "sha256": "2eaf6d9328913306355194755783e3d46ea5784eb1b50684b5f147d3ef567a69",
+    "bytes": 73
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

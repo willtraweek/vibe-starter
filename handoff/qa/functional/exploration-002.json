@@ -1,0 +1,21 @@
+{
+  "observationCapture": "001",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p1-omarchy-tui-bootstrap.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "bootstrap_exit": 0,
+    "expected_files_present": "8/8",
+    "executable": "4/4",
+    "template_dir_left": 0,
+    "cargo_calls": "cargo fmt --all;cargo generate-lockfile --quiet;"
+  },
+  "hypothesis": "Success path holds (exit 0, 8/8 files incl. _rust-gates, exec bits kept). The riskiest changed failure is concurrent cold omarchy-kit publication: replay the deterministic barrier harness to see whether a returned cache can be deleted.",
+  "nextCapture": "002",
+  "nextArgv": [
+    "python3",
+    ".context/integration/native-adversarial-race.py"
+  ]
+}

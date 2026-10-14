@@ -1,0 +1,21 @@
+Several new guards accept configurations they are intended to reject, and shared Omarchy cache publication has a concurrency race. Shell lint, JavaScript syntax checks, and diff whitespace checks passed; full integration tests could not run in the read-only sandbox.
+
+Full review comments:
+
+- [P2] Inspect the relay option without discarding entire lines — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check.d/foldkit.sh:45-46
+  A configuration such as `foldkit({ devToolsMcpPort: 9988 }) // devToolsMcpPort: false disables it` passes this guard because the second grep discards the entire line. The numeric option still enables the unauthenticated, all-interface relay described in the [Foldkit guide](template/stacks/foldkit/files/docs/guides/foldkit.md#L73-L74). Strip comments before inspecting the option, or validate its syntax directly, and add this case to the regression tests.
+
+- [P2] Verify that required journeys actually execute — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/coverage-tiers.mjs:67-70
+  When the required home journey calls `test.skip(true, ...)` or sits inside `test.describe.skip`, this scanner still recognizes its title and validation succeeds; commented-out calls are recognized too. Playwright can then exit successfully with the required journey skipped, defeating the named E2E requirement in [TESTING.md](TESTING.md#L72-L74). Validate executed journey results, rather than treating a matching source string as evidence that the journey runs.
+
+- [P2] Serialize publication of the shared Omarchy checkout — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/omarchy-plugin/files/scripts/omarchy-kit:26-28
+  When two checks populate the same cold cache concurrently, both can pass the second HEAD check before either publishes. One process can then delete the checkout that the other has already published and returned, causing `omarchy-plugin.sh` to lose its validator or scanner while using it. Protect publication with a per-ref lock or an atomic no-clobber operation that preserves the winning checkout.
+
+- [P2] Include Foldkit subpaths in the framework-boundary check — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check.d/foldkit.sh:37-38
+  An import such as `import { defineTaggedUnion } from 'foldkit/schema'` inside `src/domain` passes this check because the expression requires a quote immediately after `foldkit`. Subpath imports are standard throughout this starter, so framework dependencies can enter the supposedly framework-free domain/API layers without detection, contrary to the [documented boundary](template/stacks/foldkit/files/docs/guides/foldkit.md#L12-L14). Match both the package root and its subpaths, with regression coverage for each.
+
+- [P2] Detect non-hoisted Vitest module mocks — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check.d/foldkit.sh:40-41
+  Tests can replace application modules using `vi.doMock('./main', ...)` followed by a dynamic import, but this guard only recognizes `vi.mock(`. That permits tests to exercise a mocked implementation while passing the guard intended to enforce [TESTING.md's trust-boundary-only mocking rule](TESTING.md#L90-L93). Cover the other module-mocking APIs, including `vi.doMock`, and test that mocking an application module is rejected.
+
+- [P2] Validate the Foldkit MCP executable rather than banning npx — /Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check.d/foldkit.sh:49-50
+  A Foldkit MCP entry using `"command":"pnpm","args":["dlx","@foldkit/devtools-mcp"]` passes this check and downloads an unpinned executable instead of using the reviewed local dependency. This violates the [pinned-local-bin requirement](template/stacks/foldkit/files/docs/guides/foldkit.md#L76-L78) just as the rejected npx invocation does. Parse the Foldkit server entry and validate its command and arguments against the supported local invocation.

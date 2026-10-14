@@ -1,0 +1,20 @@
+{
+  "observationCapture": "004",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p3-partial-pack-refused.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "exit": 2,
+    "unchanged": true,
+    "message": "Invalid stack name '_rust-gates'"
+  },
+  "hypothesis": "Partial packs are refused with exit 2 and no writes (contract holds). Next: the P1 foldkit relay guard; run the shipped guard lines against a numeric port passed through an alias, which the guard must reject.",
+  "nextCapture": "005",
+  "nextArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p4-relay-alias.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ]
+}

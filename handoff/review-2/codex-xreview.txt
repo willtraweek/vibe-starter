@@ -1,0 +1,77 @@
+### D1: AGREE-WITH-CAVEATS
+
+- Reason: The installer defects affect actual installed artifacts, and the proposed deferrals match the existing backlog boundaries (`template/stacks/omarchy-app/files/scripts/install.sh:17`, `TODOS.md:27`).
+- Caveats / what to change: Define how `--no-build` proves artifact freshness; resolving Cargo’s target directory alone cannot do that. Protect uninstall as well as installation from touching unrelated files (`install.sh:53`). Keep AD5’s plugin `.mjs` fix separate from the deferred coverage-policy work.
+
+### D2: DISAGREE
+
+- Reason: The proposed relay rule still permits a safe decoy call followed by an unsafe aliased call: `foldkit({ devToolsMcpPort: false }); const relay = foldkit; relay({ devToolsMcpPort: 3001 })` satisfies “one `foldkit(` call” as written (`.context/review-2/decisions.md:42`). Moving string matching into Node does not establish which plugin configuration actually executes.
+- Caveats / what to change: Use a parser or an explicitly restricted syntax checker that rejects every unsupported use of the imported binding, including reassignment, aliasing and computed access. Add adversarial fixtures for these cases, escaped/computed module specifiers, namespace mocks and template-literal expressions; preserve the proposed prerequisite, policy-error and timeout improvements.
+
+### D3: AGREE-WITH-CAVEATS
+
+- Reason: Source-title matching cannot establish execution, and the existing ratchet compares only tiers (`template/stacks/foldkit/files/scripts/coverage-tiers.mjs:64`, `:360`). Runtime results plus journey continuity address both defects.
+- Caveats / what to change: Require a fresh, valid report from the current invocation; reject missing/empty results, runner errors and unsuccessful attempts. Handle duplicate titles and project/repeat instances explicitly. Retirement detection must recognize skipped declarations too, rather than reusing the current plain-`test(...)` matcher.
+
+### D4: DISAGREE
+
+- Reason: “Plan executed” does not satisfy the explicit manifest/disposition gate or establish acceptance of the repaired implementation (`plans/README.md:263`); the index expressly distinguishes integration from acceptance (`plans/README.md:50`). Archiving obsolete helpers is reasonable, but immediately marking DONE is not.
+- Caveats / what to change: Explicitly replace the old replay requirement with a current implementation acceptance procedure, retaining historical manifests as historical evidence. Mark DONE only after every required finding has a disposition and the final implementation passes its light/heavy gates; retain port-conflict handling in any replacement preview procedure.
+
+### D5: AGREE-WITH-CAVEATS
+
+- Reason: Exact, reviewed exemptions preserve protection for unrelated dependencies, unlike the guide’s shell-wide bypass (`template/stacks/foldkit/files/docs/guides/foldkit.md:60`). Validating the policy closes a real gap around the currently unguarded settings (`template/stacks/foldkit/files/pnpm-workspace.yaml:3`).
+- Caveats / what to change: Match exemptions against actual approved train package/version pairs, not merely names under allowed scopes. Reject duplicate or ambiguous YAML settings, clear both uppercase and lowercase policy environment overrides, and verify exact-version exemption behavior using the pinned pnpm. Apply the policy to bootstrap/resolution paths as well as the guard.
+
+### D6: DISAGREE
+
+- Reason: Comparing `packages:` keys misses changed integrity values and dependency relationships without version changes (`template/stacks/foldkit/files/pnpm-lock.yaml:16`, `:1846`). This lockfile also contains two YAML documents (`:1`, `:158`), which a simplistic extraction can mishandle.
+- Caveats / what to change: Keep scratch regeneration and PR review, but require review of the complete lockfile diff across both documents, including resolutions, integrity, importers and snapshots. Package/version summaries should supplement that review; frozen installation verifies consistency, not approval of changed contents.
+
+### D7: AGREE-WITH-CAVEATS
+
+- Reason: The current script trusts a mutable tag and removes the nested Git boundary immediately afterward (`template/stacks/foldkit/files/scripts/vendor-foldkit.sh:18`). An immutable commit check and retained `.git` address the stated provenance and hook-discovery problems.
+- Caveats / what to change: Validate `.foldkit-ref` strictly, compare the checked-out commit before publication, and preserve the existing exclusions for upstream agent instructions. Test that hook installation targets the nested repository and leaves parent hooks untouched; retaining `.git` is an isolation boundary for discovery, not a sandbox for arbitrary lifecycle scripts.
+
+### D8: AGREE-WITH-CAVEATS
+
+- Reason: Keyboard activation and orientation requirements are explicit design contracts, not discretionary polish (`template/stacks/omarchy-app/files/DESIGN.md:39`, `template/stacks/omarchy-plugin/files/DESIGN.md:23`). The current keybindings omit Enter, and Retry exists only in the failure branch (`template/stacks/omarchy-app/files/src/app.rs:34`, `template/stacks/foldkit/files/src/components/status.ts:20`).
+- Caveats / what to change: Test real Tab/Enter behavior, both bar orientations, and focus through retry→loading→success/failure. Guard fixtures must distinguish prohibited styling from permitted token expressions such as `Style.space(...)`. Require `Text.PlainText` for dynamic Label text, not merely the presence of any `textFormat`.
+
+### D9: AGREE-WITH-CAVEATS
+
+- Reason: The selected small simplifications are defensible, and inlining the single-use alias follows the shipped convention (`template/stacks/foldkit/files/FOLDKIT.md:58`). Retaining the locally pinned MCP and declining unrelated harness restructuring preserves existing contracts.
+- Caveats / what to change: Do not remove SM5’s repeated severities until a negative fixture proves that override settings inherit the base severities; both objects currently specify them explicitly (`template/stacks/foldkit/files/tsconfig.json:19`, `:30`). Preserve separate diagnostic checks for production and test files.
+
+### D10: AGREE
+
+- Reason: Five new selectable packs warrant the proposed minor release, consistent with the earlier pack-introduction precedent (`CHANGELOG.md:37`); the current version is `0.2.1` (`VERSION:1`).
+- Caveats / what to change: none
+
+### D11: AGREE-WITH-CAVEATS
+
+- Reason: The root ignore rule demonstrably conflicts with the shipped plugin pin (`.gitignore:18`), and bootstrap excludes the three Python directory names from substitution (`bootstrap:344`). Both fixes address concrete generated-project failures.
+- Caveats / what to change: Keep the ignore exception narrowly scoped to the shipped pin. Test missing and incorrect pin contents, and make the new ignore selftest distinguish Git errors from “nothing ignored”; the prepared implementation currently does not.
+
+### Prepared fixes (scratch branch)
+
+Reviewed through **`8535c02`**. Read-only probes confirmed the first two defects; the full selftest was not run because it creates files.
+
+- **Release provenance is bypassed on cache hits.** In `5cb6d6e`, the release-tag check sits inside the cache-miss branch (`.context/fixwt/template/stacks/omarchy-plugin/files/scripts/omarchy-kit:16`, `:30`). A checkout cached by the previous permissive implementation is accepted solely because HEAD matches. Validate release provenance for existing entries too, with a regression case for a cached unreleased commit.
+
+- **The expanded CI/SHIP_GATE test misses multiline gates.** In `78a7991`, the extractor reads only the first command of each block and permits unlimited blocks beginning with an allowed prefix (`.context/fixwt/scripts/template-selftest.sh:3606`). An added block starting with `sudo apt-get update`, followed by an unrepresented Cargo gate, passes. Inspect complete blocks or strictly validate their complete allowed contents.
+
+- **Pin checks still do not establish per-job presence.** `ce9d162` compares deduplicated matches across the workflow (`.context/fixwt/scripts/template-selftest.sh:3546`, `:3572`). Removing one job’s pin leaves the other matching occurrence and passes. Require each expected job’s install and execution pins independently; mutation-test deletion as well as substitution.
+
+- **The new ignore selftest fails open on command errors.** `1866fea` ignores the pipeline status and accepts empty output (`.context/fixwt/scripts/template-selftest.sh:3993`); this harness deliberately disables `errexit`. Check `ls-files` success and distinguish `check-ignore` status 1 from fatal errors.
+
+### Missing decisions
+
+D1 nominally includes all remaining non-advisory findings, but these need explicit acceptance criteria rather than disappearing under that blanket:
+
+- **F8/F9:** Add failing type-aware-lint/format fixtures; actually add `@foldkit/ui` and regenerate the reviewed lockfile. The prepared equality check does not require the dependency’s presence.
+- **F27:** Choose a timeout covering request **and body decoding**, map it to the failure state, and test recovery (`template/stacks/foldkit/files/src/api/status.ts:47`).
+- **CX3/AD8:** Complete MICRO-version display and E2E handling; the current parser still returns `unknown` for four-part versions (`template/stacks/foldkit/files/src/domain/version.ts:3`).
+- **AD5, plugin extension coverage:** Widen both collection and loading, or reject unsupported extensions. Changing the coverage glob alone leaves the all-modules loader restricted to `.js` (`template/stacks/omarchy-plugin/files/tests/unit/all-modules.test.js:13`).
+- **F14/F24:** Extend prerequisites and timeouts beyond `check.d` to standalone coverage/vendor commands and bootstrap’s install/vendor operations (`template/stacks/foldkit/after-bootstrap:10`, `:15`).
+- **T9:** Separate “configured app ID” from “opened window has that ID”; the existing assertion checks a newly constructed options value, not the opened window (`template/stacks/omarchy-app/files/tests/window.rs:54`).

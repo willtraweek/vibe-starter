@@ -1,0 +1,15 @@
+{
+  "observationCapture": "010",
+  "observationArgv": [
+    "./scripts/template-selftest.sh",
+    "kit_never_deletes_a_published_checkout"
+  ],
+  "observed": "- test_stack_omarchy_plugin_kit_never_deletes_a_published_checkout\n  ok\nselftest: 1 passed, 0 failed, 0 skipped\n",
+  "hypothesis": "The race contract holds on the fixed kit. bootstrap changed (includes exit codes); replay capture 004: a partial pack must still be refused with exit 2 and no writes.",
+  "nextCapture": "011",
+  "nextArgv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p3-partial-pack-refused.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ]
+}

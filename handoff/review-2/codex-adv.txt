@@ -1,0 +1,33 @@
+1. **[P2] FIXABLE — A live module can be “retired” to bypass its coverage floor.**  
+   [coverage-tiers.mjs:372](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/coverage-tiers.mjs:372):
+   > `const kept = new Set([...now.include, ...(now.retired ?? [])])`
+
+   Validation never checks that retired files actually disappeared. Move `src/command.ts` from `api_surface.include` into `retired` while leaving the source untouched: validation and the ratchet both pass. An in-memory probe confirmed that a report with this module at 50% coverage fails before the configuration change and passes afterward. Require retired paths to be absent, or explicitly validate migrations between tiers.
+
+2. **[P2] FIXABLE — Both Omarchy installers can install an old binary after successfully building the new one.**  
+   [omarchy-app/install.sh:17](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/omarchy-app/files/scripts/install.sh:17), identically in [omarchy-tui/install.sh:17](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/omarchy-tui/files/scripts/install.sh:17):
+   > `BINARY="${CARGO_TARGET_DIR:-target}/release/$APP_ID"`
+
+   Cargo also accepts `build.target-dir` through configuration and target selection through `CARGO_BUILD_TARGET`/`build.target`. Those settings change the output location, but this path ignores them. After a successful build, an existing `target/release/$APP_ID` passes the executable check and gets installed—even if it predates the current changes. The installer then announces the current `VERSION`. Select the executable from Cargo’s build output instead of guessing its location.
+
+3. **[P2] FIXABLE — Foldkit rejects the repository’s documented four-part release versions.**  
+   [check-pins.mjs:78](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check-pins.mjs:78):
+   > `if (!SEMVER3.test(version))`
+
+   The new Rust and Omarchy-plugin self-tests explicitly exercise four-part `/ship` versions, including normalization to three parts for JSON manifests. Foldkit instead requires exactly three parts and equality with `package.json`. With `VERSION=0.1.0.0` and `package.json.version=0.1.0`, an in-memory execution exits 1. Its display parser also rejects that version and returns `unknown`. Align both checks with the release format already supported elsewhere in this branch.
+
+4. **[P2] FIXABLE — `.mts` production modules escape Foldkit’s global coverage gate.**  
+   [vitest.config.ts:17](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/vitest.config.ts:17):
+   > `include: ['src/**/*.ts']`
+
+   TypeScript modules using `.mts` can participate in the application, but this coverage glob excludes them. The independent checker only verifies reported files and declared tier members; `validPath()` also rejects `.mts`, preventing developers from adding them to a tier. Untested logic can therefore accumulate outside both coverage mechanisms. Cover supported TypeScript extensions or fail the checks when unsupported source extensions appear.
+
+5. **[P2] FIXABLE — Optional dependencies bypass the direct-dependency pin checks.**  
+   [check-pins.mjs:84](/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/template/stacks/foldkit/files/scripts/check-pins.mjs:84):
+   > `const deps = { ...pkg.dependencies, ...pkg.devDependencies }`
+
+   `optionalDependencies` never enters the exact-version, installed-version, or Effect-train checks. An in-memory probe adding `"optionalDependencies": {"unreviewed-probe": "latest"}` returned `check-pins: ok`, without that package installed. The frozen lockfile still applies, but the claimed direct-dependency policy silently excludes this manifest section. Validate optional dependencies and define how platform-specific absence should be handled.
+
+Scratch writes were blocked by the sandbox. Verification used source inspection and in-memory probes; generated-project builds and the full self-test were not run. These findings are separate from the supplied known items.
+
+Recommendation: request changes because marking a still-live module as `retired` bypasses its coverage floor while validation and the ratchet remain green.

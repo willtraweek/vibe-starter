@@ -1,0 +1,20 @@
+{
+  "observationCapture": "005",
+  "observationArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p4-relay-alias.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ],
+  "observed": {
+    "guard_exit": 0,
+    "expected_exit": 1,
+    "guard_output": ""
+  },
+  "hypothesis": "The relay guard returned 0 for an aliased numeric port (expected 1). Replay the exact command from the same fixture before any repair.",
+  "nextCapture": "006",
+  "nextArgv": [
+    "bash",
+    ".gstack/qa-reports/review-2-20261013/functional/probes/p4-relay-alias.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang"
+  ]
+}

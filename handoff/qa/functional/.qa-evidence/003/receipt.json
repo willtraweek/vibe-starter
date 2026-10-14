@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "003",
+  "cwd": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang",
+  "argv": [
+    "python3",
+    ".context/integration/native-adversarial-race.py"
+  ],
+  "deadline": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/deadline.json",
+  "timing": [
+    {
+      "guard": "qa-deadline",
+      "event": "started",
+      "version": 1,
+      "startedAt": "2026-10-13T22:04:11.287Z",
+      "deadlineAt": "2026-10-13T22:09:11.287Z",
+      "budgetMs": 300000,
+      "observedAt": "2026-10-13T22:04:28.035Z",
+      "remainingMs": 283252,
+      "expired": false
+    },
+    {
+      "guard": "qa-deadline",
+      "event": "finished",
+      "observedAt": "2026-10-13T22:04:28.438Z",
+      "deadlineAt": "2026-10-13T22:09:11.287Z",
+      "timedOut": false,
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-10-13T22:04:28.034Z",
+  "completedAt": "2026-10-13T22:04:28.438Z",
+  "exitCode": 0,
+  "signal": null,
+  "status": "complete",
+  "observation": {
+    "sha256": "85fa5a23fc8af866f5d168d196529e212adba4618cb25732a2ab9c9cc871e3aa",
+    "bytes": 169
+  },
+  "publicOutput": false,
+  "stdout": {
+    "sha256": "85fa5a23fc8af866f5d168d196529e212adba4618cb25732a2ab9c9cc871e3aa",
+    "bytes": 169
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

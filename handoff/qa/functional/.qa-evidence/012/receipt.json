@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "012",
+  "cwd": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt",
+  "argv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p7-install-cdpath.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ],
+  "deadline": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/.qa-evidence/012/deadline.json",
+  "timing": [
+    {
+      "guard": "qa-deadline",
+      "event": "started",
+      "version": 1,
+      "startedAt": "2026-10-13T23:33:21.635Z",
+      "deadlineAt": "2026-10-13T23:38:21.635Z",
+      "budgetMs": 300000,
+      "observedAt": "2026-10-13T23:33:21.636Z",
+      "remainingMs": 299999,
+      "expired": false
+    },
+    {
+      "guard": "qa-deadline",
+      "event": "finished",
+      "observedAt": "2026-10-13T23:33:24.131Z",
+      "deadlineAt": "2026-10-13T23:38:21.635Z",
+      "timedOut": false,
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-10-13T23:33:21.636Z",
+  "completedAt": "2026-10-13T23:33:24.131Z",
+  "exitCode": 0,
+  "signal": null,
+  "status": "complete",
+  "observation": {
+    "sha256": "11e262b64f24fffb9679333833c042773ebb491d0486fb772a92fa8b6a1191ad",
+    "bytes": 78
+  },
+  "publicOutput": false,
+  "stdout": {
+    "sha256": "86e69d7e45f2be95ad0d9c1623d325bd738fbbc8302b2a3da4d9e0a493a0e66b",
+    "bytes": 65
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

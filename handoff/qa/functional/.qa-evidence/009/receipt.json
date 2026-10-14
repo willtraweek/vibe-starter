@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "009",
+  "cwd": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt",
+  "argv": [
+    "bash",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/probes/p1-omarchy-tui-bootstrap.sh",
+    "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.context/fixwt"
+  ],
+  "deadline": "/Users/willtraweek/conductor/workspaces/vibe-starter/palembang/.gstack/qa-reports/review-2-20261013/functional/.qa-evidence/009/deadline.json",
+  "timing": [
+    {
+      "guard": "qa-deadline",
+      "event": "started",
+      "version": 1,
+      "startedAt": "2026-10-13T23:33:12.407Z",
+      "deadlineAt": "2026-10-13T23:38:12.407Z",
+      "budgetMs": 300000,
+      "observedAt": "2026-10-13T23:33:12.408Z",
+      "remainingMs": 299999,
+      "expired": false
+    },
+    {
+      "guard": "qa-deadline",
+      "event": "finished",
+      "observedAt": "2026-10-13T23:33:14.355Z",
+      "deadlineAt": "2026-10-13T23:38:12.407Z",
+      "timedOut": false,
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-10-13T23:33:12.408Z",
+  "completedAt": "2026-10-13T23:33:14.356Z",
+  "exitCode": 0,
+  "signal": null,
+  "status": "complete",
+  "observation": {
+    "sha256": "b05f0196fb6b08e2dfd610aefc769d88d69ee7cebbff91e3a646c63b7e29f173",
+    "bytes": 179
+  },
+  "publicOutput": false,
+  "stdout": {
+    "sha256": "6b625290f25822cfe912a80ecaad8f8319b9c8635d34e5888e0bc1433d495bfb",
+    "bytes": 158
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}
