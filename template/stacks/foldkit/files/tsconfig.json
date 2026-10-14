@@ -1,0 +1,55 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "types": ["vite/client"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "outdatedApi": "error",
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
+          "obsoleteSchemaImport": "error"
+        },
+        "overrides": [
+          {
+            "include": ["src/**/*.ts"],
+            "exclude": ["src/**/*.test.ts"],
+            "options": {
+              "diagnosticSeverity": {
+                "globalDate": "error",
+                "globalDateInEffect": "error",
+                "globalRandom": "error",
+                "globalRandomInEffect": "error",
+                "globalFetch": "error",
+                "globalFetchInEffect": "error",
+                "globalTimers": "error",
+                "globalTimersInEffect": "error",
+                "processEnv": "error",
+                "processEnvInEffect": "error"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "include": [
+    "src",
+    "e2e",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts"
+  ]
+}

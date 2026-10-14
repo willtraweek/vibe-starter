@@ -1,0 +1,41 @@
+# CI for {{PROJECT_NAME}} (vibe-starter omarchy-plugin stack pack): the version
+# check and Omarchy's own plugin rules, then Logic.js at 100% coverage and the
+# QML tests. Ubuntu 24.04's Qt 6.4 runs the widget against the qs.Ui stand-ins
+# in tests/qml/imports; Omarchy itself runs Qt 6.11.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-test:
+    # Pinned, not ubuntu-latest: the apt package names below are Ubuntu 24.04's.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Qt 6's QML test runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript qml6-module-qttest
+
+      - name: Checks (guards run before tests)
+        run: OMARCHY_KIT_DIR="$RUNNER_TEMP/omarchy-kit" ./scripts/check.sh
+
+      - name: Tests (Logic.js at 100% coverage, then the QML tests)
+        run: ./tests/run

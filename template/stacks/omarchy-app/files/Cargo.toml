@@ -1,0 +1,67 @@
+[package]
+name = "{{PACKAGE_NAME}}"
+# The real version is the root VERSION file (gstack /ship bumps it), compiled in
+# by src/lib.rs. This one stays 0.0.0 so Cargo.lock never churns.
+version = "0.0.0"
+edition = "2024"
+# GPUI's dependencies need Rust 1.92 or newer. Declare the pinned toolchain
+# (rust-toolchain.toml), the only one CI builds with: a lower value makes
+# Cargo's MSRV-aware resolver hold dependencies back.
+rust-version = "1.98"
+description = "{{PROJECT_NAME}}"
+publish = false
+
+[dependencies]
+# Pinned exactly and bumped together: gpui-kit is pre-1.0 and moves weekly, and
+# gpui-omarchy pins the exact gpui-kit it was built against. Never depend on
+# gpui or gpui-pre directly; gpui-kit re-exports them.
+gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets"] }
+gpui-omarchy = "=0.1.3"
+
+[dev-dependencies]
+# The window harness: TestAppContext draws real frames and presses real keys,
+# with no display or GPU.
+gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets", "test-support"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+# GPUI is large. Line tables for this crate keep backtraces readable; no debug
+# info for dependencies keeps every test binary's link small and fast.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# gpui-pre-macros leaves a helper ungated in release builds while its module is
+# gated on debug_assertions; enable it for the host proc-macro only.
+[profile.release.package.gpui-pre-macros]
+debug-assertions = true
+
+# Per-tier coverage gates (TESTING.md), enforced by scripts/coverage_tiers.sh.
+# `minimum` is enforced and only ever rises; `target` is the doctrine's aim.
+[package.metadata.coverage_tiers.pure_logic]
+title = "Pure logic & utilities"
+target = 100.0
+minimum = 100.0
+include = ["src/model.rs"]
+
+[package.metadata.coverage_tiers.api_surface]
+title = "API / contract surface"
+target = 100.0
+minimum = 100.0
+include = ["src/cli.rs"]
+
+[package.metadata.coverage_tiers.ui]
+title = "UI components (main only)"
+target = 90.0
+minimum = 90.0
+include = ["src/app.rs"]

@@ -3,6 +3,48 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.3.0] - 2026-10-13
+
+### Added
+- Five stack packs, chosen by what the app does. `./bootstrap --stack rust` starts a Rust
+  project on a pinned toolchain with clippy pedantic, rustfmt and cargo-llvm-cov's 90% line and
+  region floors plus per-tier gates. `omarchy-app` is an Omarchy desktop app in its own window
+  (Rust, GPUI and gpui-omarchy, which follow the active theme), `omarchy-tui` a keyboard-driven
+  terminal app (Rust and ratatui), and `omarchy-plugin` a QML bar widget for Omarchy's shell,
+  checked by Omarchy's own validator at a pinned release. `foldkit` is a browser app on Foldkit
+  (the Elm architecture on Effect v4) with TypeScript 7, Vite 8, Vitest 5 Story and Scene tests,
+  Playwright journeys and pnpm 12 with a reviewed lockfile and a supply-chain policy.
+- `./bootstrap --help` and the interactive prompt list each pack with a one-line description,
+  and a pack can include a partial pack (`template/stacks/_name/`): the three Rust packs share
+  one copy of their gates in `_rust-gates`.
+- Guards in `scripts/check.d/` learn whether CI requires a missing tool (`CHECK_CI`), and the
+  template's CI gains a `heavy` job that builds real projects from every pack.
+
+### Fixed
+- Omarchy's validator cache now publishes without replacing another check's checkout and
+  accepts only released commits, including on cache hits. Scripts ignore `CDPATH` when
+  finding their project, and the desktop installers use the binary Cargo built, reject stale
+  versions and relative install prefixes, and preserve unrelated installed tools. Failed installs
+  remain recoverable, temporary-path symlinks stay untouched, and escaped launch commands survive
+  reinstall and uninstall.
+- Foldkit checks now validate imports, module mocks, relay configuration and MCP launchers
+  with a restricted tokenizer, including executable `typeof` calls, ambiguous slash syntax,
+  quoted and wrapped launch commands and Playwright config mutation, while accepting common type-only queries;
+  validate every dependency section and the supply-chain policy; stop timed-out network process
+  groups; distinguish command failures from deadlines and cancellation; and verify vendored
+  release provenance in a separate Git checkout.
+  MICRO versions display correctly, and status requests time out after ten seconds including
+  response-body reads.
+- Named browser journeys must run and pass in Playwright's report, and retired journeys and
+  coverage members cannot remain in source. Retry preserves keyboard focus. The desktop
+  button supports Tab and Enter, bar widgets support vertical layouts, and the Omarchy guards
+  enforce design tokens and plain-text labels.
+- All generated CI jobs have timeouts, Rust ship gates include doctests, and template tests
+  verify each job's toolchain pins and commands. Offline bootstrap checks every pack's
+  placeholders; Python rejects names whose source directories bootstrap would skip; plugin
+  version metadata survives ordinary Git copies. Heavy lint regression checks accept both
+  Oxlint diagnostic reporters without weakening their failure assertions.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added

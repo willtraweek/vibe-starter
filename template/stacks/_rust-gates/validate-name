@@ -1,0 +1,9 @@
+#!/bin/sh
+# Rust 2024 strict/reserved keywords, weak keywords unsafe as crate paths, and
+# Cargo-reserved/artifact-colliding crate names. Generic identifier syntax was
+# already checked by bootstrap. Normalization is lowercase before this hook.
+case "$1" in
+  as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|static|struct|super|trait|true|type|unsafe|use|where|while|abstract|become|box|do|final|gen|macro|override|priv|try|typeof|unsized|virtual|yield|union|macro_rules|raw|safe|_|std|core|alloc|proc_macro|test|build|deps|examples|incremental)
+    echo "reserved Rust package name: $1" >&2
+    exit 2 ;;
+esac

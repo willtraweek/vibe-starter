@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "{{PACKAGE_NAME}}",
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.0.0",
+  "description": "{{PROJECT_NAME}}: an Omarchy bar widget that counts presses.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "{{PROJECT_NAME}}",
+    "description": "Counts presses: click to count, right-click to reset.",
+    "category": "Widgets",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "label": "Pressed"
+    },
+    "schema": [
+      {
+        "key": "label",
+        "type": "string",
+        "label": "Label",
+        "defaultValue": "Pressed"
+      }
+    ]
+  }
+}

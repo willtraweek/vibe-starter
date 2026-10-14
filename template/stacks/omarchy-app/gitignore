@@ -1,0 +1,5 @@
+# --- Rust (omarchy-app) ---
+/target/
+coverage.json
+lcov.info
+*.profraw

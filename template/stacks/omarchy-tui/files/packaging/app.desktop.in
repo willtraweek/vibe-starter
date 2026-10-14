@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name={{PROJECT_NAME}}
+Comment={{PROJECT_NAME}}, an Omarchy terminal app
+Exec=xdg-terminal-exec --app-id=TUI.float -e "@BINDIR@/{{PACKAGE_NAME}}"
+Icon={{PACKAGE_NAME}}
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+X-AppVersion=@VERSION@
+X-Vibe-Starter-AppId={{PACKAGE_NAME}}

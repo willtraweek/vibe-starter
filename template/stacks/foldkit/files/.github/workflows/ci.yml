@@ -1,0 +1,47 @@
+# CI for {{PROJECT_NAME}} (vibe-starter foldkit stack pack): guards, then tests
+# with the 90% line and branch floors from TESTING.md, then the E2E journeys.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - name: Install Node and pnpm (from devEngines), then the locked dependencies
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          require-lockfile: true
+
+      - name: Checks (guards run before tests)
+        run: ./scripts/check.sh
+
+      - name: Tests with the coverage gates (90% line+branch floor, then per-tier)
+        run: ./scripts/coverage.sh
+
+      - name: Install Chromium for the E2E journeys
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: E2E journeys (Playwright, against the production build)
+        run: pnpm exec playwright test
+
+      - name: Every named journey ran and passed (Playwright's JSON report)
+        run: node scripts/coverage-tiers.mjs --journeys
+
+      - name: Coverage tiers never slip (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          node scripts/coverage-tiers.mjs --ratchet "origin/$GITHUB_BASE_REF"

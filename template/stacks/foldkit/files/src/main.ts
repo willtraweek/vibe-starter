@@ -1,0 +1,56 @@
+import { Schema } from 'effect'
+import type { HttpClient } from 'effect/http'
+import type { Runtime, Update } from 'foldkit'
+import { defineTaggedUnion } from 'foldkit/schema'
+import { modifyFields } from 'foldkit/struct'
+
+import { StatusPayload } from './api/status'
+import { FetchStatus, FocusStatusPanel } from './command'
+import { FailureReason, Message } from './message'
+
+// MODEL
+
+export const StatusState = defineTaggedUnion({
+  Loading: {},
+  Loaded: { payload: StatusPayload },
+  Failed: { reason: FailureReason, detail: Schema.String },
+})
+export type StatusState = typeof StatusState.Type
+
+export const Model = Schema.Struct({
+  status: StatusState,
+})
+export type Model = typeof Model.Type
+
+// INIT
+
+export const init: Runtime.ApplicationInit<
+  Model,
+  Message,
+  void,
+  HttpClient.HttpClient
+> = () => ({
+  model: { status: StatusState.Loading() },
+  commands: [FetchStatus()],
+})
+
+// UPDATE
+
+export const update = (model: Model, message: Message) =>
+  Message.match<Update.Return<Model, Message, HttpClient.HttpClient>>(message, {
+    ClickedRetryStatus: () => ({
+      model: modifyFields(model, { status: () => StatusState.Loading() }),
+      commands: [FetchStatus(), FocusStatusPanel()],
+    }),
+    SucceededFetchStatus: ({ payload }) => ({
+      model: modifyFields(model, {
+        status: () => StatusState.Loaded({ payload }),
+      }),
+    }),
+    FailedFetchStatus: ({ reason, detail }) => ({
+      model: modifyFields(model, {
+        status: () => StatusState.Failed({ reason, detail }),
+      }),
+    }),
+    CompletedFocusStatusPanel: () => ({ model }),
+  })

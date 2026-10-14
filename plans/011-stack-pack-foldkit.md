@@ -1,5 +1,13 @@
 # Plan 011: Add the `foldkit` stack pack: a browser app on Foldkit (Effect v4), TypeScript 7, Vite 8, Vitest 5 and Playwright
 
+> **Implemented, 2026-10-13.** The integration for PR #22 implements this
+> pack together with plans 007–010. Issue #20 dispositions are recorded for review; acceptance
+> remains governed by `plans/README.md`. `template/stacks/foldkit/` is
+> the source of truth now. The steps, helper scripts, embedded files and checksum manifests
+> below are the record of the 2026-10-02 rehearsal: they are not kept in sync with the pack and
+> are not meant to be replayed (`step-2.sh` would write the rehearsed files over the current
+> pack). For upkeep, use "Maintenance notes" at the end, which describe the pack as it is.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -4032,38 +4040,56 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
-- **Every Foldkit or Effect bump is a train.** In the template:
+- **Every Foldkit or Effect bump is a train.** Work on `template/stacks/foldkit/`, and run pnpm
+  only in a scratch copy (a bootstrapped project, or `files/` copied out with the placeholders
+  filled), never inside `template/`:
   1. Pin the new train in the pack's `package.json`, keeping `JSON.stringify(pkg, null, 2)`
-     form: `foldkit`, every `@foldkit/*`, `effect` and every `@effect/*` except `@effect/tsgo`.
-     `@foldkit/devtools` equals `foldkit`; each sibling is the release published with that
-     Foldkit release, and all of them peer on the same exact `effect`.
-  2. Replace the pack's `FOLDKIT.md` whole with the new tag's
+     form: `foldkit`, every `@foldkit/*` (`@foldkit/ui` included: it is `@foldkit/devtools`'s
+     peer), `effect` and every `@effect/*` except `@effect/tsgo`. `@foldkit/devtools` and
+     `@foldkit/ui` equal `foldkit`; each sibling is the release published with that Foldkit
+     release, and all of them peer on the same exact `effect`.
+  2. Point `.foldkit-ref` at the new `foldkit@<version>` tag's commit (`git ls-remote
+     https://github.com/foldkit/foldkit.git refs/tags/foldkit@<version>`): `check-pins.mjs`
+     fails until its version matches the pin, and `vendor-foldkit.sh` refuses a tag that
+     resolves to another commit.
+  3. Replace the pack's `FOLDKIT.md` whole with the new tag's
      `packages/create-foldkit-app/templates/base/FOLDKIT.md`. It must contain no `{{` or `}}`.
-  3. Update the versions in this plan's `train.mjs` and `step-2.sh` copies, or do their work by
-     hand, then regenerate the lockfile the way `lockfile.sh` does: in a scratch copy, from
-     nothing (delete the old lockfile first). pnpm 12.6.0 can keep an old locked version when a
-     pin moves from a prerelease to its release (`4.0.0-rc.116` → `4.0.0`; fixed in pnpm
-     12.8.2); `check-pins.mjs` catches that, and starting from no lockfile avoids it.
-  4. Run the heavy tests; fix only the starter (`src/**`, `e2e/**`, the configs) for API
+  4. Regenerate the lockfile in the scratch copy with `pnpm install --lockfile-only`, starting
+     from the current lockfile so only what moved re-resolves. pnpm 12.6.0 can keep an old
+     locked version when a pin moves from a prerelease to its release (`4.0.0-rc.116` →
+     `4.0.0`; fixed in pnpm 12.8.2); `check-pins.mjs` catches that, and deleting that one
+     package's entries before resolving avoids it. The new `pnpm-lock.yaml` comes back only
+     through a pull request whose reviewer reads the complete lockfile diff: both YAML
+     documents, the `importers`, every `packages` resolution and integrity, and the
+     `snapshots`. List every added, removed or changed `name@version` in the description as a
+     guide to that diff, not a substitute for it.
+  5. Run the heavy tests; fix only the starter (`src/**`, `e2e/**`, the configs) for API
      changes, following Foldkit's changelog (`packages/foldkit/CHANGELOG.md` at the release
      tag). Keep tiers 1 and 2 at 100%.
 
   New projects copy the pack as it is at bootstrap; a project upgrades on its own schedule with
   the steps in its `docs/guides/foldkit.md`.
 - **The 24-hour rule and a same-day train.** A release under 24 hours old fails every install
-  under the pack's policy. Either wait a day, or do what this plan did: resolve with only the
-  train exempt in a scratch copy, run local checks with `pnpm_config_minimum_release_age=0`
-  exported for the whole session, and expect hosted CI to stay red until the release matures.
-  Whether to exempt the train permanently (`minimumReleaseAgeExclude` in the pack's
-  `pnpm-workspace.yaml`) is the maintainer's call; this plan does not.
+  under the pack's policy, frozen ones included. Wait a day, or add exact `name@version`
+  entries for the new train's releases to `minimumReleaseAgeExclude` in `pnpm-workspace.yaml`
+  in the same change that moves the pins, and remove them once the releases are a day old.
+  `check-pins.mjs` accepts an exemption only for a train package at the version `package.json`
+  pins. Never exempt a bare name or a scope, and never set `pnpm_config_minimum_release_age=0`:
+  the guard and `after-bootstrap` clear pnpm's policy variables from the environment, so the
+  file's policy is the one that applies.
+- **A manual look** at the starter: `pnpm dev` serves on 3000 and `pnpm preview` on 4000, both
+  with `strictPort`. Check that neither port is taken first (`lsof -iTCP:3000 -iTCP:4000
+  -sTCP:LISTEN` prints nothing), so a busy port isn't mistaken for a broken app.
 - **Toolchain bumps** (TypeScript, @effect/tsgo, Oxlint, Oxfmt, Vite, Vitest, Playwright, pnpm,
   Node) are separate, deliberate changes: check @effect/tsgo's support matrix for the
   TypeScript version, regenerate the lockfile, run the heavy tests. Move Node to 26 once it is
   LTS (2026-10-28), in `.node-version` and `devEngines.runtime` together. Move pnpm to 12.8.2
   or later with the next bump. Keep the heavy job's pnpm equal to `packageManager` (a light
   test enforces it).
-- **The DevTools relay.** The pack sets `devToolsMcpPort: false`. Whether to turn the
-  token-protected relay on by default is the maintainer's call; the guide documents the opt-in.
+- **The DevTools relay.** The pack sets `devToolsMcpPort: false`, and `scripts/check-rules.mjs`
+  accepts only that or no option at all (the token-protected relay) in the one `foldkit()` call
+  of `vite.config.ts`. Whether to turn the token-protected relay on by default is the
+  maintainer's call; the guide documents the opt-in.
 - **gstack `/health`** calls a bare `tsc`, `eslint` and `biome`; in a foldkit project none is on
   `PATH`, and a missing tool counts as a failure. A skeleton-level "Health Stack" section in
   CLAUDE.md naming `pnpm exec tsc --noEmit`, `pnpm exec oxlint …` would fix it for every pack;

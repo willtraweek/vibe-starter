@@ -1,0 +1,71 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": [
+    "./node_modules/@foldkit/oxlint-plugin/recommended.json"
+  ],
+  "plugins": [
+    "typescript",
+    "oxc",
+    "import"
+  ],
+  "options": {
+    "typeAware": true
+  },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "destructuredArrayIgnorePattern": "^_"
+      }
+    ],
+    "eslint/require-yield": "off",
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-assertions": [
+      "error",
+      {
+        "assertionStyle": "never"
+      }
+    ],
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "eslint/no-underscore-dangle": "off",
+    "import/no-unassigned-import": [
+      "error",
+      {
+        "allow": [
+          "**/*.css"
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/**/*.test.ts",
+        "e2e/**/*.ts"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "node_modules/**",
+    "dist/**",
+    "coverage/**",
+    "repos/**",
+    "test-results/**",
+    "playwright-report/**",
+    "blob-report/**",
+    "**/*.d.ts"
+  ]
+}

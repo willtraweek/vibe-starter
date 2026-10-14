@@ -1,0 +1,10 @@
+# KEY=value lines. ./bootstrap --stack omarchy-plugin replaces {{KEY}} and
+# {{KEY: description}} placeholders in the project's docs with these values.
+INSTALL_CMD=./scripts/omarchy-kit
+DEV_CMD=./scripts/dev-link.sh
+BUILD_CMD=omarchy plugin validate .
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=./tests/run
+SHIP_GATE=./scripts/check.sh && ./tests/run
+STACK=An Omarchy 4 shell plugin: a QML bar widget for omarchy-shell (Quickshell) built from qs.Ui components, which follow the active Omarchy theme; logic in plain JavaScript under Node's test runner at 100% coverage; the widget under Qt 6's qmltestrunner against qs.Ui stand-ins; Omarchy's own plugin validator and Text-format scanner, pinned in .omarchy-ref.
+COVERAGE_ENFORCEMENT=./tests/run: Node's test runner holds the plain-JavaScript logic (Logic.js and any other *.js or *.mjs module outside tests/) at 100% lines, branches and functions, and a test that loads every module stops one from hiding; QML has no coverage tool, so each QML component gets a qmltestrunner test; CI runs both, fail-closed
