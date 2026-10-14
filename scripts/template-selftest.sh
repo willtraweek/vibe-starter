@@ -6227,7 +6227,14 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   # Regression test (#20 item 8): nothing showed that type-aware Oxlint and Oxfmt
   # fail the guard. tsc passes both files below.
   printf 'export const start = (): void => {\n  Promise.resolve(1)\n}\n' > "$d/src/domain/floating.ts"
-  expect_guard_failure "src/domain/floating.ts:2:3: error typescript(no-floating-promises)" "an unawaited promise in src" || return 1
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  # Oxlint's agent and graphical reporters lay out the same diagnostic
+  # differently; colors can also split its path from the line and column.
+  perl -pe 's/\e\[[0-9;]*m//g' "$d.guard.out" > "$d.guard.plain"
+  assert_contains "$d.guard.plain" "typescript(no-floating-promises)" || return 1
+  assert_contains "$d.guard.plain" "src/domain/floating.ts:2:3" || return 1
+  (cd "$d" && git checkout -q -- . && git clean -qfd -e node_modules -e repos) || return 1
   printf 'export const spaced   =   1;\n' > "$d/src/domain/spaced.ts"
   expect_guard_failure "Format issues found" "a file Oxfmt would reformat" || return 1
   perl -pi -e 's/foldkit\((?:\{ devToolsMcpPort: false \})?\)/foldkit({ devToolsMcpPort: 9988 })/' "$d/vite.config.ts" || return 1
