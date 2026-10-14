@@ -25,8 +25,12 @@ themed by Omarchy, and the launcher on `Super + Space`.
 
 `./scripts/install.sh --uninstall` removes exactly those three files. Before replacing or
 removing existing files, the script verifies its ownership marker and launch command in the
-desktop entry. Unrecognized files, directories and symlinks are left alone. `PREFIX`, an
-absolute path, moves all three; nothing else in the environment does.
+desktop entry. Unrecognized files, directories and symlinks are left alone.
+VERSION-only upgrades are supported. Before changing the template's `Exec=` launch command,
+uninstall using the old template and the same `PREFIX`, then change the template and reinstall.
+The installer stages all three files before publishing the ownership entry, so a later copy
+failure or catchable interruption can be recovered by rerunning install or uninstall.
+`PREFIX`, an absolute path, moves all three; nothing else in the environment does.
 
 To install system-wide, build as yourself, then run
 `sudo PREFIX=/usr/local ./scripts/install.sh --no-build`. `--no-build` takes

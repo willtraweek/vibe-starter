@@ -3797,6 +3797,219 @@ stub_app_binary() {  # $1 = path: a stand-in release binary whose --version prin
 STUB
   chmod +x "$1"
 }
+omarchy_install_artifact_state() {  # bytes, modes and link targets of the three managed paths
+  local prefix="$1" path
+  for path in "$prefix/bin/demo_app" "$prefix/share/applications/demo_app.desktop" "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg"; do
+    printf '%s: ' "${path#"$prefix"/}"
+    if [ -L "$path" ]; then
+      printf 'symlink '; readlink "$path"
+    elif [ -f "$path" ]; then
+      perl -e 'printf "%04o ", (stat shift)[2] & 07777' "$path"
+      cksum < "$path"
+    elif [ -e "$path" ]; then
+      echo 'other object'
+    else
+      echo absent
+    fi
+  done
+}
+assert_no_omarchy_install_stage() {
+  [ -z "$(find "$1/share/applications" -name '.demo_app.install.*' -print)" ] \
+    || fail "private installer staging was not cleaned"
+}
+test_stack_omarchy_install_stages_before_publication() {
+  local pack d prefix kind path rc before
+  for pack in omarchy-app omarchy-tui; do
+    d="$WORK/staged-$pack/demo-app"
+    stub_cargo_project "$d" "$pack" || return 1
+    stub_app_binary "$d/target/release/demo_app" 'demo_app 0.0.0' || return 1
+    cp "$d/assets/icon.svg" "$d.icon" && cp "$d/packaging/app.desktop.in" "$d.desktop" || return 1
+    for kind in missing-icon missing-marker duplicate-exec; do
+      prefix="$WORK/staged-$pack/$kind"
+      case "$kind" in
+        missing-icon) rm "$d/assets/icon.svg" ;;
+        missing-marker) sed '/^X-Vibe-Starter-AppId=/d' "$d.desktop" > "$d/packaging/app.desktop.in" ;;
+        duplicate-exec) cat "$d.desktop" > "$d/packaging/app.desktop.in"; sed -n '/^Exec=/p' "$d.desktop" >> "$d/packaging/app.desktop.in" ;;
+      esac
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1; rc=$?
+      [ "$rc" -ne 0 ] || fail "$pack accepted $kind before publication" || return 1
+      for path in "$prefix/bin/demo_app" "$prefix/share/applications/demo_app.desktop" "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg"; do
+        { [ ! -e "$path" ] && [ ! -L "$path" ]; } || fail "$pack $kind published an unowned artifact" || return 1
+      done
+      assert_no_omarchy_install_stage "$prefix" || return 1
+      cp "$d.icon" "$d/assets/icon.svg" && cp "$d.desktop" "$d/packaging/app.desktop.in" || return 1
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || return 1
+      before="$(omarchy_install_artifact_state "$prefix")"
+      printf '# pending staged upgrade\n' >> "$d/target/release/demo_app"
+      rm "$d/assets/icon.svg"
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1; rc=$?
+      [ "$rc" -ne 0 ] || fail "$pack accepted a missing upgrade icon" || return 1
+      [ "$before" = "$(omarchy_install_artifact_state "$prefix")" ] || fail "$pack changed an installed set before staging completed" || return 1
+      assert_no_omarchy_install_stage "$prefix" || return 1
+      cp "$d.icon" "$d/assets/icon.svg" || return 1
+    done
+  done
+}
+test_stack_omarchy_install_recovers_after_payload_failure_or_interrupt() {
+  # The seam is the real install utility's final icon destination, present in
+  # both the old direct installer and the staged installer. Staging copies pass.
+  local pack d prefix fault recovery rc path
+  local real_install
+  real_install="$(command -v install)"
+  for pack in omarchy-app omarchy-tui; do
+    d="$WORK/recovery-$pack/demo-app"
+    stub_cargo_project "$d" "$pack" || return 1
+    stub_app_binary "$d/target/release/demo_app" 'demo_app 0.0.0' || return 1
+    mkdir -p "$d/fault-bin"
+    cat > "$d/fault-bin/install" <<'STUB' || return 1
+#!/usr/bin/env bash
+for last do :; done
+if [ "$last" = "$INSTALLER_FAULT_TARGET" ]; then
+  echo "$INSTALLER_FAULT" >> "$INSTALLER_FAULT_LOG"
+  if [ "$INSTALLER_FAULT" = interrupt ]; then kill -TERM "$PPID"; fi
+  exit 42
+fi
+exec "$INSTALLER_REAL_INSTALL" "$@"
+STUB
+    chmod +x "$d/fault-bin/install" || return 1
+    for fault in failure interrupt; do
+      # Recovery operations get independent failed installs: uninstall must
+      # succeed directly, not only after a successful retry repaired the set.
+      for recovery in retry uninstall; do
+        prefix="$WORK/recovery-$pack/$fault-$recovery"
+        : > "$d.fault-log"
+        (cd "$d" && PATH="$d/fault-bin:$(printenv PATH)" PREFIX="$prefix" INSTALLER_FAULT="$fault" \
+          INSTALLER_FAULT_TARGET="$prefix/share/icons/hicolor/scalable/apps/demo_app.svg" \
+          INSTALLER_FAULT_LOG="$d.fault-log" INSTALLER_REAL_INSTALL="$real_install" ./scripts/install.sh --no-build) > "$d.install" 2>&1; rc=$?
+        case "$fault" in
+          failure) assert_exit 42 "$rc" || return 1 ;;
+          interrupt) assert_exit 143 "$rc" || return 1 ;;
+        esac
+        [ "$(cat "$d.fault-log")" = "$fault" ] || fail "the final-icon fault seam did not fire once" || return 1
+        path="$prefix/share/applications/demo_app.desktop"
+        { [ -f "$path" ] && [ ! -L "$path" ]; } || fail "$pack $fault left payloads without an ownership entry" || return 1
+        (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --print-desktop-entry) | cmp -s - "$path" \
+          || fail "the retained ownership entry is not the complete rendered entry" || return 1
+        assert_no_omarchy_install_stage "$prefix" || return 1
+        if [ "$recovery" = retry ]; then
+          (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || fail "$pack cannot retry a $fault install" || return 1
+          cmp -s "$d/assets/icon.svg" "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg" || return 1
+        fi
+        (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1 || fail "$pack cannot uninstall a $fault install" || return 1
+        for path in "$prefix/bin/demo_app" "$prefix/share/applications/demo_app.desktop" "$prefix/share/icons/hicolor/scalable/apps/demo_app.svg"; do
+          { [ ! -e "$path" ] && [ ! -L "$path" ]; } || fail "$pack left a managed artifact after recovery" || return 1
+        done
+      done
+    done
+  done
+}
+test_stack_omarchy_install_entry_publication_failure_preserves_installed_files() {
+  local pack d prefix kind before rc real_mv
+  real_mv="$(command -v mv)"
+  for pack in omarchy-app omarchy-tui; do
+    d="$WORK/entry-failure-$pack/demo-app"
+    stub_cargo_project "$d" "$pack" || return 1
+    stub_app_binary "$d/target/release/demo_app" 'demo_app 0.0.0' || return 1
+    mkdir -p "$d/fault-bin"
+    cat > "$d/fault-bin/mv" <<'STUB' || return 1
+#!/usr/bin/env bash
+for last do :; done
+if [ "$last" = "$INSTALLER_FAULT_TARGET" ]; then echo fired >> "$INSTALLER_FAULT_LOG"; exit 42; fi
+exec "$INSTALLER_REAL_MV" "$@"
+STUB
+    chmod +x "$d/fault-bin/mv" || return 1
+    for kind in fresh upgrade; do
+      prefix="$WORK/entry-failure-$pack/$kind"
+      if [ "$kind" = upgrade ]; then
+        (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || return 1
+        printf '# new release artifact\n' >> "$d/target/release/demo_app"
+      fi
+      before="$(omarchy_install_artifact_state "$prefix")"
+      : > "$d.fault-log"
+      (cd "$d" && PATH="$d/fault-bin:$(printenv PATH)" PREFIX="$prefix" INSTALLER_FAULT_TARGET="$prefix/share/applications/demo_app.desktop" \
+        INSTALLER_FAULT_LOG="$d.fault-log" INSTALLER_REAL_MV="$real_mv" ./scripts/install.sh --no-build) > "$d.install" 2>&1; rc=$?
+      assert_exit 42 "$rc" || return 1
+      [ "$(cat "$d.fault-log")" = fired ] || fail "entry-publication fault seam did not fire once" || return 1
+      [ "$before" = "$(omarchy_install_artifact_state "$prefix")" ] || fail "$pack $kind changed managed files before entry publication" || return 1
+      assert_no_omarchy_install_stage "$prefix" || return 1
+    done
+  done
+}
+test_stack_omarchy_install_preserves_obsolete_temp_collisions() {
+  local pack d prefix kind obsolete target before_mode before_contents before_link before_object_mode rc
+  for pack in omarchy-app omarchy-tui; do
+    d="$WORK/temp-collisions-$pack/demo-app"
+    stub_cargo_project "$d" "$pack" || return 1
+    stub_app_binary "$d/target/release/demo_app" 'demo_app 0.0.0' || return 1
+    for kind in symlink dangling file directory; do
+      prefix="$WORK/temp-collisions-$pack/$kind"
+      mkdir -p "$prefix/share/applications"
+      obsolete="$prefix/share/applications/demo_app.desktop.tmp"
+      target="$prefix/sentinel"
+      printf 'unrelated bytes\n' > "$target"; chmod 600 "$target"
+      before_mode="$(perl -e 'printf "%04o", (stat shift)[2] & 07777' "$target")"
+      before_contents="$(cat "$target")"
+      case "$kind" in
+        symlink) ln -s "$target" "$obsolete" ;;
+        dangling) ln -s "$prefix/missing" "$obsolete" ;;
+        file) printf 'unrelated temporary file\n' > "$obsolete"; chmod 600 "$obsolete" ;;
+        directory) mkdir "$obsolete"; chmod 700 "$obsolete" ;;
+      esac
+      before_link="$(readlink "$obsolete" 2>/dev/null || true)"
+      before_object_mode="$(perl -e 'printf "%04o", (lstat shift)[2] & 07777' "$obsolete")"
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1; rc=$?
+      assert_exit 0 "$rc" || return 1
+      { [ -f "$prefix/share/applications/demo_app.desktop" ] && [ ! -L "$prefix/share/applications/demo_app.desktop" ]; } \
+        || fail "$pack installed a symlink as the ownership entry" || return 1
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || return 1
+      (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1 || return 1
+      [ "$before_contents" = "$(cat "$target")" ] && [ "$before_mode" = "$(perl -e 'printf "%04o", (stat shift)[2] & 07777' "$target")" ] \
+        || fail "$pack changed the unrelated sentinel bytes or mode" || return 1
+      [ "$before_object_mode" = "$(perl -e 'printf "%04o", (lstat shift)[2] & 07777' "$obsolete")" ] \
+        || fail "$pack removed or changed the obsolete object mode" || return 1
+      case "$kind" in
+        symlink|dangling) [ -L "$obsolete" ] && [ "$before_link" = "$(readlink "$obsolete")" ] || return 1 ;;
+        file) [ -f "$obsolete" ] && [ ! -L "$obsolete" ] && [ "$(cat "$obsolete")" = 'unrelated temporary file' ] || return 1 ;;
+        directory) [ -d "$obsolete" ] && [ ! -L "$obsolete" ] && [ -z "$(ls -A "$obsolete")" ] || return 1 ;;
+      esac
+      { [ ! -e "$prefix/missing" ] && [ ! -L "$prefix/missing" ]; } || fail "installer created a dangling-link target" || return 1
+      assert_no_omarchy_install_stage "$prefix" || return 1
+    done
+  done
+}
+test_stack_omarchy_install_compares_exec_bytes_without_unescaping() {
+  local pack d prefix entry before rc
+  for pack in omarchy-app omarchy-tui; do
+    d="$WORK/exec-bytes-$pack/demo-app"; prefix="$WORK/exec-bytes-$pack/prefix"
+    stub_cargo_project "$d" "$pack" || return 1
+    stub_app_binary "$d/target/release/demo_app" 'demo_app 0.0.0' || return 1
+    # Desktop entries encode a literal backslash with four backslashes in a
+    # quoted argument. Neither the renderer nor ownership comparison unescapes it.
+    perl -pi -e 's/^(Exec=.*)$/$1 . q{ "} . ("\\" x 4) . q{example"}/e' "$d/packaging/app.desktop.in" || return 1
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || return 1
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 \
+      || fail "$pack rejected an unchanged backslash-bearing Exec" || return 1
+    entry="$prefix/share/applications/demo_app.desktop"
+    cp "$entry" "$d.entry" || return 1
+    perl -pi -e 's/example/exampleX/' "$entry"
+    before="$(omarchy_install_artifact_state "$prefix")"
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || return 1
+    [ "$before" = "$(omarchy_install_artifact_state "$prefix")" ] || fail "mismatched Exec changed owned paths" || return 1
+    cp "$d.entry" "$entry" || return 1
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1 || return 1
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --no-build) > "$d.install" 2>&1 || return 1
+    cp "$d/packaging/app.desktop.in" "$d.desktop" || return 1
+    perl -pi -e 's/^(Exec=.*)$/$1 %U/' "$d/packaging/app.desktop.in"
+    before="$(omarchy_install_artifact_state "$prefix")"
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1; rc=$?
+    assert_exit 1 "$rc" || return 1
+    [ "$before" = "$(omarchy_install_artifact_state "$prefix")" ] || fail "new-template uninstall changed old install" || return 1
+    cp "$d.desktop" "$d/packaging/app.desktop.in" || return 1
+    (cd "$d" && PREFIX="$prefix" ./scripts/install.sh --uninstall) > "$d.install" 2>&1 \
+      || fail "old-template uninstall did not permit launch-command migration" || return 1
+  done
+}
 test_stack_omarchy_app_install_script_installs_and_uninstalls() {
   # install.sh puts exactly three files under PREFIX and removes exactly those;
   # stubs stand in for cargo and the release binary, so nothing is compiled.

@@ -55,12 +55,25 @@ refresh_launcher() {
   fi
 }
 
+# Compare Exec bytes literally: awk -v would interpret template backslashes.
+owned_entry() {
+  local entry="$1" expected_exec
+  expected_exec="$(desktop_entry | sed -n '/^Exec=/p')"
+  [ -f "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] && [ -n "$expected_exec" ] \
+    && VIBE_INSTALL_EXPECTED_EXEC="$expected_exec" awk -v id="$APP_ID" '
+      /^\[/ { active = ($0 == "[Desktop Entry]"); if (active) groups++ }
+      active && /^X-Vibe-Starter-AppId=/ { markers++; if ($0 == "X-Vibe-Starter-AppId=" id) marker_ok++ }
+      active && /^Exec=/ { commands++; if ($0 == ENVIRON["VIBE_INSTALL_EXPECTED_EXEC"]) command_ok++ }
+      END { exit !(groups == 1 && markers == 1 && marker_ok == 1 && commands == 1 && command_ok == 1) }
+    ' "$entry"
+}
+
 # A marked entry with this launch command owns the three installed files.
 # Check before building or touching any destination; names alone prove nothing.
 # Versions may differ during an upgrade, and missing owned companions may be
 # restored or removed. Never follow a destination symlink or replace a directory.
 check_ownership() {
-  local path present=0 expected_exec entry="$appdir/$APP_ID.desktop"
+  local path present=0 entry="$appdir/$APP_ID.desktop"
   for path in "$bindir/$APP_ID" "$entry" "$icondir/$APP_ID.svg"; do
     if [ -e "$path" ] || [ -L "$path" ]; then
       present=1
@@ -71,13 +84,7 @@ check_ownership() {
     fi
   done
   [ "$present" = 1 ] || return 0
-  expected_exec="$(desktop_entry | sed -n '/^Exec=/p')"
-  if [ -r "$entry" ] && [ -n "$expected_exec" ] && awk -v id="$APP_ID" -v expected="$expected_exec" '
-    /^\[/ { active = ($0 == "[Desktop Entry]"); if (active) groups++ }
-    active && /^X-Vibe-Starter-AppId=/ { markers++; if ($0 == "X-Vibe-Starter-AppId=" id) marker_ok++ }
-    active && /^Exec=/ { commands++; if ($0 == expected) command_ok++ }
-    END { exit !(groups == 1 && markers == 1 && marker_ok == 1 && commands == 1 && command_ok == 1) }
-  ' "$entry"; then
+  if owned_entry "$entry"; then
     return 0
   fi
   echo "install.sh: refusing to replace or remove existing files: no valid ownership entry at $entry; move unrelated files aside first" >&2
@@ -115,11 +122,27 @@ case "$mode" in
       exit 1
     fi
     install -d "$bindir" "$appdir" "$icondir"
-    install -m 755 "$binary" "$bindir/$APP_ID"
-    install -m 644 assets/icon.svg "$icondir/$APP_ID.svg"
-    desktop_entry > "$appdir/$APP_ID.desktop.tmp"
-    chmod 644 "$appdir/$APP_ID.desktop.tmp"
-    mv "$appdir/$APP_ID.desktop.tmp" "$appdir/$APP_ID.desktop"
+    # Prepare every artifact before publishing anything. The private directory
+    # is beside the entry, so its rename is atomic even with a mounted PREFIX.
+    stage="$(mktemp -d "$appdir/.$APP_ID.install.XXXXXX")"
+    trap 'rm -rf -- "$stage"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    install -m 755 "$binary" "$stage/$APP_ID"
+    install -m 644 assets/icon.svg "$stage/$APP_ID.svg"
+    desktop_entry > "$stage/$APP_ID.desktop"
+    chmod 644 "$stage/$APP_ID.desktop"
+    if ! owned_entry "$stage/$APP_ID.desktop"; then
+      echo "install.sh: rendered desktop entry is not a valid ownership entry" >&2
+      exit 1
+    fi
+    # Publish ownership first. If a later copy fails or a catchable signal
+    # interrupts it, the entry permits either retry or uninstall of the partial
+    # install. Never touch the old predictable .desktop.tmp pathname.
+    mv "$stage/$APP_ID.desktop" "$appdir/$APP_ID.desktop"
+    install -m 755 "$stage/$APP_ID" "$bindir/$APP_ID"
+    install -m 644 "$stage/$APP_ID.svg" "$icondir/$APP_ID.svg"
     refresh_launcher
     echo "Installed $APP_ID $version:"
     echo "  $bindir/$APP_ID"
