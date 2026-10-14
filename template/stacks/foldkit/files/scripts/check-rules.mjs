@@ -753,13 +753,13 @@ const shape = tokens =>
 // A bounded, non-evaluating shell grammar: literal words, quotes and escapes,
 // joined by &&, ||, ; or newline. Expansions, redirection, grouping and nested
 // shell evaluation need a reviewed extension; this is not a shell sandbox.
+const unsupported = detail => { throw new Error(`unsupported shell syntax (${detail})`) }
 const shellCommands = command => {
   const commands = []
   let words = []
   let word = ''
   let started = false
   let quote
-  const unsupported = detail => { throw new Error(`unsupported shell syntax (${detail})`) }
   const finishWord = () => {
     if (started) {
       words.push(word)
@@ -812,7 +812,7 @@ const shellCommands = command => {
       }
     } else if (/[\t\r ]/.test(char)) {
       finishWord()
-    } else if (/[&|<>()*?\[\]{}]/.test(char) || (!started && (char === '~' || char === '#'))) {
+    } else if (/[&|<>()*?[\]{}]/.test(char) || (!started && (char === '~' || char === '#'))) {
       unsupported(`operator or expansion ${JSON.stringify(char)}`)
     } else {
       word += char
@@ -823,27 +823,27 @@ const shellCommands = command => {
     unsupported('unterminated quote')
   }
   finishCommand()
-  for (const words of commands) {
+  for (const commandWords of commands) {
     let executable = 0
     let wrapped = false
     // Literal environment assignments and the standard execution wrappers do
     // not change the following executable's identity. Wrapper options have
     // their own semantics: reject them rather than mistake one for the command.
-    while (executable < words.length) {
-      const word = words[executable]
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+    while (executable < commandWords.length) {
+      const argument = commandWords[executable]
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(argument)) {
         executable += 1
-      } else if (['env', 'command', 'exec'].includes(word.split('/').pop())) {
+      } else if (['env', 'command', 'exec'].includes(argument.split('/').pop())) {
         wrapped = true
         executable += 1
       } else {
-        if (wrapped && word.startsWith('-')) {
+        if (wrapped && argument.startsWith('-')) {
           unsupported('wrapper options need a reviewed checker extension')
         }
         break
       }
     }
-    if (/^(?:.*\/)?(?:[bdkz]?sh|bash|dash|fish|csh|tcsh|eval|source|\.)$/.test(words[executable] ?? '')) {
+    if (/^(?:.*\/)?(?:[bdkz]?sh|bash|dash|fish|csh|tcsh|eval|source|\.)$/.test(commandWords[executable] ?? '')) {
       unsupported('nested shell evaluation')
     }
   }
