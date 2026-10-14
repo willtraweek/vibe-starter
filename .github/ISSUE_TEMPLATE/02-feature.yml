@@ -1,0 +1,53 @@
+name: Feature / improvement
+description: Request a capability or better product behavior, including performance, accessibility, UX, or integrations.
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a change to intended product behavior or capability. A sentence is fine for a small request; use a concrete title such as "Let callers cancel an in-flight request". You can suggest an implementation or leave the approach open. Existing user instructions and execution restrictions still apply.
+  - type: textarea
+    id: feature
+    attributes:
+      label: Problem and desired behavior
+      description: >-
+        Who is affected (user or caller), what problem do they face, and what capability or behavior should change? Include an example if useful.
+      placeholder: |
+        When [user or caller] tries to [goal], [problem]. They should be able to [desired behavior] so that [benefit].
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: Which subsystem or topic does this affect, if known?
+      placeholder: Search, keyboard navigation, or API integrations
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        What observable behavior or examples would show this is complete? Unknowns are fine at capture; clarify completion and material open choices before work.
+      placeholder: |
+        A caller can cancel a pending request and receives a clear cancellation result.
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: What boundaries, compatibility needs, or constraints should shape the change?
+      placeholder: Include existing callers; exclude changes to the response format.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link source issues, reviews, or designs; note dependencies, unresolved choices, and existing execution restrictions. For review follow-ups, distinguish observations or proposed fixes from the chosen scope.
+      placeholder: Links, related work, options still to choose, or restrictions already in effect.
+    validations:
+      required: false

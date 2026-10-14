@@ -401,6 +401,8 @@ Bootstrap done. Hand-fill the placeholders that remain (grep the repo for '{{' )
   TODOS.md    - the first real task
   docs/architecture.md - modules, contracts & invariants
 Every agent must read both CLAUDE.md and AGENTS.md once before starting task work.
+Before enabling issue intake, review missing type labels and the private reporting contact (docs/guides/filing-issues.md).
+Ask the user to confirm the target repository and missing labels before creating any; preserve existing labels.
 Commit this to your default branch before you branch or run gstack /ship:
 /ship compares VERSION with the base branch, which still has the template's.
 CHECKLIST
