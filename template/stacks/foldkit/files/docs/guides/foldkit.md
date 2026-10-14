@@ -9,19 +9,26 @@ pack adds on top: the layout, the gates and the upgrade train.
 
 | File | What it holds | TESTING.md tier | Tested by |
 |---|---|---|---|
-| `src/domain/version.ts` | pure `parseVersion` / `displayVersion`; no Foldkit | 1, pure logic (100%) | `src/domain/version.test.ts` (truth table + property) |
+| `src/domain/version.ts` | pure `parseVersion` / `displayVersion`; parses MAJOR.MINOR.PATCH[.MICRO], displays the three-part npm form; no Foldkit | 1, pure logic (100%) | `src/domain/version.test.ts` (truth table + property) |
 | `src/main.ts` | Model, `init`, `update` | 1, pure logic (100%) | `src/story.test.ts` (Story tests) |
-| `src/api/status.ts` | the network boundary: `GET /status.json`, Schema-decoded, typed errors; no Foldkit | 2, API surface (100%) | `src/api/status.test.ts` |
-| `src/command.ts` | `FetchStatus`, mapping every outcome to a Message | 2, API surface (100%) | `src/command.test.ts` |
-| `src/view.ts`, `src/components/status.ts` | the root view and the status component | 3, main UI (90%) | `src/scene.test.ts` (Scene tests) |
-| `e2e/home.spec.ts` | the named journeys, against the production build | 4, E2E journeys | Playwright |
+| `src/api/status.ts` | the network boundary: `GET /status.json`, Schema-decoded, typed errors; a 10-second timeout includes the response body and returns unreachable with detail "timed out after 10 seconds"; no Foldkit | 2, API surface (100%) | `src/api/status.test.ts` |
+| `src/command.ts` | `FetchStatus` maps every outcome to a Message; `FocusStatusPanel` restores focus to the status panel | 2, API surface (100%) | `src/command.test.ts` |
+| `src/view.ts` | the root view | 3, main UI (90%) | `src/scene.test.ts` (Scene tests) |
+| `src/components/status.ts` | one persistent `section` panel in every status state | 3, main UI (90%) | `src/scene.test.ts` (Scene tests) |
+| `e2e/home.spec.ts` | two named journeys against the production build: home/version/status and retry focus | 4, E2E journeys | Playwright, then `--journeys` verification |
 | `src/message.ts` | the Message union (its own file breaks the `command.ts` / `main.ts` cycle) | global floor | |
 | `src/entry.ts` | the boot file: `Runtime.makeApplication` + `Runtime.run` | not measured | E2E |
+| `DESIGN.md` | design tokens, layout, control states and accessibility conventions | not measured | design review |
 
 `coverage-tiers.json` lists every tier member explicitly, plus the E2E journey titles. Files
 outside a tier still count toward the global floor. Tests never mock modules (`vi.mock`,
 `vi.doMock`, `vi.importMock`; the checks refuse them): tier 2 swaps the `HttpClient` Layer, the
 only trust boundary.
+
+`node scripts/coverage-tiers.mjs --journeys` reads `test-results/journeys.json` and refuses
+skipped, failed, flaky, interrupted, timed-out, missing or twice-declared journeys. Removing a
+required title needs an entry in `retired_journeys`; a retired title must no longer be declared
+in `e2e`. Keep this verification after Playwright in the full gate.
 
 ## Commands
 
@@ -37,11 +44,11 @@ on the Node on `PATH`, and stop with a message when it is missing or older than 
 | Guards: pins and policy, source rules, lockfile, types, lint, format, tier config | `./scripts/check.sh` |
 | Tests, fast and gate-free (one file: add its path) | `pnpm exec vitest run` |
 | Coverage gates: 90% lines and branches, then per tier | `./scripts/coverage.sh` |
-| E2E journeys (once per machine: `pnpm exec playwright install chromium`) | `pnpm exec playwright test` |
+| E2E journeys (once per machine: `pnpm exec playwright install chromium`) | `pnpm exec playwright test && node scripts/coverage-tiers.mjs --journeys` |
 | Coverage snapshot table | `node scripts/coverage-tiers.mjs --report` |
 | Refresh the vendored Foldkit source | `bash scripts/vendor-foldkit.sh` |
 
-The full gate is `./scripts/check.sh && ./scripts/coverage.sh && pnpm exec playwright test`.
+The full gate is `./scripts/check.sh && ./scripts/coverage.sh && pnpm exec playwright test && node scripts/coverage-tiers.mjs --journeys`.
 Dependencies install only once they are 24 hours old (`minimumReleaseAge` in
 `pnpm-workspace.yaml`), and dependency build scripts are denied. The steps that need the network
 give up instead of waiting offline: bootstrap's install and vendoring after 10 minutes, the
@@ -82,6 +89,7 @@ these move together, all exactly pinned, in one change:
    `@effect/tsgo` (the patcher has its own versions and a support matrix: check its README for
    the TypeScript version it supports). Keep `devToolsMcpPort: false` in `vite.config.ts`
    unless you mean to turn the relay on (below).
+   `@foldkit/ui` must equal the `foldkit` version: it is also a peer of `@foldkit/devtools`.
 2. `.foldkit-ref`: one line, `<version> <commit>`, for the new Foldkit release.
    `git ls-remote https://github.com/foldkit/foldkit.git refs/tags/foldkit@<version>` prints
    the commit its tag names; review that release before you record it.
