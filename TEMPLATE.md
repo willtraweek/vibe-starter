@@ -38,6 +38,9 @@ after a later failure, fix the cause and rerun with the same arguments.
   and `.github/actions/install-gitleaks/` (the pinned gitleaks install every workflow uses).
 - `scripts/check.sh` — the stack-neutral pre-test guard: a gitleaks scan of what git would commit
   (gitleaks 8.22+; skipped locally if missing, required in CI) and editorconfig-checker if present.
+- `.github/ISSUE_TEMPLATE/` — six issue forms: Bug, Feature, Engineering task, Discovery,
+  Decision, and Epic. [Filing issues](docs/guides/filing-issues.md) is the shared browser and
+  agent standard, including the one-time setup for the six type labels in each repository.
 
 ## Stack packs
 
@@ -124,9 +127,9 @@ project starts from. Keep them apart:
 
 - **Skeleton files** are what a new project starts with: `AGENTS.md`, `CLAUDE.md`, `DOCTRINE.md`,
   `TESTING.md`, `ENGINEERING.md`, `README.md`, `DESIGN.md`, `MISSION.md`, `docs/`, the config
-  files, `scripts/check.sh`, `.github/workflows/ci.yml.example`, and `template/skeleton/` (the
-  project's own `VERSION`, `CHANGELOG.md`, `TODOS.md`). Their `{{...}}` placeholders are
-  intentional.
+  files, `scripts/check.sh`, `.github/workflows/ci.yml.example`, `.github/ISSUE_TEMPLATE/`,
+  and `template/skeleton/` (the project's own `VERSION`, `CHANGELOG.md`, `TODOS.md`).
+  Their `{{...}}` placeholders are intentional.
 - **Template-owned files** describe the template itself: the root `VERSION`, `CHANGELOG.md` and
   `TODOS.md`. gstack `/ship` bumps and writes them. `./bootstrap` swaps in the skeleton copies
   and records the template version in the new project's `.bootstrapped`.

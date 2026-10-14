@@ -107,6 +107,9 @@ it once; it's the "why" behind the standards above.
 
 ## Skill routing
 
+When a skill files a GitHub issue, follow [Filing issues](docs/guides/filing-issues.md)
+for the category, content, and labels, as required by `AGENTS.md`.
+
 When the user's request matches an available skill, invoke it before doing the task.
 Use the host's supported skill mechanism; if no Skill tool exists, read and follow that skill's SKILL.md.
 Load the required repository instructions first. These skills carry specialized workflows

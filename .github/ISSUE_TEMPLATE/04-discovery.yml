@@ -1,0 +1,78 @@
+name: Discovery / investigation
+description: Answer a bounded question with evidence or a recommendation.
+labels: ["type:discovery"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the deliverable is evidence or a recommendation answering a bounded question; an unknown cause alone still belongs in Bug when the outcome is a fix.
+        Brief reports are fine. Use a concrete title, such as "Compare recovery options for interrupted imports".
+        Existing permissions and restrictions still apply, including any joint-discovery limit on autonomous research or implementation.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to answer
+      description: >-
+        What specific question needs evidence, why does it matter, and what next
+        decision will the answer inform?
+      placeholder: >-
+        Which recovery option lets an interrupted import resume without duplicate
+        records? The findings will help us choose an approach before implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Existing evidence and unknowns
+      description: >-
+        What do we already know, and what remains uncertain? Distinguish observations
+        from hypotheses and link relevant evidence when available.
+      placeholder: >-
+        Small imports resume successfully; interrupted larger imports sometimes
+        duplicate records. We have not compared checkpointing with replay.
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Investigation scope
+      description: >-
+        What should this investigation cover or leave out? Suggest useful comparisons,
+        examples, or methods if known; a detailed research plan is optional.
+      placeholder: >-
+        Compare checkpointing and replay using synthetic interrupted imports.
+        Leave changes to the import interface for a separate implementation issue.
+    validations:
+      required: false
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: Subsystem or topic, if useful.
+      placeholder: Imports, recovery, reliability
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        What evidence or recommendation will answer the question, and when should
+        investigation stop? Include remaining uncertainty in the result.
+      placeholder: >-
+        Record how each option handles interruption and duplicates, recommend the
+        next step with supporting evidence, and identify any unresolved tradeoffs.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link source issues, reviews, or designs. Note dependencies, unresolved choices,
+        and existing execution restrictions, including any limits on autonomous research.
+      placeholder: >-
+        Related import issue or review; evidence needed from another investigation;
+        any already-recorded requirement for joint discovery.
+    validations:
+      required: false

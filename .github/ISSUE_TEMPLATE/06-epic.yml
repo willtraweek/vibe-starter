@@ -1,0 +1,66 @@
+name: Epic / initiative
+description: Coordinate independently deliverable outcomes toward one larger goal.
+labels: ["type:epic"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this to coordinate outcomes that can be completed and accepted independently; keep tightly coupled edits together in one task.
+        Brief reports are fine; use a concrete title such as "Improve search across indexing, ranking, and presentation."
+        Existing restrictions still apply: an epic's scope, readiness, or assignment does not authorize its children.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Overall outcome
+      description: >-
+        What larger result should this initiative deliver, for whom, and why?
+        Describe the scope or boundaries you know; unknowns can stay explicit at capture.
+      placeholder: People can find relevant results across a larger catalog without losing responsiveness.
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: Optional subsystem or topic that helps route the work.
+      placeholder: Search
+    validations:
+      required: false
+  - type: textarea
+    id: children
+    attributes:
+      label: Child outcomes and milestones
+      description: >-
+        List independently deliverable outcomes and link existing child issues without
+        copying their full specs. Unfiled outcomes can be named here. Add milestones,
+        sequencing, or blocking dependencies where useful; do not split every review finding.
+      placeholder: |
+        - Index the larger catalog; link the child issue when available.
+        - Improve result ranking; depends on representative catalog examples.
+        - Improve search presentation; first milestone is an agreed behavior example.
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        Before work, define how the overall result will be demonstrated. At completion,
+        link outcome evidence and account for each scoped outcome as delivered, deferred
+        with a linked follow-up, or declined with a reason. Record scope changes explicitly;
+        checked child boxes alone do not prove the initiative's result.
+      placeholder: >-
+        Representative searches meet the agreed relevance and response-time goals;
+        each scoped outcome has evidence or an explicit disposition.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link source issues, reviews, or designs; note dependencies, unresolved choices,
+        and existing execution restrictions. Distinguish proposed fixes from selected scope.
+      placeholder: Catalog expansion is the trigger; representative examples and response-time goals remain to be agreed.
+    validations:
+      required: false

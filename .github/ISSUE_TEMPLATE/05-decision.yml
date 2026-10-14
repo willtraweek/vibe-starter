@@ -1,0 +1,70 @@
+name: Decision / approval
+description: Record a choice or precisely scoped authorization with its evidence.
+labels: ["type:decision"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for a choice or scoped authorization; use Discovery for evidence gathering and an implementation form for making a change.
+        Brief reports are fine. Use a concrete title, such as "Choose where to store exported reports".
+        Existing restrictions still apply; choosing an approach grants no later deployment or irreversible-action permission.
+  - type: textarea
+    id: decision
+    attributes:
+      label: Choice or scoped authorization requested
+      description: >-
+        State the exact choice to make. If authorization is the decision, identify
+        the exact action, its scope and limits, and the evidence to review.
+      placeholder: |
+        Choose whether exported reports should be stored locally or in shared storage.
+        For an authorization, name the action and target, its limits, and links to the result or evidence being approved.
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: Subsystem or topic, if useful.
+      placeholder: Report storage
+    validations:
+      required: false
+  - type: textarea
+    id: options
+    attributes:
+      label: Options, evidence, and recommendation
+      description: >-
+        Describe relevant alternatives and tradeoffs, supporting evidence or
+        uncertainty, and your recommendation if you have one.
+      placeholder: Shared storage makes reports available across devices; local storage works offline. Link any relevant findings.
+    validations:
+      required: false
+  - type: textarea
+    id: owner_timing
+    attributes:
+      label: Decision owner and timing
+      description: Who can make this decision, when is it needed, and what will it unblock?
+      placeholder: The storage maintainer can decide before implementation begins; the choice unblocks the export task.
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        Describe the decision record needed to close this issue: the choice,
+        decider, rationale, and scope. Keep any outstanding later execution
+        approval with the execution work.
+      placeholder: Record the chosen storage approach and who decided, with the rationale and scope, and link the implementation issue.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link source issues, reviews, or designs; note dependencies, unresolved
+        choices, and existing execution restrictions. Distinguish proposed
+        changes from the scope being decided.
+      placeholder: Link the discovery findings and affected work; note any restrictions relevant to carrying out the decision.
+    validations:
+      required: false

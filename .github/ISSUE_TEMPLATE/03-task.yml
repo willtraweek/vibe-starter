@@ -1,0 +1,69 @@
+name: Engineering task
+description: Improve implementation, tooling, or maintenance while preserving intended product behavior.
+labels: ["type:task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for refactors, tests or evals, CI, dependencies, documentation, infrastructure, and data migrations that preserve intended product behavior.
+        Brief reports are fine; use a concrete, descriptive title such as "Cache dependency downloads in CI".
+        Keep tightly coupled changes together; split outcomes that can be completed, accepted, and landed independently. Existing instructions and execution restrictions still apply.
+  - type: textarea
+    id: change
+    attributes:
+      label: Intended change
+      description: >-
+        Describe the current limitation, the improvement to make, and any behavior or
+        contracts to preserve. A sentence is enough for a small task; an implementation
+        plan is optional.
+      placeholder: |
+        CI downloads the same dependencies on every run. Cache them to reduce setup time while keeping dependency versions and check results unchanged.
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: Which subsystem or topic does this concern, if known?
+      placeholder: CI, documentation, storage, test coverage
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and uncertainty
+      description: >-
+        Add relevant observations, measurements, or review findings. Distinguish
+        confirmed limitations from suspected ones, and a review's proposed fixes
+        from the scope chosen above. Link shareable evidence where available.
+      placeholder: |
+        Confirmed: setup logs show repeated dependency downloads.
+        Suspected: caching may save most of the setup time; measure before and after.
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        Describe observable completion and relevant behavior examples or validation.
+        Unknowns are fine at capture; clarify completion and material unresolved
+        choices before work begins.
+      placeholder: |
+        Repeat CI runs reuse cached dependencies, changed dependency versions refresh the cache, and the existing checks pass.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link source issues, reviews, or designs; note dependencies, unresolved choices,
+        and existing execution restrictions. For infrastructure changes or data
+        migrations, add rollout, verification, and recovery notes where relevant.
+      placeholder: |
+        Related issue or review:
+        Dependencies or unresolved choices:
+        Relevant execution restrictions or migration notes:
+    validations:
+      required: false

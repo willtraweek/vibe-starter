@@ -24,6 +24,9 @@ Keep shared rules consistent. If the two files conflict, surface the conflict in
 1. Clone: `{{CLONE_CMD: git clone <repo-url> && cd <dir>}}`
 2. Install deps: `{{INSTALL_CMD: e.g. bun install / uv sync / cargo build}}`
 3. Configure: `{{CONFIG_STEPS: env vars, API keys, local state — or "none"}}`
+4. GitHub issue intake: follow [Filing issues](docs/guides/filing-issues.md). Inspect the
+   repository's existing labels, show the target repository and missing type labels, and
+   ask the user to confirm before creating any. Preserve existing labels.
 
 ## Read this order
 
@@ -47,6 +50,8 @@ there is no such boundary yet, say so — and add one before exposing anything t
   `TESTING.md`.
 - If the project has a UI, align with `DESIGN.md` tokens — no hardcoded colors, fonts, or
   spacing.
+- When filing GitHub issues, follow [Filing issues](docs/guides/filing-issues.md). The same
+  category and content rules apply to browser forms, skills, and CLI/API submissions.
 
 ## Before shipping
 

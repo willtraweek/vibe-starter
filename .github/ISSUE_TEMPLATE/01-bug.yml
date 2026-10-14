@@ -1,0 +1,73 @@
+name: Bug / regression
+description: Report behavior that differs from what is intended.
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Brief reports are fine; use a concrete title such as "Export omits the final row."
+        Existing instructions and execution restrictions still apply.
+        Use the project's private security reporting channel for sensitive vulnerability details.
+        If no private route is documented, ask a maintainer for one without posting vulnerability details.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed and intended behavior
+      description: >-
+        What happened, and what should have happened? A root cause and a full
+        reproduction are not needed to report a bug.
+      placeholder: >-
+        Exporting three rows produces a file with two rows. The file should
+        include all three rows.
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area or topic
+      description: The affected part of the project, if known.
+      placeholder: Export
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reproduction, evidence, and environment
+      description: >-
+        Share any known steps, frequency, screenshots, sanitized logs, or accessible
+        links. Include relevant version, platform, or configuration and when this
+        last worked, if known. Partial evidence is useful.
+      placeholder: >-
+        Open a three-row sample and export it. Seen twice on version 2.1;
+        version 2.0 included all rows. Attach the sample and output with sensitive
+        data removed.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who or what is affected, how often, and is there a workaround?
+      placeholder: Reports are incomplete. Adding the missing row manually is a workaround.
+    validations:
+      required: false
+  - type: textarea
+    id: completion
+    attributes:
+      label: Done when
+      description: >-
+        Describe observable behavior that would confirm the fix. This can be
+        clarified before work starts.
+      placeholder: Exporting the three-row sample includes every row exactly once.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: >-
+        Link related issues, reviews, or designs; note dependencies, unresolved
+        choices, and existing execution restrictions. Separate observations and
+        suggested fixes from agreed scope.
+    validations:
+      required: false
