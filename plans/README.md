@@ -30,11 +30,11 @@ acceptance of the combined tree.
 | [004](004-agents-md-only.md) | Keep `AGENTS.md` and `CLAUDE.md`; require agents entering through either to read both | P1 | S | 001, 002, 003 | DONE (6 new tests; suite: 80 passed, 0 failed, 0 skipped) |
 | [005](005-template-maintainer-mode.md) | Separate the template's own VERSION/CHANGELOG/TODOS from the new-project skeletons so gstack `/ship` is safe here | P1 | M | 001–004 | DONE (28 tests: the plan's 10 + 12 from review + 6 from /ship; suite: 108 passed, 0 failed, 0 skipped) |
 | [006](006-stack-packs-python.md) | Opt-in stack packs in `bootstrap` (`--stack`), starting with Python: uv, ruff, ty, pytest, 90% line+branch floor, tier gates | P2 | L | 001–005 | DONE (35 tests: the plan's 8 + 5 from review + 22 from /ship; suite: 143 passed, 0 failed, 0 skipped) |
-| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | IN PROGRESS (implementation integrated; acceptance pending) |
-| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | IN PROGRESS (implementation integrated; acceptance pending) |
-| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | IN PROGRESS (implementation integrated; acceptance pending) |
-| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | IN PROGRESS (implementation integrated; acceptance pending) |
-| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | IN PROGRESS (implementation integrated; acceptance pending) |
+| [007](007-stack-pack-rust.md) | Rust stack pack: pinned toolchain, clippy pedantic, rustfmt, cargo-llvm-cov floors and tier gates | P2 | M | 006 | DONE (PR #22 integration; acceptance evidence below) |
+| [008](008-omarchy-app-pack.md) | `omarchy-app` pack (Rust + GPUI + gpui-omarchy); packs list what they build in `--help` and the prompt; `CHECK_CI` for guards; a `heavy` CI job | P2 | L | 006, 007 | DONE (PR #22 integration; acceptance evidence below) |
+| [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | DONE (PR #22 integration; acceptance evidence below) |
+| [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | DONE (PR #22 integration; acceptance evidence below) |
+| [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | DONE (PR #22 integration; acceptance evidence below) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -53,6 +53,17 @@ Heavy validation used isolated Ubuntu 24.04 ARM64 with the pinned tools; hosted 
 live Omarchy desktop session are separate evidence. Review still found unresolved Foldkit
 requirements from issue #20 and an Omarchy validator-cache publication race, so these results
 do not mark plans 007–011 accepted or ready to merge.
+
+**Integration acceptance, 2026-10-13.** PR #22 records dispositions for all 28 findings of
+issue #20 and the additional integration review findings. The integrated feature commit
+`995c8bcf924a2eba516b1b5dc2a9c98e0ccc2c14` passed **211 light tests** (the 7 heavy
+cases explicitly excluded) and **all 7 heavy tests**, with **0 failures and 0 skips**.
+`./scripts/check.sh` and CI's exact ShellCheck 0.11.0 command passed. Hosted `selftest`
+and `heavy` both passed in [run 38503356911](https://github.com/willtraweek/vibe-starter/actions/runs/38503356911).
+This satisfies Plan 011's replacement acceptance gate for plans 007–011. This index update
+is the final documentation revision; it must also pass hosted checks before merge. PR #22
+remains unmerged for the maintainer. Earlier validation entries and the "Not audited" list
+record the historical planning-stage evidence, not the current integration's results.
 
 **Plan 004 revision, 2026-09-24.** The maintainer chose to retain both substantive instruction
 files with reciprocal required reading and an explicit read-once rule. `CLAUDE.md` keeps
