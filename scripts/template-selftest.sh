@@ -4797,6 +4797,98 @@ fk_node() {  # $1 = dir, rest = node args, run there -> "$1.node.out"
 fk_json() {  # $1 = JSON file, $2 = a JS statement over `c` (the parsed file); rewrites it
   node -e 'const fs = require("fs"); const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); eval(process.argv[2]); fs.writeFileSync(process.argv[1], JSON.stringify(c, null, 2) + "\n")' "$1" "$2"
 }
+fk_rules() {  # $1 = dir from foldkit_files, stdin = probe cases calling check(); runs them there
+  # The probe sits beside the project: check-rules reads every script inside it.
+  { cat <<'HARNESS'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+// A backslash, for escape sequences in fixture source.
+const bs = String.fromCharCode(92)
+const stash = `${process.cwd()}.stash`
+// check(files, status, ...texts): write files (null removes a file or directory),
+// run scripts/check-rules.mjs, expect its exit status and every text in its
+// output, then put the project back.
+const check = (files, status, ...texts) => {
+  const undo = []
+  for (const [path, content] of Object.entries(files)) {
+    const saved = `${stash}/${undo.length}`
+    mkdirSync(stash, { recursive: true })
+    const existed = existsSync(path)
+    if (existed) {
+      renameSync(path, saved)
+    }
+    const created = content === null ? undefined : mkdirSync(dirname(path), { recursive: true })
+    if (content !== null) {
+      writeFileSync(path, content)
+    }
+    undo.push(() => {
+      rmSync(created ?? path, { recursive: true, force: true })
+      if (existed) {
+        renameSync(saved, path)
+      }
+    })
+  }
+  try {
+    const result = spawnSync(process.execPath, ['scripts/check-rules.mjs'], { encoding: 'utf8' })
+    const out = result.stdout + result.stderr
+    assert.equal(result.status, status, `${JSON.stringify(files)}:\n${out}`)
+    for (const text of texts) {
+      assert.ok(out.includes(text), `expected ${JSON.stringify(text)} after ${JSON.stringify(files)} in:\n${out}`)
+    }
+    assert.ok(!/^\s+at /m.test(out), `stack trace in: ${out}`)
+  } finally {
+    for (const step of undo.reverse()) {
+      step()
+    }
+  }
+}
+const lineOf = (text, needle) => text.slice(0, text.indexOf(needle)).split('\n').length
+HARNESS
+    cat
+    echo "console.log('check-rules probes passed')"
+  } > "$1.rules.mjs" || return 1
+  fk_node "$1" "$1.rules.mjs" || fail "check-rules probes failed: $(tail -25 "$1.node.out")" || return 1
+  assert_contains "$1.node.out" "check-rules probes passed"
+}
+fk_installed() {  # $1 = dir from foldkit_files: node_modules as pnpm install leaves it, each dependency at its pin
+  fk_node "$1" -e '
+    const fs = require("fs")
+    const p = JSON.parse(fs.readFileSync("package.json", "utf8"))
+    const deps = { ...p.dependencies, ...p.devDependencies }
+    for (const [name, version] of Object.entries(deps)) {
+      const peerDependencies = name === "foldkit" ? { effect: deps.effect, "@effect/platform-browser": deps["@effect/platform-browser"] } : {}
+      fs.mkdirSync("node_modules/" + name, { recursive: true })
+      fs.writeFileSync("node_modules/" + name + "/package.json", JSON.stringify({ name, version, peerDependencies }) + "\n")
+    }'
+}
+fk_stub_pnpm() {  # $1 = bin dir: a pnpm for the guard's light tests
+  mkdir -p "$1" && cat > "$1/pnpm" <<'STUB' && chmod +x "$1/pnpm"
+#!/bin/sh
+# Logs each call to $FK_PNPM_LOG, runs $FK_PNPM_INSTALL for `pnpm install`, says
+# tsc is patched, and passes every other command.
+[ -z "${FK_PNPM_LOG:-}" ] || echo "$*" >> "$FK_PNPM_LOG"
+case "$1 $2 $3" in
+  install*) eval "${FK_PNPM_INSTALL:-:}" ;;
+  "exec tsc --version") echo 'Version 7.0.2+effect-tsgo' ;;
+esac
+STUB
+}
+fk_guard() {  # $1 = dir, rest = env assignments: the guard there, the stub pnpm from "$1.bin" first -> "$1.guard.out"
+  local dir="$1"; shift
+  (cd "$dir" && env PATH="$dir.bin:$(printenv PATH)" "$@" bash scripts/check.d/foldkit.sh) >"$dir.guard.out" 2>&1
+}
+# pnpm's supply-chain settings, read from the environment as pnpm_config_<name>
+# and PNPM_CONFIG_<NAME>: the guard and after-bootstrap clear every one first.
+FK_POLICY_SETTINGS="minimum_release_age minimum_release_age_exclude minimum_release_age_strict
+  minimum_release_age_ignore_missing_time trust_lockfile trust_policy trust_policy_exclude
+  trust_policy_ignore_after strict_dep_builds block_exotic_subdeps allow_builds dangerously_allow_all_builds"
+fk_policy_kept() {  # $1 = an `env` dump: fails if it holds any of those settings
+  ! grep -iE '^pnpm_config_(minimum_release_age|trust_|strict_dep_builds|block_exotic_subdeps|allow_builds|dangerously)' "$1" \
+    || fail "pnpm ran with a supply-chain setting from the environment"
+}
 foldkit_project() {  # $1 = dir, $2 = project name: a fresh copy bootstrapped with the foldkit pack
   fresh_copy "$1" || return 1
   (cd "$1" && HOME="$WORK/home" stack_env ./bootstrap --name "$2" --stack foldkit --yes </dev/null >"$1.out" 2>&1) \
@@ -5252,7 +5344,9 @@ PROBE
 test_stack_foldkit_pin_guard_fails_closed() {
   # scripts/check-pins.mjs keeps package.json in gstack's byte form and in step with
   # VERSION, every dependency exact and installed at its pin, and the Foldkit +
-  # Effect train aligned with what node_modules holds. A synthetic node_modules
+  # Effect train aligned with what node_modules holds, .foldkit-ref on the pinned
+  # release, and pnpm-workspace.yaml's supply-chain policy as the pack ships it
+  # (age exemptions only for pinned train releases). A synthetic node_modules
   # stands in for pnpm install. Every version comes from the pack's package.json,
   # so the test survives a train move.
   command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
@@ -5280,16 +5374,16 @@ test_stack_foldkit_pin_guard_fails_closed() {
   fk_node "$d" scripts/check-pins.mjs; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok" || return 1
-  for f in package.json VERSION .node-version; do cp "$d/$f" "$d.$f.orig" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d/$f" "$d.$f.orig" || return 1; done
   cp -R "$d/node_modules" "$d.node_modules.orig" || return 1
   # Each case: a mutation (run in the project, with the pins in its environment)
   # and the text its failure must contain (@FK@ and friends are the pins).
   # Regression case (the last): @foldkit/ui, a peer of @foldkit/devtools, had no
   # pin, so pnpm resolved it on its own and no check held it to the train.
   while IFS='|' read -r bad want; do
-    for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+    for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
     rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
-    (cd "$d" && FK="$fk" FK_NEXT="$fk_next" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
+    (cd "$d" && FK="$fk" FK_NEXT="$fk_next" EFFECT="$effect" VITE_NEXT="^$((vite_major + 1)).0.0" eval "$bad") \
       || fail "mutation failed: $bad" || return 1
     want="$(printf '%s' "$want" | sed "s/@FK_NEXT@/$fk_next/g; s/@FK@/$fk/g; s/@VP@/$vp/g; s/@EFFECT@/$effect/g; s/@VITE_NEXT@/^$((vite_major + 1)).0.0/g")"
     fk_node "$d" scripts/check-pins.mjs; rc=$?
@@ -5324,17 +5418,521 @@ node -e 'const fs=require("fs");const f="node_modules/@foldkit/vite-plugin/packa
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.peerDependencies={"left-pad":"github:alice-example/left-pad"};fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|left-pad must be pinned to an exact version, got "github:alice-example/left-pad"
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.devDependencies["@foldkit/devtools"]=process.env.FK_NEXT;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools @FK_NEXT@ must equal foldkit @FK@
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));delete p.devDependencies["@foldkit/ui"];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'|@foldkit/devtools needs @foldkit/ui as a peer: pin @foldkit/ui to foldkit @FK@
+perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 1439/' pnpm-workspace.yaml|pnpm-workspace.yaml: minimumReleaseAge must be a whole number of minutes, at least 1440 (a day), got "1439"
+perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 0x5a0/' pnpm-workspace.yaml|minimumReleaseAge must be a whole number of minutes, at least 1440 (a day), got "0x5a0"
+perl -ni -e 'print unless /^minimumReleaseAge:/' pnpm-workspace.yaml|pnpm-workspace.yaml must set minimumReleaseAge: a whole number of minutes
+printf 'minimumReleaseAge: 2880\n' >> pnpm-workspace.yaml|pnpm-workspace.yaml:8: minimumReleaseAge is given twice
+perl -pi -e "s/^trustPolicy: .*/trustPolicy: 'no-downgrade'/" pnpm-workspace.yaml|trustPolicy must be no-downgrade, got "'no-downgrade'"
+perl -pi -e 's/^trustPolicy: .*/trustPolicy: off/' pnpm-workspace.yaml|trustPolicy must be no-downgrade, got "off"
+perl -pi -e 's/^strictDepBuilds: .*/strictDepBuilds: false/' pnpm-workspace.yaml|strictDepBuilds must be true, got "false"
+perl -pi -e 's/^blockExoticSubdeps: .*/blockExoticSubdeps: false/' pnpm-workspace.yaml|blockExoticSubdeps must be true, got "false"
+perl -pi -e 's/^allowBuilds: .*/allowBuilds: { esbuild: true }/' pnpm-workspace.yaml|allowBuilds must be {}, got "{ esbuild: true }"
+printf 'dangerouslyAllowAllBuilds: true\n' >> pnpm-workspace.yaml|dangerouslyAllowAllBuilds is not a policy setting check-pins knows: adding one is a reviewed change to scripts/check-pins.mjs
+printf 'overrides:\n  vite: 1.0.0\n' >> pnpm-workspace.yaml|overrides is not a policy setting check-pins knows
+printf '\tminimumReleaseAge: 1440\n' >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+printf -- '---\n' >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+printf '  - foldkit@%s\n' "$FK" >> pnpm-workspace.yaml|check-pins cannot read this line unambiguously
+rm pnpm-workspace.yaml|pnpm-workspace.yaml is missing
+printf 'minimumReleaseAgeExclude:\n  - foldkit\n' >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit" must be an exact name@version (no bare name, scope or range)
+printf "minimumReleaseAgeExclude:\n  - '@foldkit/*'\n" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "@foldkit/*" must be an exact name@version
+printf 'minimumReleaseAgeExclude:\n  - foldkit@^%s\n' "$FK" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit@^@FK@" must be an exact name@version
+printf 'minimumReleaseAgeExclude:\n  - foldkit@%s\n' "$FK_NEXT" >> pnpm-workspace.yaml|minimumReleaseAgeExclude entry "foldkit@@FK_NEXT@": package.json pins foldkit @FK@
+printf 'minimumReleaseAgeExclude:\n  - vite@1.0.0\n' >> pnpm-workspace.yaml|only the Foldkit and Effect train (foldkit, @foldkit/*, effect, @effect/*) may skip the age rule
+printf "minimumReleaseAgeExclude:\n  - '@effect/platform-node@%s'\n" "$EFFECT" >> pnpm-workspace.yaml|package.json pins no @effect/platform-node
+printf 'minimumReleaseAgeExclude:\n  - foldkit@%s\n  - foldkit@%s\n' "$FK" "$FK" >> pnpm-workspace.yaml|minimumReleaseAgeExclude lists "foldkit@@FK@" twice
+printf 'minimumReleaseAgeExclude: [foldkit]\n' >> pnpm-workspace.yaml|write minimumReleaseAgeExclude as a block list
+printf 'minimumReleaseAgeExclude:\n  - @effect/vitest@%s\n' "$EFFECT" >> pnpm-workspace.yaml|quote a scoped name
+printf '%s 0123456789abcdef0123456789abcdef01234567\n' "$FK_NEXT" > .foldkit-ref|.foldkit-ref records foldkit @FK_NEXT@, package.json pins @FK@: a train move updates both
+printf '%s 0123456789abcdef0123456789abcdef01234567\n\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line, "<version> <40-character lowercase commit>"
+printf '%s 0123456789abcdef0123456789abcdef01234567' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf '%s 0123456789ABCDEF0123456789abcdef01234567\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf '%s 0123456789abcdef\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+printf 'foldkit@%s 0123456789abcdef0123456789abcdef01234567\n' "$FK" > .foldkit-ref|.foldkit-ref must be one line
+rm .foldkit-ref|.foldkit-ref is missing
 CASES
   # Regression test. gstack's four-part VERSION (a MICRO release) leaves
   # package.json at its npm form, the first three parts; check-pins refused it.
   # An exactly pinned optional dependency may be absent: pnpm skips one off-platform.
-  for f in package.json VERSION .node-version; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
   rm -rf "$d/node_modules" && cp -R "$d.node_modules.orig" "$d/node_modules" || return 1
   printf '%s.7\n' "$(cat "$d/VERSION")" > "$d/VERSION"
   fk_json "$d/package.json" 'c.optionalDependencies = { fsevents: "2.3.3" }' || return 1
   fk_node "$d" scripts/check-pins.mjs; rc=$?
   assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  assert_contains "$d.node.out" "check-pins: ok" || return 1
+  # Exact exemptions for the train releases package.json pins pass, quoted or not,
+  # with a note on when they go; so does a stricter age rule.
+  for f in package.json VERSION .node-version pnpm-workspace.yaml .foldkit-ref; do cp "$d.$f.orig" "$d/$f" || return 1; done
+  perl -pi -e 's/^minimumReleaseAge: .*/minimumReleaseAge: 2880/' "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - foldkit@%s  # remove once it is a day old\n  - '@foldkit/vite-plugin@%s'\n  - \"effect@%s\"\n" \
+    "$fk" "$vp" "$effect" >> "$d/pnpm-workspace.yaml"
+  fk_node "$d" scripts/check-pins.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
   assert_contains "$d.node.out" "check-pins: ok"
+}
+test_stack_foldkit_rules_keep_foldkit_out_of_domain_and_api() {
+  # Regression test (#20 items 6 and 23). The guard grepped src/domain and src/api
+  # for `from 'foldkit'`: a subpath, side-effect, dynamic or require import passed,
+  # and with src/api missing, grep's error counted as no match.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-boundary/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const leak = text => ({ 'src/domain/leak.ts': text })
+check({}, 0, 'check-rules: ok')
+check(leak("import { defineTaggedUnion } from 'foldkit/schema'\n"), 1,
+  'src/domain/leak.ts:1: loads "foldkit/schema": src/domain and src/api must not import foldkit', 'docs/guides/foldkit.md')
+check({ ...leak("import { Command } from 'foldkit'\n"), 'src/api': null }, 1, 'src/domain/leak.ts:1: loads "foldkit"')
+for (const [text, specifier] of [
+  ["import type { Html } from 'foldkit/html'\n", 'foldkit/html'],
+  ["export { Command } from '@foldkit/devtools'\n", '@foldkit/devtools'],
+  ["export * from 'foldkit'\n", 'foldkit'],
+  ["import 'foldkit'\n", 'foldkit'],
+  ["export const load = () => import('foldkit/html')\n", 'foldkit/html'],
+  ["export const load = () => import(`foldkit`)\n", 'foldkit'],
+  ["export const f = require('foldkit')\n", 'foldkit'],
+  ["import fk = require('foldkit')\n", 'foldkit'],
+  ['/// <reference types="foldkit" />\n', 'foldkit'],
+  ["import x from '../../node_modules/foldkit/dist/index.js'\n", '../../node_modules/foldkit/dist/index.js'],
+  [`import { x } from '${bs}u0066oldkit/schema'\n`, 'foldkit/schema'],
+  [`import { x } from '${bs}x66oldkit'\n`, 'foldkit'],
+  [`export const f = ${bs}u0072equire('foldkit')\n`, 'foldkit'],
+  ["const s = '//'\nexport const load = () => import('foldkit')\n", 'foldkit'],
+]) {
+  check(leak(text), 1, `loads ${JSON.stringify(specifier)}`)
+}
+check({ 'src/api/leak.mts': "export * from '@foldkit/ui'\n" }, 1, 'src/api/leak.mts:1: loads "@foldkit/ui"')
+// A module name the check can't read is refused.
+for (const text of [
+  'export const load = (name: string) => import(name)\n',
+  "export const load = () => import(`fold${'kit'}`)\n",
+  "export const f = require('fold' + 'kit')\n",
+]) {
+  check(leak(text), 1, 'of a computed module name')
+}
+// Comments, strings and regular expressions import nothing.
+check(leak("// import { Command } from 'foldkit'\n/* import('foldkit') */\nexport const hint = \"import { Command } from 'foldkit'\"\nexport const re = /from 'foldkit'/\n"), 0, 'check-rules: ok')
+// What the tokenizer cannot read fails closed.
+check(leak("export const s = 'unterminated\n"), 1, 'src/domain/leak.ts:1: check-rules cannot read this file: unterminated string')
+check(leak("export const f = (a: number) => {\n  switch (a) {\n    case 1: {}\n    /x/.test('y')\n  }\n}\n"), 1, 'cannot tell whether this / after } starts a regular expression')
+// So does a directory it cannot list (root reads it anyway).
+if (process.getuid?.() !== 0) {
+  mkdirSync('src/api/locked')
+  chmodSync('src/api/locked', 0)
+  try {
+    check({}, 1, 'src/api/locked:1: cannot read this directory')
+  } finally {
+    chmodSync('src/api/locked', 0o755)
+    rmSync('src/api/locked', { recursive: true })
+  }
+}
+PROBE
+}
+test_stack_foldkit_rules_refuse_module_mocks() {
+  # Regression test (#20 item 7). The guard grepped for `vi.mock(`: vi.doMock, an
+  # aliased import (`import { vi as v }`), a namespace import or an alias of vi
+  # mocked modules unseen.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-mocks/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const test = text => ({ 'src/mocked.test.ts': text })
+const NO_MOCK = 'no vi.mock, vi.doMock or vi.importMock'
+check({}, 0, 'check-rules: ok')
+for (const [text, call] of [
+  ["import { vi } from 'vitest'\n\nvi.mock('./main')\n", 'src/mocked.test.ts:3: vi.mock'],
+  ["vi.doMock('./main')\n", 'vi.doMock'],
+  ["import { vi } from 'vitest'\nawait vi.importMock('./main')\n", 'vi.importMock'],
+  ["import { vitest } from 'vitest'\nvitest.mock('./main')\n", 'vitest.mock'],
+  ["import { vi as v } from 'vitest'\nv.mock('./main')\n", 'v.mock'],
+  ["import { it, vi as mocker } from '@effect/vitest'\nmocker.doMock('./main')\n", 'mocker.doMock'],
+  ["import * as V from 'vitest'\nV.vi.mock('./main')\n", 'V.vi.mock'],
+  ["import * as E from '@effect/vitest'\nE.vitest.doMock('./main')\n", 'E.vitest.doMock'],
+  [`${bs}u0076i.mock('./main')\n`, 'vi.mock'],
+]) {
+  check(test(text), 1, `${call}: ${NO_MOCK}`)
+}
+// Any other use of vi, or of a vitest namespace, could hide a mock.
+for (const [text, shown] of [
+  ["import { vi } from 'vitest'\nconst v = vi\nv.mock('./main')\n", 'vi'],
+  ["import { vi } from 'vitest'\nregister(vi)\n", 'vi'],
+  ["import { vi } from 'vitest'\nvi['mock']('./main')\n", 'vi'],
+  ["import { vi } from 'vitest'\nconst { mock } = vi\n", 'vi'],
+  ["import * as V from 'vitest'\nconst t = V\n", 'V'],
+  ["import * as V from 'vitest'\nV['vi'].mock('./main')\n", 'V'],
+  ["import * as V from 'vitest'\nconst v = V.vi\n", 'V.vi'],
+]) {
+  check(test(text), 1, `${shown} is used other than as ${shown}.<method>(...)`)
+}
+check({ 'src/test-utils.ts': "export { vi } from 'vitest'\n" }, 1, 're-exports vi from vitest')
+check({ 'src/test-utils.ts': "export * from '@effect/vitest'\n" }, 1, 're-exports vi from @effect/vitest')
+check({ 'src/test-utils.ts': "import { vi } from 'vitest'\nexport { vi }\n" }, 1, 'vi is used other than')
+check(test("const { vi } = await import('vitest')\n"), 1, 'import() loads vitest: import { vi } statically')
+check(test("import vitest from 'vitest'\n"), 1, 'a default import from vitest')
+check({ 'e2e/mocked.spec.ts': "import { vi } from 'vitest'\nvi.mock('./x')\n" }, 1, `e2e/mocked.spec.ts:2: vi.mock: ${NO_MOCK}`)
+// Spies, fakes and typed fns are fine; so are comments, strings and other objects' mock().
+check(test([
+  "import { vi } from 'vitest'",
+  'const spy = vi.fn<() => number>()',
+  "vi.spyOn(console, 'log')",
+  'vi.useFakeTimers()',
+  'type Spy = typeof vi.fn',
+  "// vi.mock('./main')",
+  "export const s = \"vi.mock('./main')\"",
+  'declare const lib: { mock: (path: string) => void }',
+  "lib.mock('./main')",
+  '',
+].join('\n')), 0, 'check-rules: ok')
+PROBE
+}
+test_stack_foldkit_rules_keep_the_devtools_relay_off() {
+  # Regression test (#20 item 22, P1). The guard skipped any vite.config.ts line
+  # holding `devToolsMcpPort: false` and read no other file: an alias
+  # (`devToolsMcpPort: falsePort`), the text in a trailing comment, a second
+  # config or `vite --config` opened the unauthenticated relay unseen.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-relay/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const PLUGIN = '@foldkit/vite-plugin'
+const RELAY = ['docs/guides/foldkit.md', 'extend scripts/check-rules.mjs if the change is safe']
+const vite = readFileSync('vite.config.ts', 'utf8')
+const CALL = 'foldkit({ devToolsMcpPort: false })'
+assert.ok(vite.includes(CALL) && vite.includes(`import { foldkit } from '${PLUGIN}'`), 'the starter vite.config.ts changed: update this test')
+const config = (from, to) => ({ 'vite.config.ts': vite.replace(from, to) })
+check({}, 0, 'check-rules: ok')
+// The token-protected relay, and a formatter's trailing commas.
+check(config(CALL, 'foldkit()'), 0, 'check-rules: ok')
+check(config(CALL, 'foldkit({\n      devToolsMcpPort: false,\n    },)'), 0, 'check-rules: ok')
+check(config(`[${CALL}]`, '[\n    foldkit({ devToolsMcpPort: 9988 }), // foldkit({ devToolsMcpPort: false })\n  ]'), 1,
+  `vite.config.ts:${lineOf(vite, CALL) + 1}: foldkit(...) takes another argument than { devToolsMcpPort: false } or none`)
+for (const call of [
+  'foldkit({ devToolsMcpPort: 9988 })',
+  'foldkit({ devToolsMcpPort: falsePort })',
+  "foldkit({ devToolsMcpPort: 'false' })",
+  'foldkit({ devToolsMcpPort: false, ...relay })',
+  'foldkit({ devToolsMcpPort: false && 9988 })',
+]) {
+  check(config(CALL, call), 1, `vite.config.ts:${lineOf(vite, CALL)}: foldkit(...) takes another argument than { devToolsMcpPort: false } or none`,
+    'a numeric devToolsMcpPort opens an unauthenticated DevTools relay', ...RELAY)
+}
+// The foldkit binding appears only in its import and the one call.
+for (const [from, to, text] of [
+  ['export default', 'const relay = foldkit\nexport const extra = relay({ devToolsMcpPort: 3001 })\n\nexport default', 'uses foldkit other than as the one plugin call'],
+  [CALL, 'foldkit.call(null, { devToolsMcpPort: 3001 })', 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, ...[foldkit].map(plugin => plugin({ devToolsMcpPort: 3001 }))`, 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, wrap({ foldkit })`, 'uses foldkit other than as the one plugin call'],
+  [CALL, `${CALL}, foldkit({ devToolsMcpPort: 3001 })`, 'calls foldkit(...) 2 times'],
+  ['import { foldkit } from', 'import { foldkit as fk } from', `imports ${PLUGIN} other than as import { foldkit } from`],
+  [`import { foldkit } from '${PLUGIN}'`, `import foldkit from '${PLUGIN}'`, `imports ${PLUGIN} other than as`],
+  [`import { foldkit } from '${PLUGIN}'`, `import * as plugin from '${PLUGIN}'\nconst { foldkit } = plugin`, `imports ${PLUGIN} other than as`],
+  [`import { foldkit } from '${PLUGIN}'`, `import { foldkit } from '${PLUGIN}'\nimport '${PLUGIN}'`, `imports ${PLUGIN} other than as`],
+  ['export default', "const plugin = await import(`@foldkit/${'vite-plugin'}`)\n\nexport default", 'import() of a computed module name, which check-rules cannot follow'],
+]) {
+  check(config(from, to), 1, text, ...RELAY)
+}
+check({ 'vite.config.ts': null }, 1, 'vite.config.ts:1: is missing')
+// Nothing else loads the plugin, however the name is spelled.
+for (const [file, text] of [
+  ['scripts/dev.mjs', `const { foldkit } = await import('${PLUGIN}')\n`],
+  ['scripts/dev.mjs', 'await import(`' + PLUGIN + '`)\n'],
+  ['scripts/dev.mjs', `await import('${bs}u0040foldkit/vite-plugin')\n`],
+  ['scripts/dev.cjs', `const { foldkit } = require('${PLUGIN}')\n`],
+  ['src/plugin.ts', `export { foldkit } from '${PLUGIN}'\n`],
+  ['vitest.config.ts', `import { foldkit } from '${PLUGIN}'\n`],
+]) {
+  check({ [file]: text }, 1, `${file}:1: names ${PLUGIN}: only vite.config.ts loads it, once`, ...RELAY)
+}
+// Only the root vite.config.ts configures Vite...
+for (const file of ['vite.config.mjs', 'vite.config.js', 'tools/vite.config.ts', 'e2e/vite.config.mts']) {
+  check({ [file]: 'export default {}\n' }, 1, `${file}:1: only the root vite.config.ts may configure Vite`, ...RELAY)
+}
+// ...outside generated and vendored trees and other repositories (a worktree).
+check({
+  'node_modules/x/vite.config.ts': 'export default {}\n',
+  'dist/vite.config.js': 'export default {}\n',
+  'repos/foldkit/vite.config.ts': `import { foldkit } from '${PLUGIN}'\n`,
+  '.claude/worktrees/w/.git': 'gitdir: /elsewhere\n',
+  '.claude/worktrees/w/vite.config.ts': `import { foldkit } from '${PLUGIN}'\n`,
+}, 0, 'check-rules: ok')
+// ...and nothing points vite at another config.
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+const script = command => ({ 'package.json': `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, dev: command } }, null, 2)}\n` })
+for (const command of ['vite --config other.ts', 'vite -c other.ts', 'vite build --config=other.ts', 'pnpm exec vite preview -c=other.ts', 'node node_modules/vite/bin/vite.js --config other.ts']) {
+  check(script(command), 1, 'script "dev" must be a command that passes no --config to vite', ...RELAY)
+}
+check(script('vite --port 3001 && vitest --config vitest.config.ts'), 0, 'check-rules: ok')
+const playwright = readFileSync('playwright.config.ts', 'utf8')
+const [web, command] = /command: '([^']*)'/.exec(playwright) ?? []
+assert.ok(web !== undefined && command.includes('vite'), 'playwright.config.ts has no webServer command: update this test')
+check({ 'playwright.config.ts': playwright.replace(web, `command: '${command.replace('vite build', 'vite build -c other.ts')}'`) }, 1,
+  `playwright.config.ts:${lineOf(playwright, web)}: a command passes --config to vite`, ...RELAY)
+check({ 'playwright.config.ts': playwright.replace(web, 'command: `vite build ${process.env.FLAGS}`') }, 1, 'the webServer command must be one plain string')
+PROBE
+}
+test_stack_foldkit_rules_pin_the_devtools_mcp() {
+  # Regression test (#20 item 7). The guard grepped .mcp.json for npx: `pnpm dlx`,
+  # pnpx, bunx or yarn dlx ran an unpinned MCP server, and .cursor/mcp.json and
+  # .vscode/mcp.json went unread.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-mcp/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const BIN = 'node_modules/.bin/foldkit-devtools-mcp'
+const servers = (key, server) => `${JSON.stringify({ [key]: { 'foldkit-devtools': server } }, null, 2)}\n`
+for (const [file, key] of [['.mcp.json', 'mcpServers'], ['.cursor/mcp.json', 'mcpServers'], ['.vscode/mcp.json', 'servers']]) {
+  check({ [file]: servers(key, { command: BIN }) }, 0, 'check-rules: ok')
+  check({ [file]: servers(key, { type: 'stdio', command: BIN, env: { DEBUG: '1' } }) }, 0, 'check-rules: ok')
+  for (const server of [
+    { command: 'npx', args: ['-y', '@foldkit/devtools-mcp'] },
+    { command: 'pnpm', args: ['dlx', '@foldkit/devtools-mcp@latest'] },
+    { command: 'pnpx', args: ['@foldkit/devtools-mcp'] },
+    { command: 'bunx', args: ['@foldkit/devtools-mcp'] },
+    { command: 'yarn', args: ['dlx', '@foldkit/devtools-mcp'] },
+    { command: BIN, args: ['--port', '9988'] },
+    { command: 'sh', args: ['-c', BIN] },
+    { command: 'npx', args: ['-y', '$PACKAGE'], env: { PACKAGE: '@foldkit/devtools-mcp' } },
+  ]) {
+    check({ [file]: servers(key, server) }, 1, `${file}:3: server "foldkit-devtools" must call the pinned local bin`, 'docs/guides/foldkit.md')
+  }
+  check({ [file]: '{ "mcpServers": {' }, 1, `${file}:1: is not valid JSON`)
+}
+// Other servers are not this check's business.
+check({ '.mcp.json': servers('mcpServers', { command: 'npx', args: ['-y', 'some-server'] }) }, 0, 'check-rules: ok')
+check({ '.mcp.json': JSON.stringify({ mcpServers: [] }) }, 1, '.mcp.json:1: mcpServers must be an object')
+PROBE
+}
+test_stack_foldkit_rules_keep_src_to_ts_modules() {
+  # Regression test (Codex review CX4). Coverage measures src/**/*.ts only, so a
+  # .mts, .tsx or .js module under src escaped every floor while tests passed.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-sources/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+for (const ext of ['mts', 'cts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'd.mts']) {
+  check({ [`src/domain/extra.${ext}`]: 'export const x = 1\n' }, 1, `src/domain/extra.${ext}:1: coverage measures src/**/*.ts only`)
+}
+check({ 'src/domain/extra.ts': 'export const x = 1\n', 'src/domain/extra.d.ts': 'export {}\n', 'scripts/tool.mjs': 'export const x = 1\n' }, 0, 'check-rules: ok')
+PROBE
+}
+test_stack_foldkit_guard_runs_its_checkers_first() {
+  # The guard runs check-rules.mjs, and before any pnpm command (cheapest first):
+  # a module mock fails it offline. A stub pnpm and a faked install stand in.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-guard-order/demo" rc
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  fk_guard "$d"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.guard.out"; return 1; }
+  assert_contains "$d.guard.out" "check-rules: ok" || return 1
+  printf "vi.doMock('./main')\n" > "$d/src/mocked.test.ts"
+  fk_guard "$d" FK_PNPM_LOG="$d.pnpm.log"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "src/mocked.test.ts:1: vi.doMock: no vi.mock" || return 1
+  assert_absent "$d.pnpm.log"
+}
+test_stack_foldkit_guard_reports_lockfile_failures_accurately() {
+  # Regression test (#20 item 26). The lockfile check gave its 24-hour advice for
+  # every supply-chain failure, a tampered tarball URL included, with pnpm's help
+  # cut; and pnpm_config_* settings in the environment beat pnpm-workspace.yaml
+  # (pnpm_config_trust_lockfile=true skips the policy check altogether).
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-guard-lockfile/demo" rc setting policy=()
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  # pnpm 12.6.0's reports, abridged.
+  cat > "$d.age" <<'OUT'
+Error: ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION
+  -> 1 lockfile entries failed verification:
+       foldkit@0.165.0 was published at 2026-10-01T01:47:28.062Z, within the minimumReleaseAge cutoff (2026-10-12T22:58:36.307Z)
+  help: The lockfile contains entries that the active policies reject. [...]
+        Alternatively, relax the policy that flagged them.
+OUT
+  cat > "$d.url" <<'OUT'
+Error: ERR_PNPM_LOCKFILE_RESOLUTION_VERIFICATION
+  -> 1 lockfile entries failed verification:
+       foldkit@0.165.0 has a tarball URL (https://registry.npmjs.org/foldkit/-/foldkit-0.0.1.tgz) that does not match the registry's published metadata
+  help: The lockfile contains entries that the active policies reject. [...]
+        Alternatively, relax the policy that flagged them.
+OUT
+  printf 'Error: ERR_PNPM_TRUST_DOWNGRADE\n  help: Check who published it.\n' > "$d.trust"
+  printf 'Error: ERR_PNPM_OUTDATED_LOCKFILE\n  -> pnpm-lock.yaml is not up to date with package.json.\n  help: Regenerate the lockfile.\n' > "$d.stale"
+  fk_guard "$d" FK_PNPM_INSTALL="cat '$d.age'; exit 1"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "foldkit@0.165.0 was published at" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than pnpm-workspace.yaml's minimumReleaseAge" || return 1
+  assert_not_contains "$d.guard.out" "relax the policy" || return 1
+  assert_not_contains "$d.guard.out" "tampered" || return 1
+  for f in url trust; do
+    fk_guard "$d" FK_PNPM_INSTALL="cat '$d.$f'; exit 1"; rc=$?
+    assert_exit 1 "$rc" || return 1
+    assert_contains "$d.guard.out" "$(sed -n 's/^  help: //p' "$d.$f")" || return 1
+    assert_contains "$d.guard.out" "pnpm-lock.yaml or a dependency may have been tampered with" || return 1
+    assert_not_contains "$d.guard.out" "minimumReleaseAge, 24 hours" || return 1
+  done
+  assert_contains "$d.guard.out" "ERR_PNPM_TRUST_DOWNGRADE" || return 1
+  fk_guard "$d" FK_PNPM_INSTALL="cat '$d.stale'; exit 1"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "help: Regenerate the lockfile." || return 1
+  assert_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date with package.json" || return 1
+  assert_not_contains "$d.guard.out" "tampered" || return 1
+  # Every policy setting, in both spellings pnpm reads, is cleared; others stay.
+  for setting in $FK_POLICY_SETTINGS; do
+    policy+=("pnpm_config_$setting=1" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')=1")
+  done
+  fk_guard "$d" "${policy[@]}" pnpm_config_store_dir=/tmp/kept FK_PNPM_INSTALL="env > '$d.env'"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.guard.out"; return 1; }
+  assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
+  fk_policy_kept "$d.env"
+}
+test_stack_foldkit_bootstrap_installs_under_the_file_policy() {
+  # Regression test (#20 items 11 and 26). pnpm reads pnpm_config_* settings from
+  # the environment over pnpm-workspace.yaml, so a shell that exported
+  # pnpm_config_minimum_release_age=0 (as the guide advised) resolved bootstrap's
+  # install without the age rule. Network tools are stubs; pnpm logs its env.
+  local d="$WORK/stack-foldkit-bootstrap-policy/demo-app" setting policy=()
+  mkdir -p "$d.stub" "$WORK/home" || return 1
+  cat > "$d.stub/pnpm" <<'STUB'
+#!/bin/sh
+[ "$1" != install ] || env > "$FK_ENV"
+exit 1
+STUB
+  printf '#!/bin/sh\nexit 1\n' > "$d.stub/node"
+  chmod +x "$d.stub/pnpm" "$d.stub/node" || return 1
+  fresh_copy "$d" || return 1
+  for setting in $FK_POLICY_SETTINGS; do
+    policy+=("pnpm_config_$setting=1" "PNPM_CONFIG_$(printf '%s' "$setting" | tr '[:lower:]' '[:upper:]')=1")
+  done
+  # run_bootstrap's sandbox, with the settings in bootstrap's environment.
+  (cd "$d" && env "${policy[@]}" pnpm_config_store_dir=/tmp/kept FK_ENV="$d.env" PATH="$d.stub:$(printenv PATH)" \
+    HOME="$WORK/home" ./bootstrap --name "Demo App" --stack foldkit --yes </dev/null >"$d.out" 2>&1) \
+    || fail "bootstrap exited $?: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "pnpm install failed" || return 1
+  assert_contains "$d.env" "pnpm_config_store_dir=/tmp/kept" || return 1
+  fk_policy_kept "$d.env"
+}
+test_stack_foldkit_scripts_need_node_22() {
+  # Regression test (#20 item 14). The guard, coverage.sh and vendor-foldkit.sh
+  # run the Node on PATH, not the one pnpm pins; with none, or one too old for the
+  # checkers, they died on "command not found" or a syntax error. Each now stops
+  # before any other command and says what to install.
+  local d="$WORK/stack-foldkit-node/demo" script version rc
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  mkdir -p "$d.bin" || return 1
+  cat > "$d.bin/node" <<'STUB'
+#!/bin/sh
+# Answers --version with $FK_NODE_VERSION (unset: fails silently, like no node);
+# logs any other call.
+if [ "$1" = --version ] && [ -n "${FK_NODE_VERSION:-}" ]; then echo "$FK_NODE_VERSION"; exit 0; fi
+[ "$1" = --version ] || echo "node $*" >> "$FK_LOG"
+exit 99
+STUB
+  cat > "$d.bin/pnpm" <<'STUB'
+#!/bin/sh
+echo "pnpm $*" >> "$FK_LOG"
+STUB
+  cat > "$d.bin/git" <<'STUB'
+#!/bin/sh
+echo "git $*" >> "$FK_LOG"
+exit 1
+STUB
+  chmod +x "$d.bin/node" "$d.bin/pnpm" "$d.bin/git" || return 1
+  for version in v20.11.1 v21.7.3 ''; do
+    for script in scripts/check.d/foldkit.sh scripts/coverage.sh scripts/vendor-foldkit.sh; do
+      rm -f "$d.log"
+      (cd "$d" && FK_NODE_VERSION="$version" FK_LOG="$d.log" PATH="$d.bin:$(printenv PATH)" bash "$script") >"$d.out" 2>&1; rc=$?
+      assert_exit 1 "$rc" || { echo "    ($script with node ${version:-missing})"; return 1; }
+      assert_contains "$d.out" "Node.js 22 or newer must be on PATH" || return 1
+      assert_contains "$d.out" "(found: ${version:-none})" || return 1
+      assert_absent "$d.log" || { echo "    $script ran: $(cat "$d.log")"; return 1; }
+    done
+  done
+}
+test_stack_foldkit_network_steps_time_out() {
+  # Regression test (#20 item 24). Offline with a cold cache, bootstrap's pnpm
+  # install, the guard's lockfile check and vendoring's git clone could wait
+  # without end (a 420-second hang was seen). Stubs that sleep past a one-second
+  # limit stand in for the network.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-timeouts/demo" b="$WORK/stack-foldkit-timeouts/boot/demo-app" rc
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  fk_guard "$d" FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5'; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "the lockfile check timed out after 1s (offline?" || return 1
+  mkdir -p "$d.git" && cat > "$d.git/git" <<'STUB' && chmod +x "$d.git/git" || return 1
+#!/bin/sh
+# Hangs on clone, as git can offline.
+[ "$1" = -c ] && shift 2
+[ "$1" != clone ] || exec sleep 5
+exit 1
+STUB
+  (cd "$d" && FOLDKIT_TEST_TIMEOUT=1 PATH="$d.git:$(printenv PATH)" bash scripts/vendor-foldkit.sh) >"$d.out" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] || fail "vendor-foldkit.sh passed with git hanging" || return 1
+  assert_contains "$d.out" "vendor-foldkit: git clone timed out after 1s (offline?)" || return 1
+  assert_absent "$d/repos" || return 1
+  # Bootstrap's install; node fails, so vendoring stays offline too.
+  printf '#!/bin/sh\nexit 1\n' > "$d.bin/node" && chmod +x "$d.bin/node" || return 1
+  fresh_copy "$b" || return 1
+  FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5' PATH="$d.bin:$(printenv PATH)" \
+    run_bootstrap "$b" --name "Demo App" --stack foldkit --yes || fail "bootstrap exited $?: $(tail -5 "$b.out")" || return 1
+  assert_contains "$b.out" "pnpm install timed out after 1s (offline?)"
+}
+test_stack_foldkit_vendoring_checks_the_release_commit() {
+  # Regression test (#20 item 12; security review SE2). vendor-foldkit.sh trusted
+  # the release tag, which can move, and deleted the clone's .git: repos/foldkit
+  # then sat in this project's repository, and Foldkit's `prepare`
+  # (simple-git-hooks) run there wrote this project's .git/hooks. A stub git
+  # stands in for GitHub.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-vendor/demo" real_git commit pin rc
+  real_git="$(command -v git)"
+  { foldkit_files "$d" && git -C "$d" init -q; } || fail "fixture setup failed" || return 1
+  read -r pin commit < "$d/.foldkit-ref" || fail "cannot read .foldkit-ref" || return 1
+  mkdir -p "$d.bin" || return 1
+  cat > "$d.bin/git" <<STUB && chmod +x "$d.bin/git" || return 1
+#!/bin/sh
+# clone: a new repository holding Foldkit's hook-installing package.json and
+# agent files vendoring must drop; rev-parse HEAD: \$FK_COMMIT. Logs clones.
+[ "\$1" = -c ] && shift 2
+case "\$1" in
+  clone) echo clone >> "\$FK_LOG"; for a; do dest="\$a"; done
+    "$real_git" init -q "\$dest" || exit 1
+    echo '{"scripts":{"prepare":"simple-git-hooks"},"simple-git-hooks":{"commit-msg":"exit 1"}}' > "\$dest/package.json"
+    mkdir -p "\$dest/.claude" "\$dest/packages/app" || exit 1
+    touch "\$dest/AGENTS.md" "\$dest/.mcp.json" "\$dest/.claude/settings.json" "\$dest/packages/app/CLAUDE.md"
+    exit ;;
+  -C) [ "\$3" = sparse-checkout ] && exit 0
+    [ "\$3 \$4" = "rev-parse HEAD" ] && { echo "\$FK_COMMIT"; exit 0; } ;;
+esac
+exec "$real_git" "\$@"
+STUB
+  vendor() {  # $1 = the commit the tag names now
+    rm -f "$d.log"
+    (cd "$d" && FK_COMMIT="$1" FK_LOG="$d.log" PATH="$d.bin:$(printenv PATH)" bash scripts/vendor-foldkit.sh) >"$d.out" 2>&1
+  }
+  vendor 1111111111111111111111111111111111111111; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "the tag foldkit@$pin is commit 1111111111111111111111111111111111111111, but .foldkit-ref records $commit" || return 1
+  assert_absent "$d/repos" || return 1
+  vendor "$commit"; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.out"; return 1; }
+  assert_exists "$d/repos/foldkit/.git" || return 1
+  [ -z "$(find "$d/repos/foldkit" \( -name AGENTS.md -o -name CLAUDE.md -o -name .mcp.json -o -name .claude \) -print)" ] \
+    || fail "vendoring kept Foldkit's agent files" || return 1
+  # A hook installer run in the clone writes into the nearest .git above it, as
+  # simple-git-hooks 2.14 does: the clone's own, not this project's.
+  (cd "$d/repos/foldkit" && node -e 'const fs = require("fs"); const path = require("path"); let dir = process.cwd(); while (!fs.existsSync(path.join(dir, ".git"))) { dir = path.dirname(dir) } fs.mkdirSync(path.join(dir, ".git", "hooks"), { recursive: true }); fs.writeFileSync(path.join(dir, ".git", "hooks", "commit-msg"), "exit 1\n")') \
+    || fail "the hook installer failed" || return 1
+  assert_exists "$d/repos/foldkit/.git/hooks/commit-msg" || return 1
+  assert_absent "$d/.git/hooks/commit-msg" || return 1
+  # .foldkit-ref is read strictly, before any clone.
+  printf '0.0.1 %s\n' "$commit" > "$d/.foldkit-ref"
+  vendor "$commit"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".foldkit-ref records foldkit 0.0.1, package.json pins $pin" || return 1
+  printf '%s %s\n# reviewed\n' "$pin" "$commit" > "$d/.foldkit-ref"
+  vendor "$commit"; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" ".foldkit-ref must be one line" || return 1
+  assert_absent "$d.log"
 }
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
@@ -5349,6 +5947,7 @@ test_stack_foldkit_bootstrap_takes_its_offline_path() {
   PATH="$d.stub:$(printenv PATH)" run_bootstrap "$d" --name "Demo App" --stack foldkit --yes \
     || fail "bootstrap exited $?: $(tail -20 "$d.out")" || return 1
   assert_contains "$d.out" "pnpm install failed" || return 1
+  assert_contains "$d.out" "vendor-foldkit: Node.js 22 or newer must be on PATH (found: none)" || return 1
   assert_contains "$d.out" "Vendoring Foldkit failed (offline?)" || return 1
   assert_contains "$d/.bootstrapped" "with the foldkit stack pack" || return 1
   for f in scripts/coverage.sh scripts/check.d/foldkit.sh scripts/vendor-foldkit.sh; do
@@ -5489,6 +6088,10 @@ test_heavy_stack_foldkit_project_is_green_on_first_run() {
     || fail "repos/foldkit is not the pinned release: $(tail -5 "$d.out")" || return 1
   [ -z "$(find "$d/repos/foldkit" \( -name AGENTS.md -o -name CLAUDE.md -o -name .mcp.json -o -name .claude -o -name .agents -o -path "$d/repos/foldkit/repos" \) -print)" ] \
     || fail "the vendored Foldkit carries agent files or its Effect copy" || return 1
+  # repos/foldkit is its own repository, checked out at the commit .foldkit-ref records.
+  assert_exists "$d/repos/foldkit/.git" || return 1
+  [ "$(git -C "$d/repos/foldkit" rev-parse HEAD 2>/dev/null)" = "$(cut -d' ' -f2 "$d/.foldkit-ref")" ] \
+    || fail "repos/foldkit is not at .foldkit-ref's commit" || return 1
   (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
   # No placeholder survives in what git commits (node_modules and repos/ are ignored).
   for key in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$REPO/template/stacks/foldkit/commands") PROJECT_NAME PACKAGE_NAME YEAR; do
@@ -5562,7 +6165,7 @@ test_heavy_stack_foldkit_version_bump_keeps_the_gate_green() {
 test_heavy_stack_foldkit_guards_fail_closed() {
   # Each guard fails closed on the change it exists to stop, and passes again
   # once the change is reverted.
-  local d="$WORK/heavy-foldkit-guards/demo" why rc
+  local d="$WORK/heavy-foldkit-guards/demo" why rc pin all
   why="$(foldkit_heavy_ready)"
   [ -z "$why" ] || { skip "$why"; return; }
   foldkit_project "$d" demo || return 1
@@ -5594,13 +6197,21 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   (cd "$d" && git checkout -q -- . && git clean -qfd -e node_modules -e repos) || return 1
   printf "import { Command } from 'foldkit'\n\nexport const leak = Command\n" > "$d/src/domain/leak.ts"
   expect_guard_failure "src/domain and src/api must not import foldkit" "a foldkit import in src/domain" || return 1
+  printf "import { defineTaggedUnion } from 'foldkit/schema'\n\nexport const Leak = defineTaggedUnion({ A: {} })\n" > "$d/src/domain/leak.ts"
+  expect_guard_failure 'src/domain/leak.ts:1: loads "foldkit/schema"' "a foldkit subpath import in src/domain" || return 1
   printf "import { vi } from 'vitest'\n\nvi.mock('./main')\n" > "$d/src/mocked.test.ts"
   expect_guard_failure "no vi.mock" "vi.mock( in a test" || return 1
+  # Regression test (#20 item 8): nothing showed that type-aware Oxlint and Oxfmt
+  # fail the guard. tsc passes both files below.
+  printf 'export const start = (): void => {\n  Promise.resolve(1)\n}\n' > "$d/src/domain/floating.ts"
+  expect_guard_failure "src/domain/floating.ts:2:3: error typescript(no-floating-promises)" "an unawaited promise in src" || return 1
+  printf 'export const spaced   =   1;\n' > "$d/src/domain/spaced.ts"
+  expect_guard_failure "Format issues found" "a file Oxfmt would reformat" || return 1
   perl -pi -e 's/foldkit\((?:\{ devToolsMcpPort: false \})?\)/foldkit({ devToolsMcpPort: 9988 })/' "$d/vite.config.ts" || return 1
   grep -q 'devToolsMcpPort: 9988' "$d/vite.config.ts" || fail "the devToolsMcpPort mutation did not apply" || return 1
   expect_guard_failure "unauthenticated DevTools relay" "a numeric devToolsMcpPort in vite.config.ts" || return 1
   printf '{"mcpServers":{"foldkit-devtools":{"command":"npx","args":["-y","@foldkit/devtools-mcp"]}}}\n' > "$d/.mcp.json"
-  expect_guard_failure ".mcp.json must call the pinned local bin" "npx in .mcp.json" || return 1
+  expect_guard_failure 'server "foldkit-devtools" must call the pinned local bin' "npx in .mcp.json" || return 1
   fk_json "$d/package.json" 'c.version = "0.2.0"' || return 1
   expect_guard_failure "differs from VERSION" "package.json version drift" || return 1
   fk_json "$d/package.json" 'c.devDependencies.vitest = "^" + c.devDependencies.vitest' || return 1
@@ -5618,16 +6229,62 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   (cd "$d" && env PATH=/usr/bin:/bin /bin/bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.guard.out" "pnpm is not installed" || return 1
-  # A locked package that pnpm's supply-chain policy rejects (an impossible age rule
-  # stands in for a release under 24 hours old) is reported as that, with the
-  # packages named, not as a stale lockfile. The install stays usable: the plain
+  # A locked release under 24 hours old (a ten-year age rule in pnpm-workspace.yaml
+  # stands in for one) is reported as that, with the packages named, not as a stale
+  # lockfile and without pnpm's "relax the policy" help. Settings in the
+  # environment can't loosen the file's rule. The install stays usable: the plain
   # guard passes right after.
-  (cd "$d" && stack_env env pnpm_config_minimum_release_age=5256000 bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  perl -pi -e 's/^minimumReleaseAge: \d+$/minimumReleaseAge: 5256000/' "$d/pnpm-workspace.yaml" || return 1
+  grep -qx 'minimumReleaseAge: 5256000' "$d/pnpm-workspace.yaml" || fail "the age-rule mutation did not apply" || return 1
+  guard; rc=$?
   assert_exit 1 "$rc" || return 1
-  assert_contains "$d.guard.out" "pnpm's supply-chain policy (pnpm-workspace.yaml) rejects a locked package" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than pnpm-workspace.yaml's minimumReleaseAge" || return 1
   assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
-  assert_not_contains "$d.guard.out" "pnpm-lock.yaml is missing or out of date" || return 1
+  assert_not_contains "$d.guard.out" "out of date" || return 1
   assert_not_contains "$d.guard.out" "relax the policy" || return 1
+  (cd "$d" && stack_env env pnpm_config_minimum_release_age=0 PNPM_CONFIG_MINIMUM_RELEASE_AGE=0 \
+    pnpm_config_trust_lockfile=true bash scripts/check.d/foldkit.sh) >"$d.guard.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "within the minimumReleaseAge cutoff" || return 1
+  # The pinned pnpm (devEngines switches the project to it) honors an exact
+  # name@version exemption: under that rule it takes exactly that release off the
+  # report, and another version of the package takes nothing off. check-pins
+  # accepts the exact entry and refuses a bare name.
+  [ "$(cd "$d" && stack_env pnpm --version)" = "$(node -p 'require(process.argv[1]).devEngines.packageManager.version' "$d/package.json")" ] \
+    || fail "pnpm in the project is not the pinned one" || return 1
+  rejected() { (cd "$d" && stack_env pnpm install --frozen-lockfile --lockfile-only 2>&1) | sed -n 's/.* \([0-9][0-9]*\) lockfile entries failed verification.*/\1/p'; }
+  pin="$(node -p 'require(process.argv[1]).devDependencies["@effect/vitest"]' "$d/package.json")"
+  all="$(rejected)"
+  [ -n "$all" ] || fail "no count of rejected releases in pnpm's report" || return 1
+  cp "$d/pnpm-workspace.yaml" "$d.policy.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest@0.0.1'\n" >> "$d/pnpm-workspace.yaml"
+  [ "$(rejected)" = "$all" ] || fail "an exemption for another version took a release off the report" || return 1
+  cp "$d.policy.yaml" "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest@%s'\n" "$pin" >> "$d/pnpm-workspace.yaml"
+  [ "$(rejected)" = "$((all - 1))" ] || fail "exempting @effect/vitest@$pin did not take exactly it off the report ($all rejected without it)" || return 1
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" "check-pins: ok" || return 1
+  assert_contains "$d.guard.out" "a locked release is younger than" || return 1
+  cp "$d.policy.yaml" "$d/pnpm-workspace.yaml" || return 1
+  printf "minimumReleaseAgeExclude:\n  - '@effect/vitest'\n" >> "$d/pnpm-workspace.yaml"
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard.out" 'minimumReleaseAgeExclude entry "@effect/vitest" must be an exact name@version' || return 1
+  (cd "$d" && git checkout -q -- pnpm-workspace.yaml) || return 1
+  # A tarball URL the registry never published for that release may be a tamper,
+  # not a young release: pnpm's report and help pass through whole.
+  perl -0pi -e 's|(\n  foldkit\@[^:\n]+:\n    resolution: \{integrity: [^,}]+)\}|$1, tarball: https://registry.npmjs.org/foldkit/-/foldkit-0.0.1.tgz}|' "$d/pnpm-lock.yaml" || return 1
+  grep -q 'foldkit-0.0.1.tgz' "$d/pnpm-lock.yaml" || fail "the tarball mutation did not apply" || return 1
+  guard; rc=$?
+  assert_exit 1 "$rc" || return 1
+  # pnpm wraps its report at 80 columns: these fragments stay on one line.
+  assert_contains "$d.guard.out" "ERR_PNPM_LOCKFILE_RESOLUTION_VERIFICATION" || return 1
+  assert_contains "$d.guard.out" "has a tarball URL" || return 1
+  assert_contains "$d.guard.out" "help: The lockfile contains entries" || return 1
+  assert_contains "$d.guard.out" "pnpm-lock.yaml or a dependency may have been tampered with" || return 1
+  assert_not_contains "$d.guard.out" "minimumReleaseAge, 24 hours" || return 1
+  (cd "$d" && git checkout -q -- pnpm-lock.yaml) || return 1
   guard || fail "the guard failed after the mutations were reverted: $(tail -20 "$d.guard.out")" || return 1
   # Coverage: an untested module fails the global floor and is named; a tier member
   # that coverage can't measure fails its tier.

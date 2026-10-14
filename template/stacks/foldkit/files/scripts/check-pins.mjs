@@ -2,8 +2,9 @@
 // Pin guard (Node standard library only), run by scripts/check.d/foldkit.sh:
 // package.json stays in the byte form gstack /ship writes, its version is VERSION,
 // every dependency is exact, the runtime and package manager are pinned once,
-// node_modules holds each dependency at its pin, and the Foldkit + Effect train
-// moves together.
+// node_modules holds each dependency at its pin, the Foldkit + Effect train
+// moves together, and pnpm-workspace.yaml keeps the supply-chain policy (age
+// exemptions only for the train releases package.json pins).
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -183,6 +184,92 @@ if (foldkit !== undefined) {
   if (deps['@foldkit/devtools'] !== undefined && deps['@foldkit/ui'] === undefined) {
     errors.push(`@foldkit/devtools needs @foldkit/ui as a peer: pin @foldkit/ui to foldkit ${deps.foldkit}`)
   }
+}
+
+// .foldkit-ref records the pinned Foldkit release and the commit its tag named,
+// one line: vendor-foldkit.sh refuses a tag that moved. A train move updates it.
+const ref = existsSync(join(ROOT, '.foldkit-ref')) ? read('.foldkit-ref') : undefined
+const recorded = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) ([0-9a-f]{40})\n$/.exec(ref ?? '')
+if (ref === undefined) {
+  errors.push('.foldkit-ref is missing: it records the pinned Foldkit release and its commit for vendor-foldkit.sh')
+} else if (recorded === null) {
+  errors.push(`.foldkit-ref must be one line, "<version> <40-character lowercase commit>", got ${JSON.stringify(ref)}`)
+} else if (recorded[1] !== deps.foldkit) {
+  errors.push(`.foldkit-ref records foldkit ${recorded[1]}, package.json pins ${deps.foldkit}: a train move updates both (git ls-remote https://github.com/foldkit/foldkit.git refs/tags/foldkit@${deps.foldkit} gives the commit)`)
+}
+
+// pnpm-workspace.yaml holds the supply-chain policy every install runs under,
+// read without a YAML library: flat `key: value` lines, and an optional
+// minimumReleaseAgeExclude block list. A line it can't read unambiguously fails,
+// and so does any other key: adding one is a reviewed change to this file.
+const POLICY = {
+  minimumReleaseAge: { want: 'a whole number of minutes, at least 1440 (a day)', valid: value => /^\d+$/.test(value) && Number(value) >= 1440 },
+  trustPolicy: { want: 'no-downgrade', valid: value => value === 'no-downgrade' },
+  strictDepBuilds: { want: 'true', valid: value => value === 'true' },
+  blockExoticSubdeps: { want: 'true', valid: value => value === 'true' },
+  allowBuilds: { want: '{}', valid: value => value === '{}' },
+}
+// An age exemption names one release of the Foldkit + Effect train that
+// package.json pins: no bare name, scope, range or other version.
+const TRAIN = /^(?:foldkit|effect|@foldkit\/[a-z0-9][\w.-]*|@effect\/[a-z0-9][\w.-]*)$/
+const EXCLUDE = 'minimumReleaseAgeExclude'
+// The settings and age exemptions in pnpm-workspace.yaml's lines, reporting what
+// it cannot read.
+const readPolicy = lines => {
+  const settings = new Map()
+  const exempt = []
+  let inList = false
+  for (const [index, text] of lines.entries()) {
+    const at = `pnpm-workspace.yaml:${index + 1}`
+    if (/^\s*(?:#.*)?$/.test(text)) {
+      continue
+    }
+    const item = /^ *- +(?:'([^'"\\]*)'|"([^'"\\]*)"|([^\s'"#@][^\s#]*))(?: +#.*)?$/.exec(text)
+    const pair = /^([A-Za-z]+):(?: +([^\s#][^#]*?))? *(?: #.*)?$/.exec(text)
+    if (item && inList) {
+      exempt.push({ entry: item[1] ?? item[2] ?? item[3], at })
+    } else if (pair && settings.has(pair[1])) {
+      errors.push(`${at}: ${pair[1]} is given twice`)
+    } else if (pair) {
+      settings.set(pair[1], pair[2] ?? '')
+      inList = pair[1] === EXCLUDE && pair[2] === undefined
+      if (pair[1] !== EXCLUDE && !Object.hasOwn(POLICY, pair[1])) {
+        errors.push(`${at}: ${pair[1]} is not a policy setting check-pins knows: adding one is a reviewed change to scripts/check-pins.mjs`)
+      }
+      if (pair[1] === EXCLUDE && pair[2] !== undefined && pair[2] !== '[]') {
+        errors.push(`${at}: write ${EXCLUDE} as a block list, one "- name@version" per line`)
+      }
+    } else {
+      errors.push(`${at}: check-pins cannot read this line unambiguously (flat key: value lines and a ${EXCLUDE} list of "- name@version" items; quote a scoped name): ${JSON.stringify(text)}`)
+    }
+  }
+  return { settings, exempt }
+}
+if (existsSync(join(ROOT, 'pnpm-workspace.yaml'))) {
+  const { settings, exempt } = readPolicy(read('pnpm-workspace.yaml').split('\n'))
+  for (const [key, { want, valid }] of Object.entries(POLICY)) {
+    if (!settings.has(key)) {
+      errors.push(`pnpm-workspace.yaml must set ${key}: ${want}`)
+    } else if (!valid(settings.get(key))) {
+      errors.push(`pnpm-workspace.yaml: ${key} must be ${want}, got ${JSON.stringify(settings.get(key))}`)
+    }
+  }
+  const seen = new Set()
+  for (const { entry, at } of exempt) {
+    const [, name, release] = /^(@?[^@]+)@(.+)$/.exec(entry) ?? []
+    if (seen.has(entry)) {
+      errors.push(`${at}: ${EXCLUDE} lists ${JSON.stringify(entry)} twice`)
+    } else if (name === undefined || !EXACT.test(release)) {
+      errors.push(`${at}: ${EXCLUDE} entry ${JSON.stringify(entry)} must be an exact name@version (no bare name, scope or range)`)
+    } else if (!TRAIN.test(name)) {
+      errors.push(`${at}: ${EXCLUDE} entry ${JSON.stringify(entry)}: only the Foldkit and Effect train (foldkit, @foldkit/*, effect, @effect/*) may skip the age rule`)
+    } else if (deps[name] !== release) {
+      errors.push(`${at}: ${EXCLUDE} entry ${JSON.stringify(entry)}: package.json pins ${deps[name] === undefined ? `no ${name}` : `${name} ${deps[name]}`}; exempt only a release it pins, and remove the entry once that is a day old`)
+    }
+    seen.add(entry)
+  }
+} else {
+  errors.push('pnpm-workspace.yaml is missing: it holds the supply-chain policy')
 }
 
 for (const error of errors) {
