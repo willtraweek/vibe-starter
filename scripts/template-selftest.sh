@@ -5938,6 +5938,25 @@ STUB
   assert_contains "$d.out" ".foldkit-ref must be one line" || return 1
   assert_absent "$d.log"
 }
+test_stack_foldkit_guide_examples_pass_the_checks() {
+  # The guide is where a project learns the age-exemption and MCP forms (#20 item
+  # 11 replaced its advice to export pnpm_config_minimum_release_age=0): its
+  # examples, moved to this train, must pass check-pins and check-rules.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-guide/demo" guide pin rc
+  { foldkit_files "$d" && fk_installed "$d"; } || fail "fixture setup failed" || return 1
+  guide="$d/docs/guides/foldkit.md"
+  pin="$(node -p 'require(process.argv[1]).dependencies.foldkit' "$d/package.json")" || return 1
+  perl -ne 'print if /^```yaml$/ ... /^```$/ and !/^```/' "$guide" | PIN="$pin" perl -pe 's/\@\d+\.\d+\.\d+/\@$ENV{PIN}/' > "$d.exempt.yaml"
+  grep -q '^minimumReleaseAgeExclude:$' "$d.exempt.yaml" || fail "the guide shows no minimumReleaseAgeExclude example" || return 1
+  cat "$d.exempt.yaml" >> "$d/pnpm-workspace.yaml" || return 1
+  fk_node "$d" scripts/check-pins.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+  perl -ne 'print if /^  ```json$/ ... /^  ```$/ and !/^  ```/' "$guide" | sed 's/^  //' > "$d/.mcp.json"
+  assert_contains "$d/.mcp.json" '"command": "node_modules/.bin/foldkit-devtools-mcp"' || return 1
+  fk_node "$d" scripts/check-rules.mjs; rc=$?
+  assert_exit 0 "$rc" || { cat "$d.node.out"; return 1; }
+}
 test_stack_foldkit_bootstrap_takes_its_offline_path() {
   # Every other pack's bootstrap runs in the light job; foldkit's ran only in the
   # heavy job, and nothing reached its hook's fallbacks. With pnpm and node
