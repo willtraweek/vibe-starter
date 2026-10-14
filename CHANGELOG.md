@@ -3,6 +3,20 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.4.0] - 2026-10-14
+
+### Added
+- File bugs, feature improvements, engineering tasks, discoveries, decisions, and epics with
+  six GitHub issue forms, each requiring one essential answer and offering optional context.
+- Use shared filing guidance for browser, agent, and CLI submissions, including category
+  selection, completion criteria, existing restrictions, and verification of applied labels.
+- Set up each repository's type labels from the startup instructions, confirming the target
+  repository and missing labels with the user before creation and preserving existing labels.
+
+### Changed
+- The issue chooser directs contributors to the forms. The guide explains GitHub's maintainer
+  and CLI/API exceptions and how to configure a private reporting route.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added
