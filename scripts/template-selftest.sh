@@ -5512,6 +5512,10 @@ for (const text of [
 }
 // Comments, strings and regular expressions import nothing.
 check(leak("// import { Command } from 'foldkit'\n/* import('foldkit') */\nexport const hint = \"import { Command } from 'foldkit'\"\nexport const re = /from 'foldkit'/\n"), 0, 'check-rules: ok')
+// A tagged template may hold any escape (String.raw with a regex backreference,
+// as coverage-tiers.mjs does); it reads fine and names no module.
+check(leak("export const re = String.raw`\\(\\s*(['\"])\\1`\n"), 0, 'check-rules: ok')
+check(leak("export const load = () => import(String.raw`fold\\1kit`)\n"), 1, 'of a computed module name')
 // What the tokenizer cannot read fails closed.
 check(leak("export const s = 'unterminated\n"), 1, 'src/domain/leak.ts:1: check-rules cannot read this file: unterminated string')
 check(leak("export const f = (a: number) => {\n  switch (a) {\n    case 1: {}\n    /x/.test('y')\n  }\n}\n"), 1, 'cannot tell whether this / after } starts a regular expression')

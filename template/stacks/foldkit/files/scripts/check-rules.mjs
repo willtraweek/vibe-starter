@@ -162,6 +162,9 @@ const tokenize = source => {
   const template = head => {
     const start = line
     let value = ''
+    // A tagged template may hold any escape (String.raw`\1`); its text then has
+    // no cooked value, so it never counts as a plain string.
+    let cooked = true
     for (;;) {
       const c = source[pos]
       if (c === undefined) {
@@ -169,15 +172,24 @@ const tokenize = source => {
       }
       if (c === '`') {
         pos += 1
-        return push(head ? 'template' : 'templateTail', value, start)
+        return push(head ? 'template' : 'templateTail', value, start, cooked ? {} : { uncooked: true })
       }
       if (c === '$' && source[pos + 1] === '{') {
         pos += 2
-        push(head ? 'templateHead' : 'templateMiddle', value, start)
+        push(head ? 'templateHead' : 'templateMiddle', value, start, cooked ? {} : { uncooked: true })
         return stack.push({ open: '${' })
       }
       if (c === '\\') {
-        value += escape()
+        const at = pos
+        try {
+          value += escape()
+        } catch (error) {
+          if (!(error instanceof Unreadable) || source[at + 1] === undefined) {
+            throw error
+          }
+          pos = Math.max(pos, at + 2)
+          cooked = false
+        }
       } else if (c === '\r') {
         value += '\n'
         pos += source[pos + 1] === '\n' ? 2 : 1
@@ -391,7 +403,7 @@ const tokenize = source => {
 // --- module references ---------------------------------------------------------
 const isPunct = (token, value) => token?.type === 'punct' && token.value === value
 const isName = (token, value) => token?.type === 'ident' && !token.property && token.value === value
-const isText = token => token?.type === 'string' || token?.type === 'template'
+const isText = token => token?.type === 'string' || (token?.type === 'template' && !token.uncooked)
 
 // { kind, specifier (null unless a plain string), line, start, end, ... } for every
 // import and export declaration, side-effect import, import(), require() and
