@@ -1,7 +1,8 @@
 # Plan 011: Add the `foldkit` stack pack: a browser app on Foldkit (Effect v4), TypeScript 7, Vite 8, Vitest 5 and Playwright
 
-> **Executed, 2026-10-13.** PR #22 landed this pack together with plans 007–010, and its
-> pre-landing review resolved every finding of issue #20 there. `template/stacks/foldkit/` is
+> **Implemented, 2026-10-13.** The integration for PR #22 implements this
+> pack together with plans 007–010. Issue #20 dispositions are recorded for review; acceptance
+> remains governed by `plans/README.md`. `template/stacks/foldkit/` is
 > the source of truth now. The steps, helper scripts, embedded files and checksum manifests
 > below are the record of the 2026-10-02 rehearsal: they are not kept in sync with the pack and
 > are not meant to be replayed (`step-2.sh` would write the rehearsed files over the current

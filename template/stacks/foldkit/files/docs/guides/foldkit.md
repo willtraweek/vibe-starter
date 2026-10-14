@@ -51,8 +51,8 @@ on the Node on `PATH`, and stop with a message when it is missing or older than 
 The full gate is `./scripts/check.sh && ./scripts/coverage.sh && pnpm exec playwright test && node scripts/coverage-tiers.mjs --journeys`.
 Dependencies install only once they are 24 hours old (`minimumReleaseAge` in
 `pnpm-workspace.yaml`), and dependency build scripts are denied. The steps that need the network
-give up instead of waiting offline: bootstrap's install and vendoring after 10 minutes, the
-checks' lockfile verification after 5. Rerun them once you are online.
+give up instead of waiting offline: bootstrap's install and each vendoring network command
+after 10 minutes, the checks' lockfile verification after 5. Rerun them once you are online.
 
 ## What `./scripts/check.sh` enforces
 
