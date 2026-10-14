@@ -6,6 +6,9 @@ die() { echo "  $*" >&2; exit 1; }
 if ! command -v pnpm >/dev/null 2>&1; then
   die "pnpm is not installed - this project needs it: https://pnpm.io/installation (or Corepack)"
 fi
+if ! command -v perl >/dev/null 2>&1; then
+  die "Perl is not installed: install Perl (including its core POSIX and Errno modules) for the bounded network commands."
+fi
 # The checkers run on the Node on PATH (pnpm's pinned Node runs only pnpm's own
 # commands), and need 22 or newer.
 case "$(node --version 2>/dev/null)" in
@@ -37,7 +40,9 @@ limit="${FOLDKIT_TEST_TIMEOUT:-300}"
 lock_rc=0
 lock_pid=''
 lock_tmp="$(mktemp "${TMPDIR:-/tmp}/foldkit-lock.XXXXXX")"
-trap 'rm -f "$lock_tmp"' EXIT
+lock_status=''
+trap 'rm -f "$lock_tmp" "$lock_status"' EXIT
+lock_status="$(mktemp "${TMPDIR:-/tmp}/foldkit-lock-status.XXXXXX")"
 interrupted() {
   trap '' HUP INT TERM
   if [ -n "$lock_pid" ]; then
@@ -49,15 +54,37 @@ interrupted() {
 trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
 trap 'interrupted 143' TERM
-perl scripts/bounded-command.pl "$limit" pnpm install --frozen-lockfile --lockfile-only <&0 >"$lock_tmp" 2>&1 &
+perl scripts/bounded-command.pl --status-file "$lock_status" "$limit" pnpm install --frozen-lockfile --lockfile-only <&0 >"$lock_tmp" 2>&1 &
 lock_pid=$!
 wait "$lock_pid" || lock_rc=$?
 lock_pid=''
 lock_out="$(cat "$lock_tmp")"
-rm -f "$lock_tmp"
+# One complete outcome record must agree with the observed exit, including 0.
+# A second line or unterminated trailing data is invalid, even if the first fits.
+read_outcome() {
+  bounded_outcome='' outcome_extra=''
+  { IFS= read -r bounded_outcome && ! IFS= read -r outcome_extra && [ -z "$outcome_extra" ]; } < "$1" || return 1
+  # Shell read may discard NUL bytes; compare the exact ASCII record length.
+  [ "$(wc -c < "$1")" -eq "$((${#bounded_outcome} + 1))" ] || return 1
+  case "$bounded_outcome" in
+    "exit $2") return 0 ;;
+    "signal $2") [ "$2" -gt 128 ] && [ "$2" -le 255 ] ;;
+    'timeout 142') [ "$2" = 142 ] ;;
+    'internal 125') [ "$2" = 125 ] ;;
+    *) return 1 ;;
+  esac
+}
+if ! read_outcome "$lock_status" "$lock_rc"; then
+  printf '%s\n' "$lock_out" >&2
+  die "the command supervisor returned no valid outcome: check Perl and scripts/bounded-command.pl (exit $lock_rc)."
+fi
+rm -f "$lock_tmp" "$lock_status"
 trap - EXIT HUP INT TERM
-case "$lock_rc" in 129|130|143) exit "$lock_rc" ;; esac
-if [ "$lock_rc" = 142 ]; then
+case "$bounded_outcome" in
+  signal\ *) exit "$lock_rc" ;;
+  internal\ *) printf '%s\n' "$lock_out" >&2; die "the command supervisor failed: check its error above." ;;
+esac
+if [ "$bounded_outcome" = 'timeout 142' ]; then
   printf '%s\n' "$lock_out" >&2
   die "the lockfile check timed out after ${limit}s (offline? pnpm verifies the lockfile against the registry once per cache)."
 elif [ "$lock_rc" != 0 ]; then
@@ -71,10 +98,13 @@ elif [ "$lock_rc" != 0 ]; then
       printf '%s\n' "$lock_out" >&2
       die "pnpm-lock.yaml is missing or out of date with package.json: run pnpm install and commit pnpm-lock.yaml." ;;
   esac
-  # Any other failure (a tarball URL or integrity that doesn't match the
-  # registry, a trust downgrade, ...) is reported whole, pnpm's help included.
+  # Only pnpm's actual supply-chain evidence warrants integrity advice.
   printf '%s\n' "$lock_out" >&2
-  die "pnpm rejected the locked dependencies (above). Unless that is a network error, pnpm-lock.yaml or a dependency may have been tampered with: review pnpm-lock.yaml's recent changes before you regenerate it (docs/guides/foldkit.md)."
+  case "$lock_out" in
+    *ERR_PNPM_LOCKFILE_RESOLUTION_VERIFICATION*|*ERR_PNPM_TRUST_DOWNGRADE*|*ERR_PNPM_TARBALL_INTEGRITY*)
+      die "pnpm rejected the locked dependencies (above). pnpm-lock.yaml or a dependency may have been tampered with: review pnpm-lock.yaml's recent changes before you regenerate it (docs/guides/foldkit.md)." ;;
+  esac
+  die "the lockfile command failed (exit $lock_rc; see above): check command startup, network access and pnpm's reported error before retrying."
 fi
 case "$(pnpm exec tsc --version 2>/dev/null || true)" in
   *+effect-tsgo*) ;;

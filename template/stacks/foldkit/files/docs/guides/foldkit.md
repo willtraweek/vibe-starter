@@ -32,7 +32,8 @@ in `e2e`. Keep this verification after Playwright in the full gate.
 
 ## Commands
 
-You need pnpm 12 and Node.js 22 or newer on `PATH`. pnpm runs the project's own commands on the
+You need pnpm 12, Node.js 22 or newer, and Perl with its core POSIX and Errno modules on `PATH`.
+Perl supervises the bounded network commands. pnpm runs the project's own commands on the
 Node that `devEngines` pins, but the checks, the coverage gate and vendoring run their checkers
 on the Node on `PATH`, and stop with a message when it is missing or older than 22.
 
@@ -53,6 +54,11 @@ Dependencies install only once they are 24 hours old (`minimumReleaseAge` in
 `pnpm-workspace.yaml`), and dependency build scripts are denied. The steps that need the network
 give up instead of waiting offline: bootstrap's install and each vendoring network command
 after 10 minutes, the checks' lockfile verification after 5. Rerun them once you are online.
+These deadlines require the supervisor to remain alive; forcibly killing it (SIGKILL) removes
+the timer. Separately, a command that deliberately starts a detached session escapes the
+owned process-group boundary. Normal cancellation cleans up the owned group and stops the
+follow-up; missing Perl or supervisor failures are reported separately from command
+failures and stop bootstrap's follow-up before vendoring.
 
 ## What `./scripts/check.sh` enforces
 
@@ -67,7 +73,7 @@ Before tsc, Oxlint and Oxfmt run, two Node scripts check what those can't see:
     form (type-only, `export ... from`, `import()`, `require()`), and name every module they
     load with a plain string;
   - `src` and `e2e` call no `mock`, `doMock` or `importMock` on Vitest's `vi`, under any name: `vi`
-    is only ever used as `vi.method(...)`;
+    is used as `vi.method(...)` or in a non-calling `typeof` query;
   - only the root `vite.config.ts` configures Vite. It imports `{ foldkit }` from
     `@foldkit/vite-plugin` once and calls `foldkit({ devToolsMcpPort: false })` or `foldkit()`
     once; no other file names the plugin, and no script passes `--config` to `vite`;
@@ -79,11 +85,24 @@ Before tsc, Oxlint and Oxfmt run, two Node scripts check what those can't see:
 cannot follow (an alias of `vi` or `foldkit`, a computed module name, a `/` after `}` it cannot
 place) rather than guess. When it refuses a change that is safe, extend the rule in
 `scripts/check-rules.mjs`, in a reviewed change that says why, instead of working around it.
+A slash after bare `of`, `as` or `satisfies` is ambiguous because those words can also name
+variables. Parenthesize the operand, `(of) / 2`, or the regex, `for (const value of (/regex/))`.
 
 Package scripts and literal Playwright `webServer.command` values support literal shell words,
 quoted fragments and escapes, with commands joined by `&&`, `||`, `;` or newline.
-Expansions, redirection, grouping and nested shell evaluation are outside this supported grammar
-and need a reviewed checker extension.
+The checker follows literal `env`, `command`, `exec`, `nohup`, `timeout <duration>`, `pnpm exec`
+and `npx` wrappers, including compositions; wrapper options need a reviewed extension.
+Expansions, redirection, grouping, shell control flow and nested shell evaluation are outside
+this supported grammar and need a reviewed checker extension. Version-qualified Vite commands
+and the `--c` alias have the same configuration restriction as `vite --config`.
+
+Playwright configuration uses literal objects/arrays and unambiguous local `const` aliases.
+Keep those objects immutable: member access, mutation calls and passing a configuration or
+server object to another function need a reviewed checker extension. The rule follows aliases
+and containing objects/arrays, including unused aliases, so `const` cannot disguise a mutable
+server command. `defineConfig(...)` and the default export are the supported configuration
+roots. Unrelated metadata strings and globs are not interpreted as shell commands. These are
+bounded source checks, not a sandbox for arbitrary JavaScript or programs launched by scripts.
 
 ## The upgrade train
 

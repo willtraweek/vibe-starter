@@ -6054,6 +6054,167 @@ check({ 'playwright.config.ts': "import { defineConfig } from '@playwright/test'
 check({ 'playwright.config.ts': "import { defineConfig } from '@playwright/test'\nconst override = { command: 'vite --config other.ts > /tmp/vite-log' }\nexport default defineConfig({ webServer: { command: 'vite', ...override } })\n" }, 1, 'cannot follow this webServer value')
 PROBE
 }
+test_stack_foldkit_rules_refuse_contextual_keyword_slash_ambiguity() {
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-contextual-slash/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const exported = expression => ({ 'vite.config.ts': `import { foldkit } from '@foldkit/vite-plugin'\nconst plugins = [foldkit({ devToolsMcpPort: false })]\n${expression}\nexport default { plugins }\n` })
+for (const name of ['of', 'as', 'satisfies']) {
+  for (const suffix of ['', '!', '!!']) {
+    check(exported(`const ${name} = 1\nconst result = ${name}${suffix} / plugins.push(foldkit({ devToolsMcpPort: 9988 })) / 1`), 1,
+      'cannot tell whether this /', 'extend scripts/check-rules.mjs')
+    check({ 'src/domain/leak.ts': `const ${name} = 1\nexport const result = ${name}${suffix} / Number(import('foldkit')) / 1\n` }, 1,
+      'cannot tell whether this /')
+  }
+}
+check({ 'scripts/leak.mjs': `const of = 1\nexport const result = of / Number(import('@foldkit${bs}x2fvite-plugin')) / 1\n` }, 1,
+  'cannot tell whether this /')
+// A real regex after for-of is equally ambiguous to this bounded tokenizer:
+// refusing it is safer than silently reading either syntax the wrong way.
+check(exported('for (const value of /safe/.source) {}'), 1, 'cannot tell whether this /')
+for (const expression of [
+  'const of = 4; const result = (of) / 2',
+  'const of = 4; const result = (of!) / 2',
+  'const value = 4; const result = value!! / 2',
+  'const result = ! ! /safe/.test("safe")',
+  'const obj = { of: 4, as: 4, satisfies: 4 }; const result = obj.of / obj.as / obj.satisfies',
+  `const ${bs}u006ff = 4; const result = ${bs}u006ff / 2`,
+  'for (const value of (/safe/.source)) {}',
+]) {
+  check(exported(expression), 0, 'check-rules: ok')
+}
+PROBE
+}
+test_stack_foldkit_rules_follow_shell_execution_wrappers() {
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-shell-wrappers/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+const script = command => ({ 'package.json': `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, dev: command } }, null, 2)}\n` })
+const web = command => ({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\nexport default defineConfig({ webServer: { command: ${JSON.stringify(command)}, port: 4000 } })\n` })
+const nested = [
+  "pnpm exec sh -c 'vite --config other.ts'",
+  "nohup sh -c 'vite --config other.ts'",
+  "timeout 60 sh -c 'vite --config other.ts'",
+  "if true; then sh -c 'vite --config other.ts'; fi",
+  "ash -c 'vite --config other.ts'", "mksh -c 'vite --config other.ts'",
+  "npx sh -c 'vite --config other.ts'",
+  "env MODE=production pnpm exec nohup timeout 60 /bin/sh -c 'vite --config other.ts'",
+  "nohup -- sh -c 'vite --config other.ts'", "timeout -k 1 60 sh -c 'vite --config other.ts'",
+  "pnpm --dir other exec sh -c 'vite --config other.ts'", "npx -y sh -c 'vite --config other.ts'",
+]
+for (const command of nested) {
+  for (const source of [script, web]) {
+    check(source(command), 1, 'unsupported shell syntax', 'docs/guides/foldkit.md')
+  }
+}
+for (const command of [
+  'npx vite@8.3.1 -c other.ts', 'npx vite@8.3.1 --config=other.ts',
+  'vite --c other.ts', 'vite --c=other.ts', 'pnpm exec vite --c other.ts',
+  'npm exec vite --config other.ts', 'pnpm dlx vite --config other.ts',
+]) {
+  for (const source of [script, web]) {
+    check(source(command), 1, '--config', 'docs/guides/foldkit.md')
+  }
+}
+// Keep literal echo arguments separate from an executable's identity.
+for (const command of [
+  "echo 'sh -c' && vite", 'echo sh && vite', 'pnpm exec vite --port 3001',
+  'env MODE=production vite', "echo 'vite --config' && vite", 'npx vite@8.3.1 --port 3001',
+]) {
+  for (const source of [script, web]) check(source(command), 0, 'check-rules: ok')
+}
+PROBE
+}
+test_stack_foldkit_rules_refuse_mutable_playwright_server_aliases() {
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-mutable-server/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const config = body => ({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\n${body}\n` })
+const unsafe = 'vite --config other.ts > /dev/null'
+for (const member of ['.webServer', "['webServer']"]) {
+  check(config(`const config = defineConfig({ testDir: 'e2e' });\nconfig${member} = { command: ${JSON.stringify(unsafe)}, port: 4000 };\nexport default config;`), 1,
+    'cannot follow this webServer value')
+}
+for (const mutation of [
+  `server.command = ${JSON.stringify(unsafe)};`,
+  `server['command'] = ${JSON.stringify(unsafe)};`,
+  `Object.assign(server, { command: ${JSON.stringify(unsafe)} });`,
+  `const alias = server; alias.command = ${JSON.stringify(unsafe)};`,
+  `const envelope = { server }; envelope.server.command = ${JSON.stringify(unsafe)};`,
+  `const envelope = { nested: { server } }; change(envelope);`,
+  `change(server);`,
+]) {
+  check(config(`const server = { command: 'vite build', port: 4000 };\n${mutation}\nexport default defineConfig({ webServer: server });`), 1,
+    'cannot follow this webServer value')
+}
+check(config(`const servers = [{ command: 'vite build', port: 4000 }];\nservers.push({ command: ${JSON.stringify(unsafe)}, port: 4001 });\nexport default defineConfig({ webServer: servers });`), 1,
+  'cannot follow this webServer value')
+for (const initializer of ["{ testDir: 'e2e' }", "defineConfig({ testDir: 'e2e' })"]) {
+  for (const mutation of [
+    'change(config);',
+    'const alias = config; change(alias);',
+    'const envelope = { config }; change(envelope);',
+  ]) {
+    check(config(`const config = ${initializer};\n${mutation}\nexport default config;`), 1,
+      'cannot follow this webServer value')
+  }
+}
+// Existing accepted grammar remains immutable aliases, arrays and shorthand ports.
+check(config("const port = 4000;\nconst server = { command: 'vite build && vite preview', port };\nconst alias = server;\nconst servers = [server, alias];\nexport default defineConfig({ webServer: servers, metadata: { command: 'echo $UNRELATED', glob: '**/*.spec.ts' } });"), 0,
+  'check-rules: ok')
+check(config("const server = { command: 'vite build', port: 4000 };\nconst envelope = { nested: { server } };\nconst config = defineConfig({ webServer: server, metadata: envelope });\nexport default config;"), 0,
+  'check-rules: ok')
+for (const body of [
+  "const config = defineConfig({ testDir: 'e2e' },);\nconfig.webServer = { command: 'vite --config other.ts' };\nexport default config;",
+  "const server = { command: 'vite build', port: 4000 };\nserver.command = 'vite --config other.ts';\nexport default defineConfig({ webServer: server },);",
+  "export default defineConfig({ webServer: { command: 'vite build' } }, { webServer: { command: 'vite --config other.ts' } },);",
+]) check(config(body), 1, 'cannot follow this webServer value')
+PROBE
+}
+test_stack_foldkit_rules_accept_single_config_argument_with_trailing_comma() {
+  # The mutation guard must preserve valid single-argument call punctuation.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-trailing-comma/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const config = body => ({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\n${body}\n` })
+for (const body of [
+  "export default defineConfig({ webServer: { command: 'vite build', port: 4000 } },);",
+  "const server = { command: 'vite build', port: 4000 };\nconst config = defineConfig({ webServer: server },);\nexport default config;",
+  "const config = { webServer: { command: 'vite build', port: 4000 } };\nexport default defineConfig(config,);",
+]) check(config(body), 0, 'check-rules: ok')
+PROBE
+}
+test_stack_foldkit_rules_accept_noncalling_type_queries() {
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  local d="$WORK/stack-foldkit-rules-type-queries/demo"
+  foldkit_files "$d" || fail "copying the pack failed" || return 1
+  fk_rules "$d" <<'PROBE'
+const test = text => ({ 'src/query.test.ts': `import { vi, describe, it, test } from 'vitest'\ntype Box<T> = { value: T }\n${text}\n` })
+for (const text of [
+  'let spy: ReturnType<typeof vi.spyOn>',
+  'type Spy = Box<Box<typeof vi.spyOn>>',
+  'type Spy = Box<Box<Box<typeof vi.spyOn>>>',
+  'const fn: typeof vi.fn = vi.fn()',
+  "type Spy = typeof vi.fn\ndescribe('suite', () => {})",
+  "type Spy = typeof vi.fn\nit('case', () => {})",
+  "type Spy = typeof vi.fn\ntest('case', () => {})",
+]) check(test(text), 0, 'check-rules: ok')
+for (const text of [
+  "const mocked = typeof vi.mock('./main')",
+  "const mocked = typeof vi.mock\n('./main')",
+  "const mocked = typeof vi.mock?.('./main')",
+  "const mocked = typeof vi['mock']('./main')",
+  "const mocked = typeof vi.mock!('./main')",
+  "const mocked = typeof vi.mock<string>('./main')",
+]) check(test(text), 1, 'no vi.mock, vi.doMock or vi.importMock')
+PROBE
+}
+
 test_stack_foldkit_rules_pin_the_devtools_mcp() {
   # Regression test (#20 item 7). The guard grepped .mcp.json for npx: `pnpm dlx`,
   # pnpx, bunx or yarn dlx ran an unpinned MCP server, and .cursor/mcp.json and
@@ -6394,6 +6555,353 @@ finally:
     cleanup()
     unrelated.terminate()
     unrelated.wait()
+PROBE
+}
+test_stack_foldkit_supervisor_outcomes_are_unambiguous() {
+  # Opus 6: helper failures and reserved-looking command exits are not pnpm
+  # policy errors, timeouts or cancellation. Validate outcomes even on exit 0.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
+  local d="$WORK/stack-foldkit-outcomes/demo"
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  python3 - "$d" "$REPO/template/stacks/foldkit/after-bootstrap" <<'PROBE'
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+
+project = Path(sys.argv[1])
+hook = sys.argv[2]
+bin_dir = Path(str(project) + '.bin')
+helper = project / 'scripts/bounded-command.pl'
+original = helper.read_text()
+status_file = Path(str(project) + '.outcome')
+pnpm_log = Path(str(project) + '.pnpm-log')
+git_log = Path(str(project) + '.git-log')
+commit = (project / '.foldkit-ref').read_text().split()[1]
+git_driver = Path(str(project) + '.git.py')
+git_driver.write_text('''import os, pathlib, subprocess, sys, time
+with open(os.environ['FK_GIT_LOG'], 'a') as log: log.write('called\\n')
+a = sys.argv[1:]
+if a[:1] == ['-c']: a = a[2:]
+if a[:1] == ['clone'] or (len(a) > 2 and a[2] == 'sparse-checkout'):
+    mode = os.environ.get('FK_GIT_MODE', '0')
+    if mode == 'sleep': time.sleep(5)
+    elif mode == 'signal': os.kill(os.getpid(), 15)
+    elif mode == 'missing':
+        try: os.execv('/nonexistent-foldkit-command', ['missing'])
+        except OSError as error:
+            print('cannot run nonexistent-foldkit-command: ' + str(error), file=sys.stderr)
+            sys.exit(127)
+    else:
+        code = int(mode)
+        if code: sys.exit(code)
+    if a[:1] == ['clone']: pathlib.Path(a[-1]).mkdir()
+elif len(a) > 2 and a[2] == 'rev-parse': print(os.environ['FK_COMMIT'])
+else: sys.exit(1)
+''')
+(bin_dir / 'git').write_text('#!/bin/sh\nexec python3 "$FK_GIT_DRIVER" "$@"\n')
+(bin_dir / 'git').chmod(0o755)
+env = dict(os.environ, PATH=str(bin_dir) + ':' + os.environ['PATH'], CHECK_CI='1',
+           FOLDKIT_TEST_TIMEOUT='1', FK_PNPM_LOG=str(pnpm_log), FK_GIT_LOG=str(git_log),
+           FK_GIT_DRIVER=str(git_driver), FK_COMMIT=commit)
+callers = {'guard': ['bash', 'scripts/check.d/foldkit.sh'],
+           'hook': ['sh', hook], 'vendor': ['bash', 'scripts/vendor-foldkit.sh']}
+
+def run(args, expected, text='', extra=None):
+    result = subprocess.run(args, cwd=project, env=dict(env, **(extra or {})),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, timeout=10)
+    assert result.returncode == expected, (args, result.returncode, expected, result.stdout)
+    assert text in result.stdout, (args, text, result.stdout)
+    return result.stdout
+
+def caller(name, expected, text='', extra=None, vendor_expected=None):
+    git_log.unlink(missing_ok=True)
+    pnpm_log.unlink(missing_ok=True)
+    output = run(callers[name], expected, text, extra)
+    if name == 'hook' and vendor_expected is not None:
+        assert git_log.exists() == vendor_expected, (name, vendor_expected, output)
+    return output
+
+def direct(args, expected, record, text='', extra=None):
+    status_file.write_text('stale result\n')
+    output = run(['perl', str(helper), '--status-file', str(status_file), '1', *args],
+                 expected, text, extra)
+    assert status_file.read_text() == record + '\n', (record, status_file.read_text())
+    return output
+
+try:
+    # The helper's optional protocol preserves ordinary exit codes exactly.
+    for code in [0, 23, 125, 127, 129, 130, 142, 143]:
+        direct(['sh', '-c', f'exit {code}'], code, f'exit {code}')
+    direct(['/nonexistent-foldkit-command'], 127, 'exit 127', 'cannot run')
+    for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGALRM, signal.SIGPIPE]:
+        direct(['sh', '-c', f'kill -{sig.value} $$'], 128 + sig, f'signal {128 + sig}')
+    direct(['sleep', '5'], 142, 'timeout 142')
+    # A reportable setup error is internal; no command can start.
+    status_file.write_text('stale result\n')
+    run(['perl', str(helper), '--status-file', str(status_file), '0', 'false'], 125, 'usage:')
+    assert status_file.read_text() == 'internal 125\n'
+    # Force the leader's waitpid failure through Perl's documented override
+    # seam. The supervisor's real wait/reap remains unchanged.
+    module = Path(str(project) + '.wait-module')
+    module.mkdir()
+    (module / 'FailedWait.pm').write_text('''package FailedWait;
+use Errno qw(ECHILD);
+BEGIN {
+    my $supervisor = $$;
+    *CORE::GLOBAL::waitpid = sub ($$) {
+        if ($$ != $supervisor) { $! = ECHILD; return -1; }
+        return CORE::waitpid($_[0], $_[1]);
+    };
+}
+1;
+''')
+    direct(['sleep', '5'], 125, 'internal 125', 'command supervisor failed',
+           {'PERL5OPT': '-MFailedWait', 'PERL5LIB': str(module)})
+    # Without --status-file the old argv/stdin/exit API remains available.
+    run(['perl', str(helper), '1', 'sh', '-c', 'exit 23'], 23)
+
+    for name in callers:
+        caller(name, 0, vendor_expected=True)
+        for code in [125, 127, 129, 130, 142, 143]:
+            extra = {'FK_GIT_MODE': str(code)} if name == 'vendor' else {'FK_PNPM_INSTALL': f'exit {code}'}
+            expected = code if name == 'vendor' else (0 if name == 'hook' else 1)
+            output = caller(name, expected, f'exit {code}', extra, vendor_expected=True)
+            assert 'timed out' not in output and 'tampered' not in output, output
+        extra = {'FK_GIT_MODE': 'signal'} if name == 'vendor' else {'FK_PNPM_INSTALL': 'kill -TERM $$'}
+        caller(name, 143, extra=extra, vendor_expected=False)
+        extra = {'FK_GIT_MODE': 'sleep'} if name == 'vendor' else {'FK_PNPM_INSTALL': 'exec sleep 5'}
+        caller(name, 142 if name == 'vendor' else (0 if name == 'hook' else 1),
+               'timed out after 1s', extra, vendor_expected=True)
+        caller(name, 125 if name == 'vendor' else 1, 'supervisor failed',
+               {'FOLDKIT_TEST_TIMEOUT': '0'}, vendor_expected=False)
+        extra = {'FK_GIT_MODE': 'missing'} if name == 'vendor' else {'FK_PNPM_INSTALL': 'exec /nonexistent-foldkit-command'}
+        output = caller(name, 127 if name == 'vendor' else (0 if name == 'hook' else 1),
+                        'nonexistent-foldkit-command', extra, vendor_expected=True)
+        assert 'tampered' not in output and 'timed out' not in output, output
+
+    # Missing Perl is distinct from missing pnpm or an offline registry. Use a
+    # genuinely Perl-free PATH, not a perl stub returning command-not-found.
+    bare = Path(str(project) + '.without-perl')
+    bare.mkdir()
+    for command in ['dirname', 'node', 'pnpm']:
+        source = bin_dir / command if (bin_dir / command).exists() else Path(shutil.which(command))
+        (bare / command).symlink_to(source)
+    for name, args in callers.items():
+        git_log.unlink(missing_ok=True)
+        pnpm_log.unlink(missing_ok=True)
+        absolute = [shutil.which(args[0]), *args[1:]]
+        output = run(absolute, 1, 'Perl is not installed', {'PATH': str(bare)})
+        assert not git_log.exists() and not pnpm_log.exists(), output
+
+    # Compile/core-module failure never reaches the helper's reporting code.
+    helper.write_text('use MissingFoldkitCoreModule;\n')
+    for name in callers:
+        caller(name, 1, 'supervisor returned no valid outcome', vendor_expected=False)
+    helper.write_text(original)
+
+    # Even apparent success cannot bypass validation. Stub only the helper,
+    # keeping each caller real, and cover complete/duplicate/trailing records.
+    invalid = [(None, 0), (None, 2), (None, 255), ('exit 0', 0), ('exit 0\nexit 0\n', 0),
+               ('exit 0\n\n', 0), ('exit 0\njunk', 0), ('exit 1\n', 0), ('exit 0\n', 1),
+               ('exit 00\n', 0), ('exit -1\n', 0), ('signal 0\n', 0), ('signal 128\n', 128),
+               ('timeout 0\n', 0), ('timeout 142\n', 0), ('internal 0\n', 0),
+               ('internal 125\n', 0), ('exit 256\n', 0), ('ex\0it 0\n', 0),
+               ('exit 0\0\n', 0), ('exit 0\n\0', 0)]
+    for record, code in invalid:
+        text = 'use strict; use warnings;\nmy $path = $ARGV[1];\n'
+        if record is not None:
+            # Hex avoids Perl interpolation, escaping and arbitrary test code.
+            text += f'open(my $out, ">", $path) or die $!; print $out pack("H*", "{record.encode().hex()}"); close $out;\n'
+        text += f'print STDERR "controlled startup/output failure\\n"; exit {code};\n'
+        helper.write_text(text)
+        for name in callers:
+            output = caller(name, 1, 'supervisor returned no valid outcome', vendor_expected=False)
+            assert 'tampered' not in output and 'timed out' not in output, output
+
+    helper.write_text('unlink $ARGV[1]; exit 0;\n')
+    for name in callers:
+        caller(name, 1, 'supervisor returned no valid outcome', vendor_expected=False)
+
+    # The second vendoring invocation must not reuse the clone's valid record.
+    helper.write_text('''use strict; use warnings;
+my ($flag, $path, $limit) = splice(@ARGV, 0, 3);
+if (grep { $_ eq 'clone' } @ARGV) {
+    system @ARGV;
+    open(my $out, '>', $path) or die $!;
+    print $out "exit 0\\n"; close $out;
+}
+exit 0;
+''')
+    caller('vendor', 1, 'supervisor returned no valid outcome')
+finally:
+    helper.write_text(original)
+print('supervisor outcome probes passed')
+PROBE
+}
+test_stack_foldkit_supervisor_signal_boundaries_clean_up() {
+  # Opus 7: cancellation just outside eval must retain its status and cleanup;
+  # a dead supervisor must not make the leader's report write skip EOF cleanup.
+  command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
+  local d="$WORK/stack-foldkit-signal-boundaries/demo"
+  { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
+  python3 - "$d" "$REPO/template/stacks/foldkit/after-bootstrap" <<'PROBE'
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+project = Path(sys.argv[1])
+hook = sys.argv[2]
+helper = project / 'scripts/bounded-command.pl'
+source = helper.read_text().splitlines()
+lines = {'before': source.index('my $ok = eval {') + 1,
+         'after': source.index('my $error = $@;') + 1}
+bin_dir = Path(str(project) + '.bin')
+worker = Path(str(project) + '.worker.py')
+pids = Path(str(project) + '.pids')
+release = Path(str(project) + '.release')
+status_file = Path(str(project) + '.outcome')
+captured = Path(str(project) + '.captured-outcome')
+git_log = Path(str(project) + '.git-log')
+real_perl = shutil.which('perl')
+worker.write_text('''import json, os, time
+from pathlib import Path
+child = os.fork()
+if child == 0:
+    time.sleep(8)
+    os._exit(0)
+Path(os.environ['FK_PIDS']).write_text(json.dumps([os.getppid(), os.getpid(), child]))
+if os.environ.get('FK_WAIT') == '1':
+    while not Path(os.environ['FK_RELEASE']).exists(): time.sleep(.01)
+os._exit(0)
+''')
+debugger = Path(str(project) + '.debugger.pl')
+debugger.write_text('''package DB;
+our $fired = 0;
+sub DB {
+    my ($package, $file, $line) = caller;
+    if (!$fired && $file =~ /bounded-command\\.pl$/ && $line == $ENV{FK_LINE}) {
+        $fired = 1;
+        kill $ENV{FK_SIGNAL}, $$;
+    }
+}
+1;
+''')
+# The wrapper only selects Perl's debugger and preserves its real outcome for
+# assertions after each caller removes its own private result file.
+(bin_dir / 'perl').write_text('''#!/bin/sh
+"$FK_REAL_PERL" -d "$@"
+rc=$?
+[ "$2" != --status-file ] || cat "$3" > "$FK_CAPTURE"
+exit "$rc"
+''')
+(bin_dir / 'perl').chmod(0o755)
+(bin_dir / 'git').write_text('''#!/bin/sh
+echo called >> "$FK_GIT_LOG"
+exec python3 "$FK_WORKER"
+''')
+(bin_dir / 'git').chmod(0o755)
+env = dict(os.environ, PATH=str(bin_dir) + ':' + os.environ['PATH'], CHECK_CI='1',
+           FOLDKIT_TEST_TIMEOUT='3', FK_REAL_PERL=real_perl, FK_CAPTURE=str(captured),
+           FK_WORKER=str(worker), FK_PIDS=str(pids), FK_RELEASE=str(release),
+           FK_GIT_LOG=str(git_log), FK_PNPM_INSTALL='exec python3 "$FK_WORKER"',
+           PERL5DB=f'BEGIN {{ require q({debugger}) }}')
+unrelated = subprocess.Popen(['sleep', '30'])
+
+def live(pid):
+    state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                           stdout=subprocess.PIPE, text=True).stdout.strip()
+    return bool(state) and not state.startswith('Z')
+
+def cleanup():
+    if pids.exists():
+        for pid in json.loads(pids.read_text()):
+            if live(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+def assert_clean():
+    if pids.exists():
+        owned = json.loads(pids.read_text())
+        until = time.monotonic() + 1
+        while any(live(pid) for pid in owned) and time.monotonic() < until:
+            time.sleep(.01)
+        assert not any(live(pid) for pid in owned), ('owned survivor', owned)
+    assert unrelated.poll() is None, 'unrelated control was killed'
+
+try:
+    for boundary, line in lines.items():
+        for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGTERM]:
+            for caller, args in {
+                'helper': [real_perl, '-d', str(helper), '--status-file', str(status_file), '3', 'python3', str(worker)],
+                'guard': ['bash', 'scripts/check.d/foldkit.sh'],
+                'hook': ['sh', hook],
+                'vendor': ['bash', 'scripts/vendor-foldkit.sh'],
+            }.items():
+                pids.unlink(missing_ok=True)
+                git_log.unlink(missing_ok=True)
+                captured.unlink(missing_ok=True)
+                status_file.write_text('stale result\n')
+                result = subprocess.run(args, cwd=project,
+                                        env=dict(env, FK_LINE=str(line), FK_SIGNAL=str(sig.value)),
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, timeout=8)
+                assert result.returncode == 128 + sig, (boundary, sig, caller, result.returncode, result.stdout)
+                outcome = status_file if caller == 'helper' else captured
+                assert outcome.exists(), (boundary, sig, caller, result.stdout)
+                assert outcome.read_text() == f'signal {128 + sig}\n', (caller, outcome.read_text())
+                assert pids.exists() == (boundary == 'after'), (boundary, caller, result.stdout)
+                if caller == 'hook':
+                    assert not git_log.exists(), 'hook vendored after cancellation'
+                assert_clean()
+
+    # An executed command retains normal SIGPIPE handling.
+    result = subprocess.run([real_perl, str(helper), '--status-file', str(status_file),
+                             '1', 'sh', '-c', 'kill -PIPE $$; echo survived'],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=4)
+    assert result.returncode == 141 and not result.stdout, result
+    assert status_file.read_text() == 'signal 141\n'
+
+    # SIGKILL ends the timer guarantee. Once the command returns, however, the
+    # surviving leader must still reach EOF cleanup instead of dying on PIPE.
+    pids.unlink(missing_ok=True)
+    release.unlink(missing_ok=True)
+    with Path(str(project) + '.kill.log').open('w') as log:
+        proc = subprocess.Popen([real_perl, str(helper), '--status-file', str(status_file),
+                                 '3', 'python3', str(worker)], cwd=project,
+                                env=dict(env, FK_WAIT='1'), stdout=log, stderr=subprocess.STDOUT)
+        try:
+            until = time.monotonic() + 3
+            while not pids.exists() and time.monotonic() < until:
+                time.sleep(.01)
+            assert pids.exists(), 'owned command did not start'
+            proc.kill()
+            proc.wait(timeout=3)
+            release.touch()
+            assert_clean()
+            assert status_file.read_text() == '', 'killed supervisor fabricated an outcome'
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+finally:
+    cleanup()
+    unrelated.terminate()
+    unrelated.wait()
+print('supervisor signal boundary probes passed')
 PROBE
 }
 test_stack_foldkit_vendoring_checks_the_release_commit() {

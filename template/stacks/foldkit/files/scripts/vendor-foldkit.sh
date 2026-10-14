@@ -14,6 +14,10 @@
 # instructions for this project's agents.
 set -euo pipefail
 CDPATH='' cd -- "$(dirname -- "$0")/.."
+if ! command -v perl >/dev/null 2>&1; then
+  echo "vendor-foldkit: Perl is not installed: install Perl (including its core POSIX and Errno modules) for the bounded network commands." >&2
+  exit 1
+fi
 # Runs before pnpm has installed anything, on the Node on PATH: 22 or newer.
 case "$(node --version 2>/dev/null)" in
   v2[2-9].*|v[3-9][0-9].*|v[1-9][0-9][0-9]*) ;;
@@ -63,14 +67,39 @@ trap 'interrupted 143' TERM
 # offline, git can wait a long time. FOLDKIT_TEST_TIMEOUT shortens the limit for
 # the template's tests.
 limit="${FOLDKIT_TEST_TIMEOUT:-600}"
+# One complete outcome record must agree with the observed exit, including 0.
+# A second line or unterminated trailing data is invalid, even if the first fits.
+read_outcome() {
+  bounded_outcome='' outcome_extra=''
+  { IFS= read -r bounded_outcome && ! IFS= read -r outcome_extra && [ -z "$outcome_extra" ]; } < "$1" || return 1
+  # Shell read may discard NUL bytes; compare the exact ASCII record length.
+  [ "$(wc -c < "$1")" -eq "$((${#bounded_outcome} + 1))" ] || return 1
+  case "$bounded_outcome" in
+    "exit $2") return 0 ;;
+    "signal $2") [ "$2" -gt 128 ] && [ "$2" -le 255 ] ;;
+    'timeout 142') [ "$2" = 142 ] ;;
+    'internal 125') [ "$2" = 125 ] ;;
+    *) return 1 ;;
+  esac
+}
 bounded() {  # $1 = what it does, rest = the command
   local what="$1" rc=0
   shift
-  perl scripts/bounded-command.pl "$limit" "$@" <&0 &
+  # Truncate for every command: the sparse step cannot inherit clone's result.
+  : > "$tmp/outcome"
+  perl scripts/bounded-command.pl --status-file "$tmp/outcome" "$limit" "$@" <&0 &
   bounded_pid=$!
   wait "$bounded_pid" || rc=$?
   bounded_pid=''
-  [ "$rc" != 142 ] || echo "vendor-foldkit: $what timed out after ${limit}s (offline?)" >&2
+  if ! read_outcome "$tmp/outcome" "$rc"; then
+    echo "vendor-foldkit: the command supervisor returned no valid outcome: check Perl and scripts/bounded-command.pl (exit $rc)." >&2
+    return 1
+  fi
+  case "$bounded_outcome" in
+    'timeout 142') echo "vendor-foldkit: $what timed out after ${limit}s (offline?)" >&2 ;;
+    internal\ *) echo "vendor-foldkit: the command supervisor failed: check its error above." >&2 ;;
+    exit\ *) [ "$rc" = 0 ] || echo "vendor-foldkit: $what failed (exit $rc): check command startup, network access and the error above." >&2 ;;
+  esac
   return "$rc"
 }
 bounded "git clone" git -c advice.detachedHead=false clone --quiet --depth 1 --filter=blob:none --sparse \

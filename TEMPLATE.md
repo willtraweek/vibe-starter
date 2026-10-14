@@ -167,7 +167,7 @@ job sets `SELFTEST_EXCLUDE=test_heavy_`, which drops matching tests without coun
 as skips. Build one locally with
 `SELFTEST_HEAVY=1 SELFTEST_RUST_TOOLCHAIN=1.98.1 ./scripts/template-selftest.sh test_heavy_`.
 The omarchy-plugin heavy test also needs Node 22.8+ and a Qt 6 `qmltestrunner` (`QML_TEST_RUNNER`).
-The foldkit heavy tests need pnpm 12 and the network: they install the pack's locked tree into
+The foldkit heavy tests need pnpm 12, Perl and the network: they install the pack's locked tree into
 your normal pnpm store, vendor Foldkit from GitHub and run Playwright's Chromium.
 
 ### Shipping with gstack

@@ -56,6 +56,7 @@ const BEFORE_EXPRESSION = new Set([
   'throw', 'case', 'yield', 'await', 'default', 'extends', 'as', 'satisfies',
 ])
 const BEFORE_STATEMENT = new Set(['else', 'do'])
+const CONTEXTUAL_EXPRESSION = new Set(['of', 'as', 'satisfies'])
 const NUMBER = /(?:0[xX][\da-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d[\d_]*)?)n?/y
 const LINE_END = /[\n\r\u2028\u2029]/g
 const isKeyword = (token, set) => token?.type === 'ident' && !token.property && !token.escaped && set.has(token.value)
@@ -263,6 +264,14 @@ const tokenize = source => {
   // `!` and `}` (a block), and refused where a `}` could close either.
   const regexAllowed = () => {
     const previous = last()
+    let operandIndex = tokens.length - 1
+    while (isPunct(tokens[operandIndex], '!')) {
+      operandIndex -= 1
+    }
+    const operand = tokens[operandIndex]
+    if (isKeyword(operand, CONTEXTUAL_EXPRESSION)) {
+      fail('cannot tell whether this / after a contextual keyword starts a regular expression: parenthesize the operand, (of) / 2, or the regex, for (const value of (/regex/))')
+    }
     if (previous === undefined || previous.type === 'templateHead' || previous.type === 'templateMiddle') {
       return true
     }
@@ -274,7 +283,7 @@ const tokenize = source => {
     }
     switch (previous.value) {
       case ')': return previous.control
-      case '!': return !endsOperand(tokens[tokens.length - 2])
+      case '!': return !endsOperand(operand)
       case ']': case '++': case '--': return false
       case '}':
         if (previous.kind === 'unknown') {
@@ -676,8 +685,8 @@ const typeQuery = (tokens, index) => {
   }
   const next = tokens[end]
   return next === undefined ||
-    (next.type === 'punct' && [';', ',', '}', ')', ']', '|', '&'].includes(next.value)) ||
-    (next.line > tokens[end - 1].line && isKeyword(next, new Set(['type', 'interface', 'const', 'let', 'var', 'export', 'import', 'declare', 'function', 'class'])))
+    (next.type === 'punct' && [';', ',', '}', ')', ']', '|', '&', '>', '>>', '>>>', '='].includes(next.value)) ||
+    (next.line > tokens[end - 1].line && isKeyword(next, new Set(['type', 'interface', 'const', 'let', 'var', 'export', 'import', 'declare', 'function', 'class', 'describe', 'it', 'test'])))
 }
 for (const file of under('src', 'e2e')) {
   const lexed = read(file)
@@ -823,31 +832,58 @@ const shellCommands = command => {
     unsupported('unterminated quote')
   }
   finishCommand()
-  for (const commandWords of commands) {
-    let executable = 0
-    let wrapped = false
-    // Literal environment assignments and the standard execution wrappers do
-    // not change the following executable's identity. Wrapper options have
-    // their own semantics: reject them rather than mistake one for the command.
-    while (executable < commandWords.length) {
-      const argument = commandWords[executable]
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(argument)) {
-        executable += 1
-      } else if (['env', 'command', 'exec'].includes(argument.split('/').pop())) {
-        wrapped = true
-        executable += 1
-      } else {
-        if (wrapped && argument.startsWith('-')) {
-          unsupported('wrapper options need a reviewed checker extension')
-        }
+  return commands
+}
+// Peel only execution forms whose argument boundaries are known. Other programs
+// remain ordinary executables; interpreting arbitrary programs is not a sandbox.
+const shellExecutable = commandWords => {
+  let executable = 0
+  let wrapped = false
+  // Literal environment assignments and the standard execution wrappers do
+  // not change the following executable's identity. Wrapper options have
+  // their own semantics: reject them rather than mistake one for the command.
+  while (executable < commandWords.length) {
+    const argument = commandWords[executable]
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(argument)) {
+      executable += 1
+    } else if (['env', 'command', 'exec', 'nohup', 'npx'].includes(argument.split('/').pop())) {
+      wrapped = true
+      executable += 1
+    } else if (argument.split('/').pop() === 'timeout') {
+      const duration = commandWords[executable + 1] ?? ''
+      if (!/^\d+(?:\.\d+)?[smhd]?$/.test(duration)) {
+        unsupported('timeout requires one literal duration, without options')
+      }
+      wrapped = true
+      executable += 2
+    } else if (argument.split('/').pop() === 'pnpm') {
+      if (commandWords[executable + 1]?.startsWith('-')) {
+        unsupported('wrapper options need a reviewed checker extension')
+      }
+      if (commandWords[executable + 1] !== 'exec') {
         break
       }
-    }
-    if (/^(?:.*\/)?(?:[bdkz]?sh|bash|dash|fish|csh|tcsh|eval|source|\.)$/.test(commandWords[executable] ?? '')) {
-      unsupported('nested shell evaluation')
+      wrapped = true
+      executable += 2
+    } else {
+      if (wrapped && argument.startsWith('-')) {
+        unsupported('wrapper options need a reviewed checker extension')
+      }
+      break
     }
   }
-  return commands
+  const name = (commandWords[executable] ?? '').split('/').pop()
+  if (/^(?:[bdkz]?sh|ash|mksh|bash|dash|fish|csh|tcsh|eval|source|\.)$/.test(name)) {
+    unsupported('nested shell evaluation')
+  }
+  if (['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', 'function', '!'].includes(name)) {
+    unsupported('shell control flow')
+  }
+  // Node's script-path form is the supported alternate spelling of Vite.
+  if (name === 'node' && /(?:^|\/)vite\.m?js$/.test(commandWords[executable + 1] ?? '')) {
+    executable += 1
+  }
+  return executable
 }
 const checkShellCommand = (command, file, line, forbidden, requireLiteral = true) => {
   if (typeof command !== 'string') {
@@ -856,16 +892,18 @@ const checkShellCommand = (command, file, line, forbidden, requireLiteral = true
   }
   let commands
   try {
-    commands = shellCommands(command)
+    commands = shellCommands(command).map(words => ({ words, executable: shellExecutable(words) }))
   } catch (error) {
     if (requireLiteral) {
       report(file, line, `${error.message}: ${RELAY}`)
     }
     return
   }
-  if (commands.some(words => {
-    const vite = words.findIndex(word => /(?:^|\/)vite(?:\.m?js)?$/.test(word))
-    return vite >= 0 && words.slice(vite + 1).some(word => /^--config(?:[=.].*)?$|^-[A-Za-z]*c[A-Za-z]*(?:=.*)?$/.test(word))
+  if (commands.some(({ words, executable }) => {
+    // Preserve the existing conservative literal-word scan for other launchers.
+    // A quoted whole command is one word; it is not evaluated or split again.
+    const vite = words.findIndex((word, index) => index >= executable && /(?:^|\/)vite(?:\.m?js|@[^/]+)?$/.test(word))
+    return vite >= 0 && words.slice(vite + 1).some(word => /^--(?:config|c)(?:[=.].*)?$|^-[A-Za-z]*c[A-Za-z]*(?:=.*)?$/.test(word))
   })) {
     report(file, line, `${forbidden}: ${RELAY}`)
   }
@@ -917,7 +955,9 @@ if (exists('playwright.config.ts')) {
     `cannot follow this webServer value: use literal objects/arrays or unambiguous local const aliases (${EXTEND})`)
   const valueEnd = index => closes.has(index) ? closes.get(index) + 1 : tokens[index]?.type === 'ident' ? index + 1 : undefined
   const strictCommands = new Set()
+  const serverValues = new Set()
   const follow = (index, end, visited = new Set()) => {
+    serverValues.add(index)
     if (valueEnd(index) !== end) {
       cannotFollow(index)
       return
@@ -971,6 +1011,132 @@ if (exists('playwright.config.ts')) {
       }
     }
   })
+  // A const binding does not make its object immutable. Track identity through
+  // local aliases, and containment outward through literal objects/arrays.
+  // Every use of the resulting bindings must be one of those literal edges,
+  // its declaration, or the default export. Calls/member access may mutate or
+  // expose the object, so they require a reviewed extension instead of guessing.
+  // Config results are roots even before they acquire a webServer property.
+  const configNames = new Set(['defineConfig'])
+  for (const ref of refs.filter(entry => entry.specifier === '@playwright/test')) {
+    for (const name of ref.names ?? []) {
+      if (name.imported === 'defineConfig') {
+        configNames.add(name.local)
+      }
+    }
+  }
+  const configCall = index => tokens[index]?.type === 'ident' && !tokens[index].property &&
+    configNames.has(tokens[index].value) && isPunct(tokens[index + 1], '(')
+  const expressionEnd = index => configCall(index) ? closes.get(index + 1) + 1 : valueEnd(index)
+  const edges = new Map()
+  const roots = new Set()
+  const literalReferences = new Set()
+  const declarationReferences = new Set()
+  const readableBindings = new Set()
+  const scannedValues = new Set()
+  const connect = (child, parent) => {
+    if (child !== undefined && parent !== undefined) {
+      const parents = edges.get(child) ?? new Set()
+      parents.add(parent)
+      edges.set(child, parents)
+    }
+  }
+  const literalValue = (index, end, owner) => {
+    if (expressionEnd(index) !== end) {
+      return undefined
+    }
+    const token = tokens[index]
+    const call = configCall(index)
+    if (token?.type !== 'ident' && !isPunct(token, '{') && !isPunct(token, '[')) {
+      return undefined
+    }
+    const identity = token.type === 'ident' && !call ? `name:${token.value}` : `value:${index}`
+    connect(identity, owner)
+    if (token.type === 'ident' && !call) {
+      literalReferences.add(index)
+      return identity
+    }
+    if (scannedValues.has(index)) {
+      return identity
+    }
+    scannedValues.add(index)
+    if (call) {
+      const argumentEnd = isPunct(tokens[end - 2], ',') ? end - 2 : end - 1
+      const argument = literalValue(index + 2, argumentEnd, identity)
+      if (argument === undefined) {
+        cannotFollow(index)
+      }
+      connect(identity, argument)
+      return identity
+    }
+    for (let entry = index + 1; entry < end - 1;) {
+      let next = entry
+      while (next < end - 1 && !isPunct(tokens[next], ',')) {
+        next = closes.has(next) ? closes.get(next) + 1 : next + 1
+      }
+      if (isPunct(token, '[')) {
+        literalValue(entry, next, identity)
+      } else if ((tokens[entry]?.type === 'ident' || isText(tokens[entry])) && isPunct(tokens[entry + 1], ':')) {
+        literalValue(entry + 2, next, identity)
+      } else if (tokens[entry]?.type === 'ident' && next === entry + 1) {
+        literalValue(entry, next, identity)
+      }
+      entry = next + 1
+    }
+    return identity
+  }
+  tokens.forEach((token, index) => {
+    if (isKeyword(token, new Set(['const', 'let', 'var'])) && tokens[index + 1]?.type === 'ident' &&
+      isPunct(tokens[index + 2], '=')) {
+      const bindingName = tokens[index + 1].value
+      const binding = `name:${bindingName}`
+      declarationReferences.add(index + 1)
+      const end = expressionEnd(index + 3)
+      const after = tokens[end]
+      const terminated = end !== undefined && (after === undefined || isPunct(after, ';') ||
+        (after.line > tokens[end - 1].line && isKeyword(after, new Set(['const', 'let', 'var', 'export', 'import', 'function', 'class', 'type', 'interface']))))
+      if (terminated) {
+        const value = literalValue(index + 3, end, binding)
+        connect(binding, value)
+        if (value !== undefined && isName(token, 'const') && depths[index] === 0) {
+          readableBindings.add(bindingName)
+        }
+      }
+    }
+    if (configCall(index)) {
+      roots.add(literalValue(index, expressionEnd(index)))
+    }
+    if (isName(token, 'export') && isName(tokens[index + 1], 'default')) {
+      const value = literalValue(index + 2, expressionEnd(index + 2))
+      if (value === undefined) {
+        cannotFollow(index + 2)
+      }
+      roots.add(value)
+    }
+  })
+  for (const index of serverValues) {
+    roots.add(literalValue(index, expressionEnd(index)))
+  }
+  const tracked = new Set([...roots].filter(value => value !== undefined))
+  for (const value of tracked) {
+    for (const parent of edges.get(value) ?? []) {
+      tracked.add(parent)
+    }
+  }
+  for (const binding of [...tracked].filter(value => value.startsWith('name:'))) {
+    const bindingName = binding.slice(5)
+    const entries = bindings.get(bindingName) ?? []
+    if (entries.length !== 1 || !readableBindings.has(bindingName)) {
+      cannotFollow(entries[0])
+    }
+    tokens.forEach((token, index) => {
+      if (isName(token, bindingName) && !declarationReferences.has(index) && !literalReferences.has(index) &&
+        !(property(index, bindingName) && isPunct(tokens[index + 1], ':')) &&
+        !refs.some(ref => index >= ref.start && index < ref.end)) {
+        cannotFollow(index)
+      }
+    })
+  }
   tokens.forEach((token, index) => {
     // Retain the permissive scan for other literal strings, including metadata
     // commands and paths. Only commands reached through webServer must satisfy

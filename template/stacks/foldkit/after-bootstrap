@@ -6,6 +6,10 @@
 # 2. Vendor Foldkit's source into repos/foldkit (gitignored) for agents.
 # Both need the network; an offline failure is recoverable, interruption stops.
 #
+if ! command -v perl >/dev/null 2>&1; then
+  echo "Perl is not installed: install Perl (including its core POSIX and Errno modules) for the bounded network commands." >&2
+  exit 1
+fi
 # pnpm 12 reads pnpm_config_* and PNPM_CONFIG_* settings from the environment
 # over pnpm-workspace.yaml: clear the supply-chain ones, so the install resolves
 # under the file's policy (scripts/check.d/foldkit.sh clears the same list).
@@ -19,6 +23,23 @@ done
 # FOLDKIT_TEST_TIMEOUT shortens the limit for the template's tests.
 limit="${FOLDKIT_TEST_TIMEOUT:-600}"
 bounded_pid=''
+install_status="$(mktemp "${TMPDIR:-/tmp}/foldkit-install-status.XXXXXX")" || exit 1
+trap 'rm -f "$install_status"' EXIT
+# One complete outcome record must agree with the observed exit, including 0.
+# A second line or unterminated trailing data is invalid, even if the first fits.
+read_outcome() {
+  bounded_outcome='' outcome_extra=''
+  { IFS= read -r bounded_outcome && ! IFS= read -r outcome_extra && [ -z "$outcome_extra" ]; } < "$1" || return 1
+  # Shell read may discard NUL bytes; compare the exact ASCII record length.
+  [ "$(wc -c < "$1")" -eq "$((${#bounded_outcome} + 1))" ] || return 1
+  case "$bounded_outcome" in
+    "exit $2") return 0 ;;
+    "signal $2") [ "$2" -gt 128 ] && [ "$2" -le 255 ] ;;
+    'timeout 142') [ "$2" = 142 ] ;;
+    'internal 125') [ "$2" = 125 ] ;;
+    *) return 1 ;;
+  esac
+}
 interrupted() {
   trap '' HUP INT TERM
   if [ -n "$bounded_pid" ]; then
@@ -41,14 +62,19 @@ run_step() {
 }
 if ! command -v pnpm >/dev/null 2>&1; then
   echo "pnpm not found: install pnpm 12 (https://pnpm.io/installation), then run 'pnpm install'."
-elif run_step perl scripts/bounded-command.pl "$limit" pnpm install --frozen-lockfile; then
-  echo "Installed the locked dependencies (tsc is patched by @effect/tsgo)."
 else
-  install_rc=$?
-  case "$install_rc" in
-    129|130|143) exit "$install_rc" ;;
-    142) echo "pnpm install timed out after ${limit}s (offline?): run 'pnpm install --frozen-lockfile' before your first commit." ;;
-    *) echo "pnpm install failed (see above; offline?): run 'pnpm install --frozen-lockfile' before your first commit." ;;
+  install_rc=0
+  run_step perl scripts/bounded-command.pl --status-file "$install_status" "$limit" pnpm install --frozen-lockfile || install_rc=$?
+  if ! read_outcome "$install_status" "$install_rc"; then
+    echo "The command supervisor returned no valid outcome: check Perl and scripts/bounded-command.pl (exit $install_rc)." >&2
+    exit 1
+  fi
+  case "$bounded_outcome" in
+    'exit 0') echo "Installed the locked dependencies (tsc is patched by @effect/tsgo)." ;;
+    signal\ *) exit "$install_rc" ;;
+    internal\ *) echo "The command supervisor failed: check its error above." >&2; exit 1 ;;
+    'timeout 142') echo "pnpm install timed out after ${limit}s (offline?): run 'pnpm install --frozen-lockfile' before your first commit." ;;
+    *) echo "pnpm install failed (exit $install_rc; see above): check command startup, network access and pnpm's error, then run 'pnpm install --frozen-lockfile'." ;;
   esac
 fi
 # vendor-foldkit.sh says what it needs (git, the network, Node 22 or newer).

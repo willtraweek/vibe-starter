@@ -24,11 +24,15 @@ release entry. New projects start from their own blank changelog (`template/skel
 - Omarchy's validator cache now publishes without replacing another check's checkout and
   accepts only released commits, including on cache hits. Scripts ignore `CDPATH` when
   finding their project, and the desktop installers use the binary Cargo built, reject stale
-  versions and relative install prefixes, and preserve unrelated installed tools.
+  versions and relative install prefixes, and preserve unrelated installed tools. Failed installs
+  remain recoverable, temporary-path symlinks stay untouched, and escaped launch commands survive
+  reinstall and uninstall.
 - Foldkit checks now validate imports, module mocks, relay configuration and MCP launchers
-  with a restricted tokenizer, including executable `typeof` calls and quoted launch flags;
+  with a restricted tokenizer, including executable `typeof` calls, ambiguous slash syntax,
+  quoted and wrapped launch commands and Playwright config mutation, while accepting common type-only queries;
   validate every dependency section and the supply-chain policy; stop timed-out network process
-  groups; and verify vendored release provenance in a separate Git checkout.
+  groups; distinguish command failures from deadlines and cancellation; and verify vendored
+  release provenance in a separate Git checkout.
   MICRO versions display correctly, and status requests time out after ten seconds including
   response-body reads.
 - Named browser journeys must run and pass in Playwright's report, and retired journeys and
