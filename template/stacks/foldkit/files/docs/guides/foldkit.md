@@ -80,6 +80,11 @@ cannot follow (an alias of `vi` or `foldkit`, a computed module name, a `/` afte
 place) rather than guess. When it refuses a change that is safe, extend the rule in
 `scripts/check-rules.mjs`, in a reviewed change that says why, instead of working around it.
 
+Package scripts and literal Playwright `webServer.command` values support literal shell words,
+quoted fragments and escapes, with commands joined by `&&`, `||`, `;` or newline.
+Expansions, redirection, grouping and nested shell evaluation are outside this supported grammar
+and need a reviewed checker extension.
+
 ## The upgrade train
 
 Foldkit pins one exact Effect version, and every `@foldkit/*` package pins the same one. So

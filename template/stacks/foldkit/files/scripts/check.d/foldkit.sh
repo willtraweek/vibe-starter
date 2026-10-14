@@ -29,14 +29,34 @@ node scripts/check-rules.mjs
 # The lockfile must match package.json and pass the policy. --lockfile-only writes
 # neither the lockfile (frozen) nor node_modules; it needs the registry only when
 # pnpm's supply-chain verification of the lockfile isn't cached yet, and offline
-# with a cold cache it waits instead of failing, so it is bounded (perl's alarm;
+# with a cold cache it waits instead of failing, so its process group is bounded (
 # FOLDKIT_TEST_TIMEOUT shortens the limit for the template's tests). (--offline
 # can't work here: pnpm 12 won't resolve the devEngines Node runtime offline;
 # --dry-run exits 0 on a stale lockfile.)
 limit="${FOLDKIT_TEST_TIMEOUT:-300}"
 lock_rc=0
-lock_out="$(perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n"' \
-  "$limit" pnpm install --frozen-lockfile --lockfile-only 2>&1)" || lock_rc=$?
+lock_pid=''
+lock_tmp="$(mktemp "${TMPDIR:-/tmp}/foldkit-lock.XXXXXX")"
+trap 'rm -f "$lock_tmp"' EXIT
+interrupted() {
+  trap '' HUP INT TERM
+  if [ -n "$lock_pid" ]; then
+    kill -TERM "$lock_pid" 2>/dev/null || :
+    wait "$lock_pid" 2>/dev/null || :
+  fi
+  exit "$1"
+}
+trap 'interrupted 129' HUP
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
+perl scripts/bounded-command.pl "$limit" pnpm install --frozen-lockfile --lockfile-only <&0 >"$lock_tmp" 2>&1 &
+lock_pid=$!
+wait "$lock_pid" || lock_rc=$?
+lock_pid=''
+lock_out="$(cat "$lock_tmp")"
+rm -f "$lock_tmp"
+trap - EXIT HUP INT TERM
+case "$lock_rc" in 129|130|143) exit "$lock_rc" ;; esac
 if [ "$lock_rc" = 142 ]; then
   printf '%s\n' "$lock_out" >&2
   die "the lockfile check timed out after ${limit}s (offline? pnpm verifies the lockfile against the registry once per cache)."

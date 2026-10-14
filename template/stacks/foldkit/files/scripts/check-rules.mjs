@@ -290,16 +290,22 @@ const tokenize = source => {
       return 'block'
     }
     if (previous.type === 'punct') {
-      if ([';', '{', '}', ')', ']', '=>'].includes(previous.value)) {
+      if ([';', '{'].includes(previous.value)) {
         return 'block'
       }
-      return [':', '>'].includes(previous.value) ? 'unknown' : 'object'
+      if (previous.value === ')') {
+        return previous.control ? 'block' : 'unknown'
+      }
+      return [':', '>', ']', '}', '=>'].includes(previous.value) ? 'unknown' : 'object'
     }
     if (previous.type === 'ident' && !previous.property) {
       if (isKeyword(previous, new Set(['void']))) {
         return 'unknown'
       }
-      return isKeyword(previous, BEFORE_EXPRESSION) ? 'object' : 'block'
+      if (isKeyword(previous, new Set(['else', 'do', 'try', 'finally']))) {
+        return 'block'
+      }
+      return isKeyword(previous, BEFORE_EXPRESSION) ? 'object' : 'unknown'
     }
     return previous.type === 'templateHead' || previous.type === 'templateMiddle' ? 'object' : 'unknown'
   }
@@ -657,6 +663,22 @@ const MOCKS = new Set(['mock', 'doMock', 'importMock'])
 const NO_MOCK = 'no vi.mock, vi.doMock or vi.importMock: swap a Layer at the network edge instead (TESTING.md: mocks only at trust boundaries)'
 // The identifier after the `.` at index, if there is one.
 const member = (tokens, index) => (isPunct(tokens[index], '.') && tokens[index + 1]?.type === 'ident' ? tokens[index + 1] : undefined)
+// A non-call typeof query may name the binding or a dotted member. Do not
+// exempt calls, computed members, optional access or postfix assertions: a
+// runtime typeof still evaluates its operand, including a forbidden mock.
+const typeQuery = (tokens, index) => {
+  if (!isName(tokens[index - 1], 'typeof')) {
+    return false
+  }
+  let end = index + 1
+  while (member(tokens, end) !== undefined) {
+    end += 2
+  }
+  const next = tokens[end]
+  return next === undefined ||
+    (next.type === 'punct' && [';', ',', '}', ')', ']', '|', '&'].includes(next.value)) ||
+    (next.line > tokens[end - 1].line && isKeyword(next, new Set(['type', 'interface', 'const', 'let', 'var', 'export', 'import', 'declare', 'function', 'class'])))
+}
 for (const file of under('src', 'e2e')) {
   const lexed = read(file)
   if (lexed === undefined) {
@@ -695,7 +717,7 @@ for (const file of under('src', 'e2e')) {
   // A binding may only be called as binding.method(...) (or <...>(...)), and a
   // namespace only read as ns.name, or called as ns.vi.method(...).
   tokens.forEach((token, index) => {
-    if (token.type !== 'ident' || token.property || declared.has(index) || isName(tokens[index - 1], 'typeof')) {
+    if (token.type !== 'ident' || token.property || declared.has(index) || typeQuery(tokens, index)) {
       return
     }
     let shown = token.value
@@ -728,13 +750,126 @@ const RELAY = `${CONFIG} must import { foldkit } from '${PLUGIN}' once and call 
 // themselves: { devToolsMcpPort: 'false' } (a string) is not { devToolsMcpPort: false }.
 const shape = tokens =>
   tokens.map(token => (token.type === 'punct' || (token.type === 'ident' && !token.escaped) ? token.value : `<${token.type}>`)).join(' ')
-// Whether a shell command runs vite with --config or -c, in any spelling.
-const configuresVite = command =>
-  command.split(/&&|\|\||[;|&\n()]/).some(part => {
-    const words = part.trim().split(/\s+/).map(word => word.replace(/^["']|["']$/g, ''))
+// A bounded, non-evaluating shell grammar: literal words, quotes and escapes,
+// joined by &&, ||, ; or newline. Expansions, redirection, grouping and nested
+// shell evaluation need a reviewed extension; this is not a shell sandbox.
+const shellCommands = command => {
+  const commands = []
+  let words = []
+  let word = ''
+  let started = false
+  let quote
+  const unsupported = detail => { throw new Error(`unsupported shell syntax (${detail})`) }
+  const finishWord = () => {
+    if (started) {
+      words.push(word)
+      word = ''
+      started = false
+    }
+  }
+  const finishCommand = () => {
+    finishWord()
+    if (words.length > 0) {
+      commands.push(words)
+      words = []
+    }
+  }
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]
+    const next = command[index + 1]
+    if (quote === "'") {
+      if (char === quote) {
+        quote = undefined
+      } else {
+        word += char
+      }
+    } else if (char === '\\') {
+      if (next === undefined) {
+        unsupported('trailing backslash')
+      }
+      if (quote === '"' && !['$', '`', '"', '\\', '\n'].includes(next)) {
+        word += char
+      } else {
+        index += 1
+        if (next !== '\n') {
+          word += next
+          started = true
+        }
+      }
+    } else if (char === quote) {
+      quote = undefined
+    } else if (char === '$' || char === '`') {
+      unsupported('expansion or substitution')
+    } else if (quote === '"') {
+      word += char
+    } else if (char === "'" || char === '"') {
+      quote = char
+      started = true
+    } else if (char === '\n' || char === ';' || ((char === '&' || char === '|') && next === char)) {
+      finishCommand()
+      if (char === '&' || char === '|') {
+        index += 1
+      }
+    } else if (/[\t\r ]/.test(char)) {
+      finishWord()
+    } else if (/[&|<>()*?\[\]{}]/.test(char) || (!started && (char === '~' || char === '#'))) {
+      unsupported(`operator or expansion ${JSON.stringify(char)}`)
+    } else {
+      word += char
+      started = true
+    }
+  }
+  if (quote !== undefined) {
+    unsupported('unterminated quote')
+  }
+  finishCommand()
+  for (const words of commands) {
+    let executable = 0
+    let wrapped = false
+    // Literal environment assignments and the standard execution wrappers do
+    // not change the following executable's identity. Wrapper options have
+    // their own semantics: reject them rather than mistake one for the command.
+    while (executable < words.length) {
+      const word = words[executable]
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+        executable += 1
+      } else if (['env', 'command', 'exec'].includes(word.split('/').pop())) {
+        wrapped = true
+        executable += 1
+      } else {
+        if (wrapped && word.startsWith('-')) {
+          unsupported('wrapper options need a reviewed checker extension')
+        }
+        break
+      }
+    }
+    if (/^(?:.*\/)?(?:[bdkz]?sh|bash|dash|fish|csh|tcsh|eval|source|\.)$/.test(words[executable] ?? '')) {
+      unsupported('nested shell evaluation')
+    }
+  }
+  return commands
+}
+const checkShellCommand = (command, file, line, forbidden, requireLiteral = true) => {
+  if (typeof command !== 'string') {
+    report(file, line, `${forbidden}: ${RELAY}`)
+    return
+  }
+  let commands
+  try {
+    commands = shellCommands(command)
+  } catch (error) {
+    if (requireLiteral) {
+      report(file, line, `${error.message}: ${RELAY}`)
+    }
+    return
+  }
+  if (commands.some(words => {
     const vite = words.findIndex(word => /(?:^|\/)vite(?:\.m?js)?$/.test(word))
     return vite >= 0 && words.slice(vite + 1).some(word => /^--config(?:[=.].*)?$|^-[A-Za-z]*c[A-Za-z]*(?:=.*)?$/.test(word))
-  })
+  })) {
+    report(file, line, `${forbidden}: ${RELAY}`)
+  }
+}
 for (const file of files.filter(path => path.split('/').pop().startsWith('vite.config.') && path !== CONFIG)) {
   report(file, 1, `only the root ${CONFIG} may configure Vite: ${RELAY}`)
 }
@@ -747,20 +882,101 @@ if (manifest !== undefined) {
     report('package.json', 1, `is not valid JSON (${error.message})`)
   }
   for (const [name, command] of Object.entries(commands)) {
-    if (typeof command !== 'string' || configuresVite(command)) {
-      report('package.json', lineOf(manifest, JSON.stringify(name)), `script ${JSON.stringify(name)} must be a command that passes no --config to vite: ${RELAY}`)
-    }
+    checkShellCommand(command, 'package.json', lineOf(manifest, JSON.stringify(name)), `script ${JSON.stringify(name)} must be a command that passes no --config to vite`)
   }
 }
 if (exists('playwright.config.ts')) {
-  const tokens = read('playwright.config.ts')?.tokens ?? []
+  const { tokens = [], refs = [] } = read('playwright.config.ts') ?? {}
+  const closes = new Map()
+  const depths = []
+  const stack = []
   tokens.forEach((token, index) => {
-    if ((token.type === 'string' || token.type.startsWith('template')) && configuresVite(token.value)) {
-      report('playwright.config.ts', token.line, `a command passes --config to vite: ${RELAY}`)
+    depths[index] = stack.length
+    if (token.type === 'punct' && ['{', '[', '('].includes(token.value)) {
+      stack.push(index)
+    } else if (token.type === 'punct' && ['}', ']', ')'].includes(token.value)) {
+      closes.set(stack.pop(), index)
     }
-    const plain = isPunct(tokens[index + 1], ':') && isText(tokens[index + 2]) && (isPunct(tokens[index + 3], ',') || isPunct(tokens[index + 3], '}'))
-    if (isName(token, 'command') && !plain) {
+  })
+  const bindings = new Map()
+  tokens.forEach((token, index) => {
+    if (isKeyword(token, new Set(['const', 'let', 'var'])) && tokens[index + 1]?.type === 'ident') {
+      const name = tokens[index + 1].value
+      const entries = bindings.get(name) ?? []
+      entries.push(isName(token, 'const') && depths[index] === 0 && isPunct(tokens[index + 2], '=') ? index + 3 : undefined)
+      bindings.set(name, entries)
+    }
+  })
+  const property = (index, name) =>
+    (isName(tokens[index], name) || (isText(tokens[index]) && tokens[index].value === name)) &&
+    (isPunct(tokens[index - 1], '{') || isPunct(tokens[index - 1], ',')) &&
+    !refs.some(ref => index >= ref.start && index < ref.end)
+  const plainCommand = index => isPunct(tokens[index + 1], ':') && isText(tokens[index + 2]) &&
+    (isPunct(tokens[index + 3], ',') || isPunct(tokens[index + 3], '}'))
+  const cannotFollow = index => report('playwright.config.ts', tokens[index]?.line ?? 1,
+    `cannot follow this webServer value: use literal objects/arrays or unambiguous local const aliases (${EXTEND})`)
+  const valueEnd = index => closes.has(index) ? closes.get(index) + 1 : tokens[index]?.type === 'ident' ? index + 1 : undefined
+  const strictCommands = new Set()
+  const follow = (index, end, visited = new Set()) => {
+    if (valueEnd(index) !== end) {
+      cannotFollow(index)
+      return
+    }
+    if (tokens[index]?.type === 'ident') {
+      const name = tokens[index].value
+      const entries = bindings.get(name) ?? []
+      const value = entries[0]
+      const last = value === undefined ? undefined : valueEnd(value)
+      const after = tokens[last]
+      const terminated = last !== undefined && (after === undefined || isPunct(after, ';') ||
+        (after.line > tokens[last - 1].line && isKeyword(after, new Set(['const', 'let', 'var', 'export', 'import', 'function', 'class', 'type', 'interface']))))
+      if (entries.length !== 1 || visited.has(name) || !terminated) {
+        cannotFollow(index)
+        return
+      }
+      follow(value, last, new Set([...visited, name]))
+      return
+    }
+    if (!isPunct(tokens[index], '{') && !isPunct(tokens[index], '[')) {
+      cannotFollow(index)
+      return
+    }
+    for (let entry = index + 1; entry < end - 1;) {
+      let next = entry
+      while (next < end - 1 && !isPunct(tokens[next], ',')) {
+        next = closes.has(next) ? closes.get(next) + 1 : next + 1
+      }
+      if (isPunct(tokens[index], '[')) {
+        follow(entry, next, visited)
+      } else if (!((tokens[entry]?.type === 'ident' || isText(tokens[entry])) && isPunct(tokens[entry + 1], ':')) &&
+        !(tokens[entry]?.type === 'ident' && tokens[entry].value !== 'command' && next === entry + 1)) {
+        cannotFollow(entry)
+      } else if (property(entry, 'command') && plainCommand(entry)) {
+        strictCommands.add(entry + 2)
+      }
+      entry = next + 1
+    }
+  }
+  tokens.forEach((token, index) => {
+    if (property(index, 'command') && !plainCommand(index)) {
       report('playwright.config.ts', token.line, `the webServer command must be one plain string, so check-rules can read it (${EXTEND})`)
+    }
+    if (property(index, 'webServer')) {
+      const value = isPunct(tokens[index + 1], ':') ? index + 2 : index
+      const end = valueEnd(value)
+      if (end === undefined || !(isPunct(tokens[end], ',') || isPunct(tokens[end], '}'))) {
+        cannotFollow(index)
+      } else {
+        follow(value, end)
+      }
+    }
+  })
+  tokens.forEach((token, index) => {
+    // Retain the permissive scan for other literal strings, including metadata
+    // commands and paths. Only commands reached through webServer must satisfy
+    // the entire shell grammar; this does not evaluate JavaScript expressions.
+    if (token.type === 'string' || token.type.startsWith('template')) {
+      checkShellCommand(token.value, 'playwright.config.ts', token.line, 'a command passes --config to vite', strictCommands.has(index))
     }
   })
 }

@@ -47,6 +47,18 @@ if (ref[1] !== process.argv[1]) {
 console.log(ref[2])' "$pin")"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/vendor-foldkit.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+bounded_pid=''
+interrupted() {
+  trap '' HUP INT TERM
+  if [ -n "$bounded_pid" ]; then
+    kill -TERM "$bounded_pid" 2>/dev/null || :
+    wait "$bounded_pid" 2>/dev/null || :
+  fi
+  exit "$1"
+}
+trap 'interrupted 129' HUP
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
 # The clone and the sparse checkout (which downloads the files) are bounded:
 # offline, git can wait a long time. FOLDKIT_TEST_TIMEOUT shortens the limit for
 # the template's tests.
@@ -54,7 +66,10 @@ limit="${FOLDKIT_TEST_TIMEOUT:-600}"
 bounded() {  # $1 = what it does, rest = the command
   local what="$1" rc=0
   shift
-  perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n"' "$limit" "$@" || rc=$?
+  perl scripts/bounded-command.pl "$limit" "$@" <&0 &
+  bounded_pid=$!
+  wait "$bounded_pid" || rc=$?
+  bounded_pid=''
   [ "$rc" != 142 ] || echo "vendor-foldkit: $what timed out after ${limit}s (offline?)" >&2
   return "$rc"
 }

@@ -5611,6 +5611,9 @@ for (const [text, call] of [
   ["import { it, vi as mocker } from '@effect/vitest'\nmocker.doMock('./main')\n", 'mocker.doMock'],
   ["import * as V from 'vitest'\nV.vi.mock('./main')\n", 'V.vi.mock'],
   ["import * as E from '@effect/vitest'\nE.vitest.doMock('./main')\n", 'E.vitest.doMock'],
+  ["import { vi } from 'vitest'\nexport const mocked = typeof vi.doMock('./main')\n", 'vi.doMock'],
+  ["import { vi as v } from 'vitest'\nconst mocked = typeof v.mock('./main')\n", 'v.mock'],
+  ["import * as V from 'vitest'\nconst mocked = typeof V.vi.importMock('./main')\n", 'V.vi.importMock'],
   [`${bs}u0076i.mock('./main')\n`, 'vi.mock'],
 ]) {
   check(test(text), 1, `${call}: ${NO_MOCK}`)
@@ -5624,6 +5627,9 @@ for (const [text, shown] of [
   ["import * as V from 'vitest'\nconst t = V\n", 'V'],
   ["import * as V from 'vitest'\nV['vi'].mock('./main')\n", 'V'],
   ["import * as V from 'vitest'\nconst v = V.vi\n", 'V.vi'],
+  ["import { vi } from 'vitest'\nconst mocked = typeof vi['doMock']('./main')\n", 'vi'],
+  ["import * as V from 'vitest'\nconst mocked = typeof V['vi'].mock('./main')\n", 'V'],
+  ["import { vi } from 'vitest'\nconst mocked = typeof (alias = vi)\n", 'vi'],
 ]) {
   check(test(text), 1, `${shown} is used other than as ${shown}.<method>(...)`)
 }
@@ -5640,12 +5646,14 @@ check(test([
   "vi.spyOn(console, 'log')",
   'vi.useFakeTimers()',
   'type Spy = typeof vi.fn',
+  'type Helpers = typeof vi',
   "// vi.mock('./main')",
   "export const s = \"vi.mock('./main')\"",
   'declare const lib: { mock: (path: string) => void }',
   "lib.mock('./main')",
   '',
 ].join('\n')), 0, 'check-rules: ok')
+check(test("import { vi as v } from 'vitest'\nimport * as V from 'vitest'\ntype Alias = typeof v.fn; type Namespace = typeof V; type Helpers = typeof V.vi; type Spy = typeof V.vi.fn\n"), 0, 'check-rules: ok')
 PROBE
 }
 test_stack_foldkit_rules_keep_the_devtools_relay_off() {
@@ -5667,6 +5675,28 @@ check({}, 0, 'check-rules: ok')
 // The token-protected relay, and a formatter's trailing commas.
 check(config(CALL, 'foldkit()'), 0, 'check-rules: ok')
 check(config(CALL, 'foldkit({\n      devToolsMcpPort: false,\n    },)'), 0, 'check-rules: ok')
+// A function/class expression ends an operand, not a statement block. Treating
+// the following division as a regex hid a second plugin call from the guard.
+const exportedPlugins = expression => ({ 'vite.config.ts': `import { foldkit } from '${PLUGIN}'\nconst p = [${CALL}]\n${expression}\nexport default { plugins: p }\n` })
+for (const expression of [
+  '+function(){return 0}', '+function named(){return 0}',
+  '+async function(){return 0}', '+function*(){yield 0}', '+async function*(){yield 0}',
+  '+class {}', '+class Named {}', '+class extends Object {}',
+  '+class Named extends Object {}', '+class extends (Object) {}',
+]) {
+  check(exportedPlugins(`const _x = ${expression} / p.push(foldkit({devToolsMcpPort:9988})) / 1`), 1,
+    'cannot tell whether this / after } starts a regular expression')
+}
+for (const expression of [
+  'const _x = 12 / 3', 'const _x = (function(){return 0}) / 2',
+  'const _x = {} / 2', 'const re = /foldkit.*devToolsMcpPort:9988/',
+  'if (true) {} /literal/.test("literal")',
+  'if (true) {} else {} /literal/.test("literal")',
+  'do {} while (false); /literal/.test("literal")',
+  'try {} finally {} /literal/.test("literal")',
+]) {
+  check(exportedPlugins(expression), 0, 'check-rules: ok')
+}
 check(config(`[${CALL}]`, '[\n    foldkit({ devToolsMcpPort: 9988 }), // foldkit({ devToolsMcpPort: false })\n  ]'), 1,
   `vite.config.ts:${lineOf(vite, CALL) + 1}: foldkit(...) takes another argument than { devToolsMcpPort: false } or none`)
 for (const call of [
@@ -5721,16 +5751,94 @@ check({
 // ...and nothing points vite at another config.
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
 const script = command => ({ 'package.json': `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, dev: command } }, null, 2)}\n` })
-for (const command of ['vite --config other.ts', 'vite -c other.ts', 'vite build --config=other.ts', 'pnpm exec vite preview -c=other.ts', 'node node_modules/vite/bin/vite.js --config other.ts']) {
+const alternateConfigs = [
+  'vite --config other.ts', 'vite -c other.ts', 'vite build --config=other.ts',
+  'pnpm exec vite preview -c=other.ts', 'node node_modules/vite/bin/vite.js --config other.ts',
+  'vite --"config" other.ts', 'vi"te" --"config" other.ts',
+  String.raw`v\ite --con\fig other.ts`, 'pnpm exec "vi"te -"c" other.ts',
+  'vite "--config"="other.ts"', "vite --'config' other.ts",
+  'vite "" --config other.ts', 'vite --con' + bs + '\nfig other.ts',
+  'env MODE=production vite --config other.ts', 'command vite --config other.ts',
+  'exec vite --config other.ts', '/usr/bin/env MODE=production vite --"config" other.ts',
+]
+for (const command of alternateConfigs) {
   check(script(command), 1, 'script "dev" must be a command that passes no --config to vite', ...RELAY)
 }
-check(script('vite --port 3001 && vitest --config vitest.config.ts'), 0, 'check-rules: ok')
+const literalCommands = [
+  'vite --port 3001 && vitest --config vitest.config.ts',
+  'vi"te" --port 3001', String.raw`v\ite --port 3001`,
+  'pnpm exec vite --port 3001', 'node node_modules/vite/bin/vite.js build',
+  'vite --port 3001 || vite preview; vitest run\nnode scripts/check-pins.mjs',
+  'echo "--config && vite"; vite', 'echo "vite; --config" && vite',
+  "echo 'vite --config $IGNORED *.ts' && vite", 'echo "" && vite',
+  'echo "quoted ' + bs + '$literal ' + bs + '`tick ' + bs + 'q" && vite',
+  String.raw`echo vite\;\ --config && vite`,
+  'env MODE=production vite', 'command vite', 'exec vite', '/usr/bin/env MODE=production vite',
+]
+for (const command of literalCommands) {
+  check(script(command), 0, 'check-rules: ok')
+}
+const unsupportedCommands = [
+  'vite --config "$CONFIG"', 'vite ${FLAGS}', 'vite $(cat flags)',
+  'vite `cat flags`', 'vite > output.txt', 'vite | tee output.txt',
+  'vite &', '(vite)', 'vite *.ts', 'vite [ab].ts', 'vite {a,b}',
+  'vite "unterminated', 'vite \\', "sh -c 'vite --config other.ts'",
+  "eval 'vite --config other.ts'", "env bash -c 'vite --config other.ts'",
+  "env -i sh -c 'vite --config other.ts'", "command -p sh -c 'vite --config other.ts'",
+  "/usr/bin/env sh -c 'vite --config other.ts'", "/usr/bin/env -i sh -c 'vite --config other.ts'",
+]
+for (const command of unsupportedCommands) {
+  check(script(command), 1, 'unsupported shell syntax', ...RELAY)
+}
 const playwright = readFileSync('playwright.config.ts', 'utf8')
 const [web, command] = /command: '([^']*)'/.exec(playwright) ?? []
 assert.ok(web !== undefined && command.includes('vite'), 'playwright.config.ts has no webServer command: update this test')
 check({ 'playwright.config.ts': playwright.replace(web, `command: '${command.replace('vite build', 'vite build -c other.ts')}'`) }, 1,
   `playwright.config.ts:${lineOf(playwright, web)}: a command passes --config to vite`, ...RELAY)
 check({ 'playwright.config.ts': playwright.replace(web, 'command: `vite build ${process.env.FLAGS}`') }, 1, 'the webServer command must be one plain string')
+for (const command of alternateConfigs) {
+  check({ 'playwright.config.ts': playwright.replace(web, `command: ${JSON.stringify(command)}`) }, 1, 'a command passes --config to vite', ...RELAY)
+}
+for (const command of literalCommands) {
+  check({ 'playwright.config.ts': playwright.replace(web, `command: ${JSON.stringify(command)}`) }, 0, 'check-rules: ok')
+}
+for (const command of unsupportedCommands) {
+  check({ 'playwright.config.ts': playwright.replace(web, `command: ${JSON.stringify(command)}`) }, 1, 'unsupported shell syntax', ...RELAY)
+}
+check({ 'playwright.config.ts': playwright.replace("testDir: 'e2e',", "testDir: 'e2e', testMatch: '**/*.spec.ts', metadata: { command: 'echo $UNRELATED', hint: './fixtures/{case}/docs.ts' },") }, 0, 'check-rules: ok')
+check({ 'playwright.config.ts': playwright.replace('webServer: {', 'webServer: [{').replace('reuseExistingServer: false,\n  },', 'reuseExistingServer: false,\n  }],').replace(web, '"command": \'vi"te" --"config" other.ts\'') }, 1, 'a command passes --config to vite', ...RELAY)
+// Keep the previous scan's protection when the literal lives in a separate
+// server object; unsupported globs/paths elsewhere are not shell commands.
+const aliasedServer = command => ({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\nconst server = { command: ${JSON.stringify(command)}, port: 4000 }\nexport default defineConfig({ webServer: server })\n` })
+check(aliasedServer('vite build && vite preview'), 0, 'check-rules: ok')
+for (const command of alternateConfigs) {
+  check(aliasedServer(command), 1, 'a command passes --config to vite', ...RELAY)
+}
+const serverAliases = (command, value) => ({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\nconst server = { command: ${command}, port: 4000 }\nconst alias = server\nconst servers = [server, alias]\nexport default defineConfig({ webServer: ${value} })\n` })
+for (const value of ['server', 'alias', '[server]', 'servers', '[alias, ...[]]']) {
+  const supported = !value.includes('...')
+  if (supported) {
+    check(serverAliases("'vite build && vite preview'", value), 0, 'check-rules: ok')
+    check(serverAliases("'vite ' + '--config other.ts'", value), 1, 'the webServer command must be one plain string')
+    check(serverAliases("'vite --config other.ts > /tmp/vite-log'", value), 1, 'unsupported shell syntax', ...RELAY)
+  } else {
+    check(serverAliases("'vite'", value), 1, 'cannot follow this webServer value')
+  }
+}
+for (const declarations of [
+  'const a = b; const b = a;',
+  "let a = { command: 'vite' };",
+  "const a = { command: 'vite' }; function other() { const a = { command: 'vite' }; return a }",
+]) {
+  check({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\n${declarations}\nexport default defineConfig({ webServer: a })\n` }, 1, 'cannot follow this webServer value')
+}
+check({ 'playwright.config.ts': "import { defineConfig } from '@playwright/test'\nconst webServer = [{ command: 'vite build && vite preview', port: 4000 }]\nexport default defineConfig({ webServer, metadata: { command: 'echo $UNRELATED', glob: '**/*.spec.ts' } })\n" }, 0, 'check-rules: ok')
+// A non-command shorthand property does not alter the literal launch string.
+for (const value of ["{ command: 'vite build && vite preview', port }", 'server', '[server]']) {
+  check({ 'playwright.config.ts': `import { defineConfig } from '@playwright/test'\nconst port = 4000\nconst server = { command: 'vite build && vite preview', port }\nexport default defineConfig({ webServer: ${value} })\n` }, 0, 'check-rules: ok')
+}
+check({ 'playwright.config.ts': "import { defineConfig } from '@playwright/test'\nconst command = 'vite build && vite preview'\nexport default defineConfig({ webServer: { command, port: 4000 } })\n" }, 1, 'the webServer command must be one plain string')
+check({ 'playwright.config.ts': "import { defineConfig } from '@playwright/test'\nconst override = { command: 'vite --config other.ts > /tmp/vite-log' }\nexport default defineConfig({ webServer: { command: 'vite', ...override } })\n" }, 1, 'cannot follow this webServer value')
 PROBE
 }
 test_stack_foldkit_rules_pin_the_devtools_mcp() {
@@ -5915,6 +6023,7 @@ test_stack_foldkit_network_steps_time_out() {
   # without end (a 420-second hang was seen). Stubs that sleep past a one-second
   # limit stand in for the network.
   command -v node >/dev/null 2>&1 || { skip "node not installed"; return; }
+  command -v python3 >/dev/null 2>&1 || { skip "python3 not installed"; return; }
   local d="$WORK/stack-foldkit-timeouts/demo" b="$WORK/stack-foldkit-timeouts/boot/demo-app" rc
   { foldkit_files "$d" && fk_installed "$d" && fk_stub_pnpm "$d.bin"; } || fail "fixture setup failed" || return 1
   fk_guard "$d" FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5'; rc=$?
@@ -5936,7 +6045,143 @@ STUB
   fresh_copy "$b" || return 1
   FOLDKIT_TEST_TIMEOUT=1 FK_PNPM_INSTALL='exec sleep 5' PATH="$d.bin:$(printenv PATH)" \
     run_bootstrap "$b" --name "Demo App" --stack foldkit --yes || fail "bootstrap exited $?: $(tail -5 "$b.out")" || return 1
-  assert_contains "$b.out" "pnpm install timed out after 1s (offline?)"
+  assert_contains "$b.out" "pnpm install timed out after 1s (offline?)" || return 1
+  # R5: an alarm on an execed leader left its real descendants alive, holding
+  # captured stdout open beyond the limit. Exercise the public callers as well
+  # as the helper's status/signal contract; no network or process-name killing.
+  rm "$d.bin/node" || return 1
+  python3 - "$d" "$REPO/template/stacks/foldkit/after-bootstrap" <<'PROBE'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+project = Path(sys.argv[1])
+hook = sys.argv[2]
+worker = Path(str(project) + '.worker.py')
+pids = Path(str(project) + '.pids')
+worker.write_text('''import os, time
+from pathlib import Path
+child = os.fork()
+if child == 0:
+    time.sleep(6)
+    os._exit(0)
+Path(os.environ['FK_PIDS']).write_text(str(os.getpid()) + ' ' + str(child))
+if os.environ.get('FK_EARLY') == '1':
+    os._exit(0)
+os.waitpid(child, 0)
+''')
+env = dict(os.environ, PATH=str(project) + '.bin:' + os.environ['PATH'],
+           FOLDKIT_TEST_TIMEOUT='1', FK_WORKER=str(worker), FK_PIDS=str(pids),
+           FK_PNPM_INSTALL='exec python3 "$FK_WORKER"', CHECK_CI='1')
+unrelated = subprocess.Popen(['sleep', '30'])
+
+def live(pid):
+    state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                           stdout=subprocess.PIPE, text=True).stdout.strip()
+    return bool(state) and not state.startswith('Z')
+
+def cleanup():
+    if pids.exists():
+        for pid in map(int, pids.read_text().split()):
+            if live(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+def run(args, expected, text='', extra=None, interrupt=None, input_text=None):
+    cleanup()
+    pids.unlink(missing_ok=True)
+    started = time.monotonic()
+    proc = subprocess.Popen(args, cwd=project, env=dict(env, **(extra or {})),
+                            stdin=subprocess.PIPE if input_text is not None else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        if interrupt is not None:
+            until = time.monotonic() + 3
+            while not pids.exists() and time.monotonic() < until:
+                time.sleep(.02)
+            assert pids.exists(), 'command did not start before interruption'
+            proc.send_signal(interrupt)
+        output = proc.communicate(input=input_text, timeout=8)[0]
+        elapsed = time.monotonic() - started
+        assert elapsed < 3.5, f'{args}: descendants kept output open for {elapsed:.2f}s: {output}'
+        assert proc.returncode == expected, f'{args}: exit {proc.returncode}, expected {expected}: {output}'
+        assert text in output, f'{args}: missing {text!r}: {output}'
+        if pids.exists():
+            until = time.monotonic() + 1
+            owned = list(map(int, pids.read_text().split()))
+            while any(live(pid) for pid in owned) and time.monotonic() < until:
+                time.sleep(.02)
+            assert not any(live(pid) for pid in owned), f'owned process survived: {owned}'
+        assert unrelated.poll() is None, 'unrelated process was killed'
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        cleanup()
+        proc.communicate()
+
+try:
+    # This fails against the old alarm wrapper in its elapsed-time assertion.
+    run(['bash', 'scripts/check.d/foldkit.sh'], 1, 'lockfile check timed out after 1s')
+    # An exited leader must not leave a capture-blocking descendant until 6s.
+    run(['bash', 'scripts/check.d/foldkit.sh'], 0, extra={'FK_EARLY': '1'})
+    helper = ['perl', 'scripts/bounded-command.pl', '1']
+    run(helper + ['sh', '-c', 'printf bounded-ok'], 0, 'bounded-ok')
+    run(helper + ['sh', '-c', 'read -r value; printf "%s" "$value"'], 0,
+        'inherited input', input_text='inherited input\n')
+    run(helper + ['python3', '-c', 'import sys; print(sys.argv[1])', 'literal $(false); *'],
+        0, 'literal $(false); *')
+    run(helper + ['sh', '-c', 'exit 23'], 23)
+    run(helper + ['sh', '-c', 'kill -TERM $$'], 143)
+    run(helper + ['python3', str(worker)], 142)
+    run(helper + ['python3', str(worker)], 0, extra={'FK_EARLY': '1'})
+    for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGTERM]:
+        run(helper + ['python3', str(worker)], 128 + sig, interrupt=sig)
+        run(['bash', 'scripts/check.d/foldkit.sh'], 128 + sig, interrupt=sig)
+
+    git = Path(str(project) + '.bin/git')
+    git.write_text('''#!/bin/sh
+[ -z "${FK_GIT_LOG:-}" ] || echo called >> "$FK_GIT_LOG"
+[ "$1" != -c ] || shift 2
+if [ "$1" = clone ]; then
+  [ "$FK_GIT_PHASE" != clone ] || exec python3 "$FK_WORKER"
+  for dest do :; done
+  mkdir -p "$dest"
+elif [ "$3" = rev-parse ]; then
+  echo "$FK_COMMIT"
+elif [ "$3" = sparse-checkout ]; then
+  exec python3 "$FK_WORKER"
+else
+  exit 1
+fi
+''')
+    git.chmod(0o755)
+    commit = (project / '.foldkit-ref').read_text().split()[1]
+    for phase, message in [('clone', 'git clone'), ('sparse', 'the sparse checkout')]:
+        run(['bash', 'scripts/vendor-foldkit.sh'], 142, message + ' timed out after 1s',
+            extra={'FK_GIT_PHASE': phase, 'FK_COMMIT': commit})
+    for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGTERM]:
+        run(['bash', 'scripts/vendor-foldkit.sh'], 128 + sig, interrupt=sig,
+            extra={'FK_GIT_PHASE': 'clone', 'FK_COMMIT': commit})
+    # A signal to the hook itself must clean up its install and stop before Git.
+    git_log = Path(str(project) + '.git-calls')
+    for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGTERM]:
+        git_log.unlink(missing_ok=True)
+        run(['sh', hook], 128 + sig, interrupt=sig,
+            extra={'FK_GIT_LOG': str(git_log), 'FK_GIT_PHASE': 'clone'})
+        assert not git_log.exists(), 'bootstrap continued to vendoring after interruption'
+        # Also interrupt the hook after install succeeded and vendoring started.
+        run(['sh', hook], 128 + sig, interrupt=sig,
+            extra={'FK_PNPM_INSTALL': ':', 'FK_GIT_PHASE': 'clone', 'FK_COMMIT': commit})
+finally:
+    cleanup()
+    unrelated.terminate()
+    unrelated.wait()
+PROBE
 }
 test_stack_foldkit_vendoring_checks_the_release_commit() {
   # Regression test (#20 item 12; security review SE2). vendor-foldkit.sh trusted
