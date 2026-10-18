@@ -7574,7 +7574,8 @@ test_pregate_pin_names_the_lane_and_the_suite() {
   assert_contains "$pin" '"scripts/template-selftest.sh": ["scripts/selftest.bats"]' || return 1
   assert_contains "$pin" '"scripts/pregate-lane.sh": ["scripts/selftest.bats"]' || return 1
   assert_contains "$pin" '"bootstrap": ["scripts/selftest.bats"]' || return 1
-  assert_contains "$pin" '".gitignore": ["scripts/selftest.bats"]'
+  assert_contains "$pin" '".gitignore": ["scripts/selftest.bats"]' || return 1
+  assert_contains "$pin" '"VERSION": ["scripts/selftest.bats"]'
 }
 # Value: protects=the pregate pin can be committed while the rest of .gstack stays ignored; fails_when=the pin negation is dropped or a sibling path becomes visible; why_new=the tracked-file ignore test does not see an untracked exception; seam=none; no_claim=does not prove git add stages the pin
 test_gstack_pregate_pin_is_committable() {
@@ -7607,7 +7608,12 @@ EOF
   assert_exit 0 "$rc" || fail "lane failed: $(cat "$d.out")" || return 1
   assert_contains "$d.out" "CI=unset" || return 1
   n="$(grep -c '^stub-suite$' "$d.out" || true)"
-  [ "$n" -eq 1 ] || fail "stub-suite printed $n times"
+  [ "$n" -eq 1 ] || fail "stub-suite printed $n times" || return 1
+  (cd "$d" && ./scripts/pregate-lane.sh scripts/selftest.bats \
+    template/stacks/python/files/tests/test_cli.py >"$d.pack.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "pack test path rejected: $(cat "$d.pack.out")" || return 1
+  n="$(grep -c '^stub-suite$' "$d.pack.out" || true)"
+  [ "$n" -eq 1 ] || fail "pack path ran the stub $n times"
 }
 # Value: protects=a staged rename of an oversized blob is still capped; fails_when=diff-filter drops R or the message names the old path; why_new=the boundary test only adds and deletes; seam=none; no_claim=copy and type-change are not staged here
 test_check_file_size_caps_a_staged_rename() {

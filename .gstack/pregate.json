@@ -8,6 +8,7 @@
     "scripts/template-selftest.sh": ["scripts/selftest.bats"],
     "scripts/pregate-lane.sh": ["scripts/selftest.bats"],
     "bootstrap": ["scripts/selftest.bats"],
-    ".gitignore": ["scripts/selftest.bats"]
+    ".gitignore": ["scripts/selftest.bats"],
+    "VERSION": ["scripts/selftest.bats"]
   }
 }

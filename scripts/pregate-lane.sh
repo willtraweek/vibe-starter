@@ -1,7 +1,10 @@
 #!/bin/bash
 # gstack pregate substitutes the selected test files for {files}. This
 # template has one suite, scripts/template-selftest.sh. The lane file
-# scripts/selftest.bats is only the name pregate can see.
+# scripts/selftest.bats is only the name pregate can see. A pack test can
+# also be selected when it names a template path (the Python pack's
+# test_cli.py joins a path ending in VERSION). Those files still contain
+# bootstrap placeholders, so the lane runs the template suite once.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -11,7 +14,7 @@ fi
 
 for f in "$@"; do
   case "$f" in
-    scripts/selftest.bats) ;;
+    scripts/selftest.bats|template/stacks/*) ;;
     *)
       echo "pregate-lane: unknown test file: $f" >&2
       exit 1
