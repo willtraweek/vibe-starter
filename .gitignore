@@ -15,7 +15,15 @@ Thumbs.db
 logs/
 
 # --- gstack / Conductor local state ---
+# Ignore .gstack/ at any depth. Re-include the root directory so the ship
+# pre-gate pin can be committed, ignore the rest of that directory, and
+# keep nested .gstack/ trees ignored (the omarchy-plugin pack re-includes
+# its own pin from template/.gitignore).
 .gstack/
+!.gstack/
+.gstack/*
+**/.gstack/*
+!.gstack/pregate.json
 brain-cache/
 # .context/ is local scratch (Conductor handoff space); never committed.
 # How the workflow works: docs/context-workflow.md

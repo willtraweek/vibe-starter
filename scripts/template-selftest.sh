@@ -74,6 +74,8 @@ unset GIT_TEMPLATE_DIR   # an env var, not config: it would still install the us
 unset GITLEAKS_BIN EDITORCONFIG_CHECKER_BIN   # check.sh overrides: tests set them explicitly
 unset CARGO_TARGET_DIR   # a test that builds picks its own (the heavy ones: SELFTEST_CARGO_TARGET_DIR)
 unset PREFIX BINDIR APPDIR ICONDIR DESKTOP_FILE_VALIDATE_BIN   # install.sh and guard overrides
+# ls comparisons are text. CLICOLOR_FORCE wraps names in ANSI and fails them.
+unset CLICOLOR CLICOLOR_FORCE LS_COLORS LSCOLORS
 
 # --- assertion helpers: print a reason, return non-zero on failure ------------
 fail()                { echo "    FAIL: $*"; return 1; }
@@ -134,6 +136,9 @@ test_bootstrap_removes_template_only_paths() {
   run_bootstrap "$d" --name proj --yes || fail "bootstrap exited $?: $(cat "$d.out")" || return 1
   assert_absent "$d/TEMPLATE.md" || return 1
   assert_absent "$d/scripts/template-selftest.sh" || return 1
+  assert_absent "$d/scripts/selftest.bats" || return 1
+  assert_absent "$d/scripts/pregate-lane.sh" || return 1
+  assert_absent "$d/.gstack/pregate.json" || return 1
   assert_absent "$d/.github/workflows/template-selftest.yml" || return 1
   assert_absent "$d/plans" || return 1
   assert_absent "$d/template" || return 1
@@ -791,8 +796,9 @@ test_check_honors_an_exported_function_as_gitleaks_bin() {
   assert_exists "$d.used"
 }
 test_check_runs_an_installed_editorconfig_checker() {
-  # Advisory means optional when missing; once installed, its verdict counts. With
-  # gitleaks hidden, the final line also says whether any guard ran at all.
+  # Advisory means optional when missing; once installed, its verdict counts. The
+  # token cap is always configured, so a tool-less repo still ran a check. Nothing
+  # is staged here, and that cap must not be what fails the run.
   local d="$WORK/check-ec/proj" bin="$WORK/check-ec/bin" rc
   check_fixture "$d" || fail "fixture setup failed" || return 1
   mkdir -p "$bin" || return 1
@@ -801,7 +807,8 @@ test_check_runs_an_installed_editorconfig_checker() {
   chmod +x "$bin/ec-pass" "$bin/ec-fail" || return 1
   run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks \
     || fail "check.sh failed with no tools installed: $(tail -5 "$d.out")" || return 1
-  assert_contains "$d.out" "OK: no checks configured yet." || return 1
+  assert_contains "$d.out" "- file size: no staged files - skipping the 5000-token cap." || return 1
+  assert_contains "$d.out" "OK: checks passed." || return 1
   run_check "$d" CI= GITLEAKS_BIN=/nonexistent/gitleaks EDITORCONFIG_CHECKER_BIN="$bin/ec-pass" \
     || fail "a passing editorconfig-checker failed the run: $(tail -5 "$d.out")" || return 1
   assert_contains "$d.out" "- editorconfig-checker: checking formatting..." || return 1
@@ -1414,7 +1421,7 @@ AGENTS.md 7 24b65e92ead6eaca62bf62f865263db7846d12a25a7f6ece7e519385ebfeb9be
 CLAUDE.md 16 ad5fecd2b2c16cbe94f4ab75a68957d336bdcb852f52df0bb006db3368dfe4cf
 DESIGN.md 7 d7d0105be65334da5869323f56bbc467181a4fd9fae7f38db570ef000a945790
 DOCTRINE.md 1 bdd5d674e42dda7388efe0e56de5fa3d928ea21b6a1e705bd7ca9a44df10d2d0
-ENGINEERING.md 3 5a25f6421a333ad79cb00b36e89f756be496e290a103349eafd3d29322296243
+ENGINEERING.md 4 e72da125a4b25c5f9554928d33bce6fccf5d2b73c5133d6baa6f8dd74b51b4e8
 MISSION.md 4 9941f9fb5142a080db73acdae6db4846842550bd9f87d64edf2690597b454ee3
 README.md 9 6f4012246e96c2d2e4c0e4d699530443a57548c4be1f343b3b5f138b696ade64
 TESTING.md 11 e1735bde2b46fbc18e18d17e3104173fd3431b55a6e863badb6ef272b35f8c94
@@ -7367,6 +7374,314 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.ratchet.out" "existing members removed since HEAD" || return 1
   (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+}
+
+# --- tests: staged file token cap ---------------------------------------------
+write_bytes() {  # $1 = path, $2 = byte count. Zeros, so the staged blob's size is exact.
+  head -c "$2" /dev/zero > "$1"
+}
+test_check_file_size_ignores_unstaged_bytes_and_reads_the_index() {
+  # The cap is the blob about to be committed. A dirty worktree must not fail
+  # the check, and a staged blob under the cap must pass while the worktree is over it.
+  # The staged blob has to differ from HEAD or `git diff --cached` does not list it.
+  local d="$WORK/file-size-index/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/src" || return 1
+  write_bytes "$d/src/loose.txt" 20004 || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "an unstaged file was capped: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: no staged files - skipping the 5000-token cap." || return 1
+  assert_not_contains "$d.out" "loose.txt is" || return 1
+  write_bytes "$d/src/blob.txt" 100 || return 1
+  (cd "$d" && git add src/blob.txt && git commit -qm base) || fail "base commit failed" || return 1
+  write_bytes "$d/src/blob.txt" 200 || return 1
+  (cd "$d" && git add src/blob.txt) || return 1
+  write_bytes "$d/src/blob.txt" 20004 || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "the worktree copy was capped instead of the staged blob: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: checking staged files against the 5000-token cap..." || return 1
+  assert_not_contains "$d.out" "blob.txt is" || return 1
+  (cd "$d" && git add src/blob.txt) || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "src/blob.txt is 5001 tokens (20004 bytes). The cap is 5000."
+}
+test_check_file_size_allows_5000_tokens_and_rejects_5001() {
+  # Tokens are integer bytes/4. 20000 and 20003 are both 5000 and must pass.
+  # 20004 is the first file that is over. Deleting an oversized file is not capped.
+  local d="$WORK/file-size-boundary/proj" rc n
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/src" || return 1
+  write_bytes "$d/src/exact.txt" 20000 || return 1
+  write_bytes "$d/src/remainder.txt" 20003 || return 1
+  write_bytes "$d/src/over.txt" 20004 || return 1
+  write_bytes "$d/src/over2.txt" 20008 || return 1
+  (cd "$d" && git add src/exact.txt src/remainder.txt src/over.txt src/over2.txt) || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "src/over.txt is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  assert_contains "$d.out" "src/over2.txt is 5002 tokens (20008 bytes). The cap is 5000." || return 1
+  assert_not_contains "$d.out" "exact.txt is" || return 1
+  assert_not_contains "$d.out" "remainder.txt is" || return 1
+  assert_contains "$d.out" "Move one seam of responsibility" || return 1
+  assert_contains "$d.out" "utils or helpers module" || return 1
+  assert_contains "$d.out" "Do not split mid-function or mid-concern." || return 1
+  n="$(grep -c 'Move one seam of responsibility' "$d.out" || true)"
+  [ "$n" -eq 1 ] || fail "split instructions printed $n times" || return 1
+  (cd "$d" && git commit -qm capped) || fail "committing the fixture files failed" || return 1
+  (cd "$d" && git rm -q src/over.txt src/over2.txt) || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "deleting an oversized file was capped: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: no staged files - skipping the 5000-token cap."
+}
+# Value: protects=lockfiles, codegen globs, and vendored trees stay uncapped while generated.ts does not; fails_when=go.sum, a pb.go file, or third_party is rejected, or generated.ts passes; why_new=the first cases omitted go.sum, pb.go, and third_party; seam=none; no_claim=does not list every exempt suffix
+test_check_file_size_ignores_lockfiles_codegen_vendor_and_gitlinks() {
+  # A name that merely contains "generated" is still agent-authored. A gitlink
+  # has no blob; capping it would fail every submodule commit.
+  local d="$WORK/file-size-exempt/proj" rc f
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/generated" "$d/codegen" "$d/__generated__" "$d/src" "$d/vendor" \
+    "$d/third-party" "$d/third_party" || return 1
+  for f in pnpm-lock.yaml Cargo.lock go.sum generated/types.ts codegen/out.ts __generated__/x.ts \
+    src/models.generated.ts src/app.min.js src/api.pb.go vendor/leftpad.js \
+    third-party/lib.js third_party/lib.js
+  do
+    write_bytes "$d/$f" 20004 || return 1
+  done
+  (cd "$d" && git add pnpm-lock.yaml Cargo.lock go.sum generated codegen __generated__ src vendor \
+    third-party third_party \
+    && git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),deps/pin") \
+    || fail "staging exempt files failed" || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "an exempt staged file was capped: $(tail -12 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: checking staged files against the 5000-token cap..." || return 1
+  assert_not_contains "$d.out" "is 5001 tokens" || return 1
+  assert_not_contains "$d.out" "could not read the staged blob" || return 1
+  write_bytes "$d/src/generated.ts" 20004 || return 1
+  (cd "$d" && git add src/generated.ts) || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "src/generated.ts is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  assert_not_contains "$d.out" "pnpm-lock.yaml is" || return 1
+  assert_not_contains "$d.out" "Cargo.lock is" || return 1
+  assert_not_contains "$d.out" "generated/types.ts is" || return 1
+  assert_not_contains "$d.out" "models.generated.ts is" || return 1
+  assert_not_contains "$d.out" "app.min.js is" || return 1
+  assert_not_contains "$d.out" "go.sum is" || return 1
+  assert_not_contains "$d.out" "api.pb.go is" || return 1
+  assert_not_contains "$d.out" "third_party/lib.js is" || return 1
+  assert_not_contains "$d.out" "leftpad.js is"
+}
+test_check_file_size_stays_inside_a_subdirectory_project() {
+  # packages/app has its own check.sh. A staged file in the sibling tree is not
+  # its file, and a staged file inside it is.
+  local main="$WORK/file-size-sub/main" rc
+  mkdir -p "$main/packages/app/scripts" "$main/other" || return 1
+  cp "$REPO/scripts/check.sh" "$main/packages/app/scripts/check.sh" || return 1
+  chmod +x "$main/packages/app/scripts/check.sh" || return 1
+  (cd "$main" && git init -q && git config core.excludesFile /dev/null) || fail "git init failed" || return 1
+  write_bytes "$main/other/huge.txt" 20004 || return 1
+  (cd "$main" && git add other/huge.txt) || return 1
+  (cd "$main/packages/app" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    GITLEAKS_BIN=/nonexistent/gitleaks CI=false ./scripts/check.sh >"$main.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "a sibling file failed the project check: $(tail -8 "$main.out")" || return 1
+  assert_not_contains "$main.out" "huge.txt is" || return 1
+  write_bytes "$main/packages/app/own.txt" 20004 || return 1
+  (cd "$main" && git add packages/app/own.txt) || return 1
+  (cd "$main/packages/app" && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+    GITLEAKS_BIN=/nonexistent/gitleaks CI=false ./scripts/check.sh >"$main.out" 2>&1); rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$main.out" "own.txt is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  assert_not_contains "$main.out" "huge.txt is"
+}
+test_check_file_size_hook_blocks_an_oversized_commit() {
+  # git commit is the path the cap exists for. A lockfile still commits.
+  local d="$WORK/file-size-hook/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.git/hooks" "$d/src" || return 1
+  ln -s ../../scripts/check.sh "$d/.git/hooks/pre-commit" || return 1
+  write_bytes "$d/pnpm-lock.yaml" 20004 || return 1
+  (cd "$d" && git add pnpm-lock.yaml \
+    && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      GITLEAKS_BIN=/nonexistent/gitleaks CI=false git commit -qm lock >"$d.out" 2>&1) \
+    || fail "the hook blocked a lockfile: $(tail -8 "$d.out")" || return 1
+  write_bytes "$d/src/big.ts" 20004 || return 1
+  (cd "$d" && git add src/big.ts \
+    && ! env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      GITLEAKS_BIN=/nonexistent/gitleaks CI=false git commit -qm big >"$d.out" 2>&1) \
+    || fail "the hook allowed an oversized file: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "src/big.ts is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  assert_contains "$d.out" "Move one seam of responsibility"
+}
+# Value: protects=git commit -a and git commit -- path stay under the cap; fails_when=the hook drops the commit index and records a 20004-byte blob; why_new=those forms never update the default index; seam=none; no_claim=an index outside this git dir is the next test
+test_check_file_size_caps_commit_a_and_path() {
+  local d="$WORK/file-size-commit-a/proj" size
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/.git/hooks" "$d/src" || return 1
+  ln -s ../../scripts/check.sh "$d/.git/hooks/pre-commit" || return 1
+  printf 'small\n' > "$d/src/big.txt" || return 1
+  (cd "$d" && git add src/big.txt \
+    && env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      GITLEAKS_BIN=/nonexistent/gitleaks CI=false git commit -qm init >"$d.out" 2>&1) \
+    || fail "the hook blocked the small commit: $(tail -8 "$d.out")" || return 1
+  write_bytes "$d/src/big.txt" 20004 || return 1
+  (cd "$d" && ! env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      GITLEAKS_BIN=/nonexistent/gitleaks CI=false git commit -am grown >"$d.out" 2>&1) \
+    || fail "commit -a recorded an oversized file: $(tail -12 "$d.out")" || return 1
+  assert_contains "$d.out" "src/big.txt is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  size="$(git -C "$d" cat-file -s HEAD:src/big.txt)"
+  [ "$size" != "20004" ] || fail "HEAD blob is 20004 bytes after commit -a" || return 1
+  (cd "$d" && ! env EDITORCONFIG_CHECKER_BIN=/nonexistent/editorconfig-checker \
+      GITLEAKS_BIN=/nonexistent/gitleaks CI=false git commit -m path -- src/big.txt >"$d.out" 2>&1) \
+    || fail "commit -- path recorded an oversized file: $(tail -12 "$d.out")" || return 1
+  assert_contains "$d.out" "src/big.txt is 5001 tokens (20004 bytes). The cap is 5000." || return 1
+  size="$(git -C "$d" cat-file -s HEAD:src/big.txt)"
+  [ "$size" != "20004" ] || fail "HEAD blob is 20004 bytes after commit -- path"
+}
+# Value: protects=another checkout's index cannot pass or fail this cap; fails_when=an absolute GIT_INDEX_FILE outside this git dir is read; why_new=the commit-index restore must not widen what the hook trusts; seam=none; no_claim=a relative GIT_INDEX_FILE is dropped before this lookup
+test_check_ignores_an_index_outside_its_git_dir() {
+  local d="$WORK/file-size-foreign-index/proj" other="$WORK/file-size-foreign-index/other" git_dir
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$other/src" || return 1
+  git -C "$other" init -q || return 1
+  git -C "$other" config core.excludesFile /dev/null || return 1
+  write_bytes "$other/src/huge.txt" 20004 || return 1
+  git -C "$other" add src/huge.txt || return 1
+  git_dir="$(git -C "$other" rev-parse --git-dir)" || return 1
+  case "$git_dir" in
+    /*) ;;
+    *) git_dir="$other/$git_dir" ;;
+  esac
+  run_check "$d" GIT_INDEX_FILE="$git_dir/index" \
+    || fail "a foreign index failed the check: $(tail -12 "$d.out")" || return 1
+  assert_not_contains "$d.out" "huge.txt is" || return 1
+  assert_contains "$d.out" "- file size: no staged files - skipping the 5000-token cap."
+}
+test_check_file_size_skips_without_a_git_checkout() {
+  local d="$WORK/file-size-nogit/proj"
+  mkdir -p "$d/scripts" || return 1
+  cp "$REPO/scripts/check.sh" "$d/scripts/check.sh" || return 1
+  chmod +x "$d/scripts/check.sh" || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "a directory with no git repo failed: $(tail -8 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: not a git checkout - skipping the 5000-token cap."
+}
+# Value: protects=the pin tells pregate to run the lane for the suite and the changed sources; fails_when=the runner or a dependency edge is missing; why_new=no test reads pregate.json; seam=none; no_claim=does not execute gstack-pregate
+test_pregate_pin_names_the_lane_and_the_suite() {
+  local pin="$REPO/.gstack/pregate.json"
+  assert_contains "$pin" '"runner": "bash scripts/pregate-lane.sh {files}"' || return 1
+  assert_contains "$pin" '"scripts/check.sh": ["scripts/selftest.bats"]' || return 1
+  assert_contains "$pin" '"scripts/template-selftest.sh": ["scripts/selftest.bats"]' || return 1
+  assert_contains "$pin" '"scripts/pregate-lane.sh": ["scripts/selftest.bats"]' || return 1
+  assert_contains "$pin" '"bootstrap": ["scripts/selftest.bats"]' || return 1
+  assert_contains "$pin" '".gitignore": ["scripts/selftest.bats"]'
+}
+# Value: protects=the pregate pin can be committed while the rest of .gstack stays ignored; fails_when=the pin negation is dropped or a sibling path becomes visible; why_new=the tracked-file ignore test does not see an untracked exception; seam=none; no_claim=does not prove git add stages the pin
+test_gstack_pregate_pin_is_committable() {
+  local rc
+  git -C "$REPO" check-ignore --no-index -- .gstack/pregate.json >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 1 ] || fail ".gstack/pregate.json is ignored (check-ignore $rc)" || return 1
+  git -C "$REPO" check-ignore --no-index -- .gstack/tmp/pregate.json >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || fail ".gstack/tmp/pregate.json is not ignored (check-ignore $rc)" || return 1
+  git -C "$REPO" check-ignore --no-index -- .gstack/state >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || fail ".gstack/state is not ignored (check-ignore $rc)"
+}
+# Value: protects=the lane rejects a bad file list and runs the suite once with CI unset; fails_when=unknown files pass or the suite inherits CI=true; why_new=the suite never executes pregate-lane.sh; seam=none; no_claim=the success path uses a stub suite, not the real selftest
+test_pregate_lane_refuses_an_unknown_file_and_unsets_ci() {
+  local d rc n
+  "$REPO/scripts/pregate-lane.sh" >"$WORK/lane-none.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$WORK/lane-none.out" "pregate-lane: expected scripts/selftest.bats" || return 1
+  "$REPO/scripts/pregate-lane.sh" scripts/nope.bats >"$WORK/lane-bad.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$WORK/lane-bad.out" "pregate-lane: unknown test file: scripts/nope.bats" || return 1
+  d="$WORK/pregate-lane/proj"
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  cat > "$d/scripts/template-selftest.sh" <<'EOF'
+#!/bin/bash
+printf 'CI=%s\n' "${CI-unset}"
+echo stub-suite
+EOF
+  chmod +x "$d/scripts/template-selftest.sh" || return 1
+  (cd "$d" && ./scripts/pregate-lane.sh scripts/selftest.bats >"$d.out" 2>&1); rc=$?
+  assert_exit 0 "$rc" || fail "lane failed: $(cat "$d.out")" || return 1
+  assert_contains "$d.out" "CI=unset" || return 1
+  n="$(grep -c '^stub-suite$' "$d.out" || true)"
+  [ "$n" -eq 1 ] || fail "stub-suite printed $n times"
+}
+# Value: protects=a staged rename of an oversized blob is still capped; fails_when=diff-filter drops R or the message names the old path; why_new=the boundary test only adds and deletes; seam=none; no_claim=copy and type-change are not staged here
+test_check_file_size_caps_a_staged_rename() {
+  local d="$WORK/file-size-rename/proj" rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  mkdir -p "$d/src" || return 1
+  write_bytes "$d/src/big.bin" 20004 || return 1
+  (cd "$d" && git add src/big.bin && git commit -qm big) || fail "base commit failed" || return 1
+  (cd "$d" && git mv src/big.bin src/moved.bin) || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "src/moved.bin is 5001 tokens (20004 bytes). The cap is 5000."
+}
+# Value: protects=ls names stay plain after the suite strips color env; fails_when=an ESC byte wraps the filename; why_new=the color unset has no observer; seam=none; no_claim=does not prove every ls in the suite, only this listing
+test_ls_names_stay_plain() {
+  local d="$WORK/plain-ls" name
+  mkdir -p "$d/sample" || return 1
+  : > "$d/sample/plain-name.txt" || return 1
+  name="$(ls -A "$d/sample")" || return 1
+  case "$name" in
+    *$'\033'*) fail "ls wrapped plain-name.txt in ANSI" || return 1 ;;
+  esac
+  [ "$name" = "plain-name.txt" ] || fail "ls printed '$name'"
+}
+# Value: protects=CLICOLOR_FORCE does not color names inside a nested suite run; fails_when=the nested ls test fails; why_new=startup unsets are invisible to the parent shell; seam=none; no_claim=one nested listing, not every command the suite runs
+test_selftest_strips_clicolor_before_ls() {
+  [ -z "${VS_SELFTEST_NESTED:-}" ] || { skip "nested run"; return; }
+  local d="$WORK/clicolor" rc
+  mkdir -p "$d" || return 1
+  VS_SELFTEST_NESTED=1 CLICOLOR_FORCE=1 "$REPO/scripts/template-selftest.sh" test_ls_names_stay_plain >"$d.out" 2>&1; rc=$?
+  assert_exit 0 "$rc" || fail "colored ls leaked: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "selftest: 1 passed, 0 failed, 0 skipped"
+}
+# Value: protects=a content conflict is not a staged blob, so the cap does not abort or fail it; fails_when=the check errors or names note.txt; why_new=diff-filter ACMRT omits unmerged paths, which no other test builds; seam=none; no_claim=does not feed a multi-stage path into the mode parser, because git does not list it
+test_check_file_size_survives_an_unmerged_index() {
+  local d="$WORK/file-size-unmerged/proj" base rc
+  check_fixture "$d" || fail "fixture setup failed" || return 1
+  base="$(git -C "$d" branch --show-current)" || return 1
+  mkdir -p "$d/src" || return 1
+  printf 'left\n' > "$d/src/note.txt"
+  (cd "$d" && git add src/note.txt && git commit -qm base) || return 1
+  (cd "$d" && git checkout -q -b other) || return 1
+  printf 'other\n' > "$d/src/note.txt"
+  (cd "$d" && git add src/note.txt && git commit -qm other) || return 1
+  (cd "$d" && git checkout -q "$base") || return 1
+  printf 'ours\n' > "$d/src/note.txt"
+  (cd "$d" && git add src/note.txt && git commit -qm ours) || return 1
+  (cd "$d" && git merge --no-edit other >"$d.merge" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "merge did not conflict: $(cat "$d.merge")" || return 1
+  git -C "$d" ls-files --stage -- src/note.txt | grep -q ' [123]	' \
+    || fail "expected multiple stages for src/note.txt" || return 1
+  run_check "$d" CI=false GITLEAKS_BIN=/nonexistent/gitleaks \
+    || fail "a content conflict failed the check: $(tail -12 "$d.out")" || return 1
+  assert_contains "$d.out" "- file size: no staged files - skipping the 5000-token cap." || return 1
+  assert_contains "$d.out" "OK: checks passed." || return 1
+  assert_not_contains "$d.out" "note.txt is" || return 1
+  assert_not_contains "$d.out" "Broken pipe" || return 1
+  assert_not_contains "$d.out" "cap NOT applied"
+}
+test_forced_skip_probe() {
+  # Inert unless a nested run sets VS_SELFTEST_FORCE_SKIP. The suite must not
+  # skip this on its own: CI treats a skip as a failure.
+  [ "${VS_SELFTEST_FORCE_SKIP:-}" = "1" ] || return 0
+  skip "forced"
+}
+# Value: protects=the suite still fails a skip when CI=true; fails_when=startup unsets CI and the nested skip exits 0; why_new=nothing checks that the color-env unset left CI alone; seam=none; no_claim=the skip is forced by VS_SELFTEST_FORCE_SKIP, not by a missing tool
+test_suite_treats_skips_as_failures_when_ci_is_set() {
+  [ -z "${VS_SELFTEST_NESTED:-}" ] || { skip "nested run"; return; }
+  local d="$WORK/ci-skip" rc
+  mkdir -p "$d" || return 1
+  CI=true VS_SELFTEST_NESTED=1 VS_SELFTEST_FORCE_SKIP=1 \
+    "$REPO/scripts/template-selftest.sh" test_forced_skip_probe >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || fail "CI did not fail the skip: $(tail -20 "$d.out")" || return 1
+  assert_contains "$d.out" "skipped tests count as failures in CI"
 }
 
 # --- runner -------------------------------------------------------------------

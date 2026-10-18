@@ -36,8 +36,12 @@ after a later failure, fix the cause and rerun with the same arguments.
 - `DESIGN.md`, `MISSION.md` — optional; delete if a project doesn't need them.
 - config: `.gitignore`, `.editorconfig`, `.gitleaks.toml`, an inert `.github/workflows/ci.yml.example`,
   and `.github/actions/install-gitleaks/` (the pinned gitleaks install every workflow uses).
-- `scripts/check.sh` — the stack-neutral pre-test guard: a gitleaks scan of what git would commit
-  (gitleaks 8.22+; skipped locally if missing, required in CI) and editorconfig-checker if present.
+- `scripts/check.sh` — the stack-neutral pre-test guard, and the pre-commit hook when linked
+  (`ln -s ../../scripts/check.sh .git/hooks/pre-commit`). It scans what git would commit with
+  gitleaks (8.22+; skipped locally if missing, required in CI), runs editorconfig-checker if
+  present, and rejects a staged file over 5,000 tokens (bytes/4, rounding down) unless it is
+  a lockfile, generated code, a vendored tree, or a gitlink. A clean tree has nothing staged,
+  so the cap does not re-check history.
 - `.github/ISSUE_TEMPLATE/` — six issue forms: Bug, Feature, Engineering task, Discovery,
   Decision, and Epic. [Filing issues](docs/guides/filing-issues.md) is the shared browser and
   agent standard, including the one-time setup for the six type labels in each repository.
@@ -134,9 +138,12 @@ project starts from. Keep them apart:
   `TODOS.md`. gstack `/ship` bumps and writes them. `./bootstrap` swaps in the skeleton copies
   and records the template version in the new project's `.bootstrapped`.
 - **Template-only paths** are deleted by `./bootstrap`: `TEMPLATE.md`, `template/`, `plans/`,
-  `scripts/template-selftest.sh`, `.github/workflows/template-selftest.yml`, and any markdown
-  between `<!-- template-only:start -->` and `<!-- template-only:end -->` lines. A repo created
-  with **Use this template** still has them in its initial commit; `npx degit` copies no history.
+  `scripts/template-selftest.sh`, `scripts/selftest.bats`, `scripts/pregate-lane.sh`,
+  `.gstack/pregate.json`, `.github/workflows/template-selftest.yml`, and any markdown
+  between `<!-- template-only:start -->` and `<!-- template-only:end -->` lines. The pre-gate
+  pin tells gstack `/ship` to run the template suite; a new project does not keep it. A repo
+  created with **Use this template** still has these paths in its initial commit; `npx degit`
+  copies no history.
 
 ### Verifying a change
 

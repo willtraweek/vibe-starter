@@ -10,6 +10,13 @@
 # Exception: editorconfig-checker stays advisory everywhere for now.
 # Override tool paths with GITLEAKS_BIN / EDITORCONFIG_CHECKER_BIN. The secret
 # scan needs gitleaks 8.22 or newer, and GNU tar or bsdtar (for --null).
+#
+# The file-size cap rejects a blob the commit would record when it is over
+# 5,000 tokens (bytes/4). git commit -a and git commit -- path keep that blob
+# in a temporary index; the cap reads that index. Lockfiles, generated code,
+# and vendored trees are exempt. Nothing staged means the cap does not run:
+# a clean checkout, including CI, does not re-litigate history.
+# Link this script as .git/hooks/pre-commit to enforce it on commit.
 
 # Returns 0 when a missing gitleaks binary must fail the run.
 # Explicit CI=false, CI=0, or CI=no (any letter case) forces the local skip
@@ -33,7 +40,53 @@ ci_requires_gitleaks() {
   return 1
 }
 
+# 0 when $1 (a path relative to this project) is not agent-authored.
+# Splitting a lockfile, a codegen dump, or a vendored tree does not help an
+# agent work in the files it actually writes, so the token cap leaves them alone.
+file_token_cap_exempt() {
+  local base
+  base="${1##*/}"
+  case "$base" in
+    pnpm-lock.yaml|package-lock.json|yarn.lock|npm-shrinkwrap.json|go.sum|Package.resolved|packages.lock.json|gradle.lockfile) return 0 ;;
+    *.lock|*.lockb|*.min.js|*.min.css|*.generated.*|*.gen.go|*.pb.go|*.pb.cc|*.pb.h|*.pb.ts|*_pb2.py|*_pb2.pyi|*.sql.go) return 0 ;;
+  esac
+  case "$1" in
+    generated/*|*/generated/*|codegen/*|*/codegen/*|__generated__/*|*/__generated__/*) return 0 ;;
+    vendor/*|*/vendor/*|third_party/*|*/third_party/*|third-party/*|*/third-party/*) return 0 ;;
+  esac
+  return 1
+}
+
+print_file_split_instructions() {
+  cat <<'EOF'
+    Split each file above before committing. Tokens are the staged blob's
+    size in bytes, divided by 4.
+    1. Move one seam of responsibility — a type, a workflow, or a set of
+       functions you can name in one sentence — into its own neighboring
+       file. Do not split mid-function or mid-concern.
+    2. Keep a cohesive module together. Do not shatter one concept into
+       fragments that only exist to get under the cap, and do not add a
+       utils or helpers module to hold the leftovers.
+    3. Point existing callers at the new file. If anything outside this
+       package imports the file, keep that public contract working.
+    4. Stage the split and commit again. Lockfiles, generated code, and
+       vendored trees are exempt; this cap is for files an agent authored.
+    See ENGINEERING.md, "Large File Splitting" and "Agent token cap".
+EOF
+}
+
 set -euo pipefail
+# git commit -a and git commit -- path put the commit in an absolute
+# GIT_INDEX_FILE under this checkout's git dir (index.lock, or
+# next-index-*.lock). Remember it across the unset and across the worktree
+# handover below. A relative path is dropped: the cd would resolve it against
+# the wrong directory. An absolute path outside this git dir is dropped too,
+# so another checkout's index cannot pass or fail the cap.
+if [ -z "${CHECK_SH_INDEX_FILE+x}" ] && [ -n "${GIT_INDEX_FILE:-}" ] \
+  && [ "${GIT_INDEX_FILE#/}" != "$GIT_INDEX_FILE" ]; then
+  CHECK_SH_INDEX_FILE=$GIT_INDEX_FILE
+  export CHECK_SH_INDEX_FILE
+fi
 # Drop inherited git variables that pick a repository (GIT_DIR, GIT_WORK_TREE,
 # GIT_INDEX_FILE and the rest of `git rev-parse --local-env-vars`). Hooks,
 # aliases and dotfiles setups export them, and they would point git at another
@@ -92,6 +145,29 @@ CDPATH='' cd "$script_dir/.." || exit 1
 status=0
 ran_any=0
 root="$(pwd)"
+# Restore the commit index only after this checkout is known, and only when
+# the file is inside its git dir. The default index (a normal git add) needs
+# no restore: git finds it from the working directory.
+if [ -n "${CHECK_SH_INDEX_FILE:-}" ]; then
+  git_dir="$(git -C "$root" rev-parse --git-dir 2>/dev/null || true)"
+  if [ -n "$git_dir" ] && [ -f "$CHECK_SH_INDEX_FILE" ]; then
+    case "$git_dir" in
+      /*) ;;
+      *) git_dir="$root/$git_dir" ;;
+    esac
+    git_dir_phys="$(CDPATH='' cd "$git_dir" && pwd -P)" || git_dir_phys=""
+    index_dir="$(CDPATH='' cd "$(dirname "$CHECK_SH_INDEX_FILE")" && pwd -P)" || index_dir=""
+    if [ -n "$git_dir_phys" ] && [ -n "$index_dir" ]; then
+      case "$index_dir" in
+        "$git_dir_phys"|"$git_dir_phys"/*)
+          GIT_INDEX_FILE=$CHECK_SH_INDEX_FILE
+          export GIT_INDEX_FILE
+          ;;
+      esac
+    fi
+  fi
+  unset CHECK_SH_INDEX_FILE
+fi
 GITLEAKS_BIN="${GITLEAKS_BIN:-gitleaks}"
 EDITORCONFIG_CHECKER_BIN="${EDITORCONFIG_CHECKER_BIN:-editorconfig-checker}"
 
@@ -176,6 +252,75 @@ if command -v "$EDITORCONFIG_CHECKER_BIN" >/dev/null 2>&1; then
   "$EDITORCONFIG_CHECKER_BIN" || status=1
 else
   echo "- editorconfig-checker not installed - skipping format check."
+fi
+
+# --- Agent token cap: staged blobs only -------------------------------------
+# Tokens = bytes/4 of the blob that would be committed, not the worktree copy.
+# Deletions are not capped. A gitlink (mode 160000) has no blob. Paths are
+# taken from the index of this checkout; a project below the repo root only
+# sees staged paths inside itself, so a sibling tree cannot fail its check.
+ran_any=1
+token_cap=5000
+if rel_prefix="$(git -C "$root" rev-parse --show-prefix 2>/dev/null)"; then
+  size_tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-file-size.XXXXXX")" || {
+    echo "- file size: could not create a temp dir - cap NOT applied." >&2
+    status=1
+    size_tmp=""
+  }
+  if [ -n "$size_tmp" ]; then
+    trap 'rm -rf "$size_tmp"' EXIT
+    size_list="$size_tmp/staged"
+    size_err="$size_tmp/err"
+    size_rc=0
+    git -C "$root" diff --cached --name-only --diff-filter=ACMRT -z >"$size_list" 2>"$size_err" || size_rc=$?
+    if [ "$size_rc" -ne 0 ]; then
+      echo "- file size: could not list staged files - cap NOT applied:" >&2
+      sed 's/^/    /' "$size_err" >&2
+      status=1
+    elif [ ! -s "$size_list" ]; then
+      echo "- file size: no staged files - skipping the 5000-token cap."
+    else
+      echo "- file size: checking staged files against the 5000-token cap..."
+      size_over=0
+      while IFS= read -r -d '' git_path; do
+        [ -n "$git_path" ] || continue
+        case "$git_path" in
+          "$rel_prefix"*) project_path="${git_path#"$rel_prefix"}" ;;
+          *) continue ;;
+        esac
+        [ -n "$project_path" ] || continue
+        # First field only. A pipe into `head` would SIGPIPE git, and pipefail
+        # would then abort the check on an unmerged path with several stages.
+        mode="$(git -C "$root" ls-files --stage -- "$git_path")"
+        mode="${mode%% *}"
+        if [ "$mode" = "160000" ]; then
+          continue
+        fi
+        if file_token_cap_exempt "$project_path"; then
+          continue
+        fi
+        if ! bytes="$(git -C "$root" cat-file -s -- ":$git_path" 2>/dev/null)"; then
+          echo "- file size: could not read the staged blob for $project_path - cap NOT applied." >&2
+          status=1
+          continue
+        fi
+        tokens=$((bytes / 4))
+        if [ "$tokens" -gt "$token_cap" ]; then
+          size_over=1
+          status=1
+          printf -- '- file size: %s is %s tokens (%s bytes). The cap is %s.\n' \
+            "$project_path" "$tokens" "$bytes" "$token_cap"
+        fi
+      done <"$size_list"
+      if [ "$size_over" -eq 1 ]; then
+        print_file_split_instructions
+      fi
+    fi
+    rm -rf "$size_tmp"
+    trap - EXIT
+  fi
+else
+  echo "- file size: not a git checkout - skipping the 5000-token cap."
 fi
 
 # --- Stack guards: scripts/check.d/*.sh -------------------------------------
