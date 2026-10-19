@@ -44,6 +44,10 @@ Defer to `ENGINEERING.md` for the full doctrine. The short version:
 
 - **File-size smells** — when a file gets large, that's a signal to look for a seam, not a
   mandate to split. Split on cohesion, not line count.
+- **Token cap** — `scripts/check.sh` rejects a staged file over 5,000 tokens (bytes/4,
+  rounding down), except lockfiles, generated code, vendored trees, and gitlinks. That cap is
+  about agent context. The line-count smells above stay advisory, and a split still follows a
+  seam. See `ENGINEERING.md`.
 - **Rule of three** — don't abstract on the second occurrence. Wait for the third before
   extracting a shared helper.
 - **Cohesion over fragmentation** — keep things that change together in the same place. Prefer

@@ -3,6 +3,25 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.5.0] - 2026-10-18
+
+### Added
+- Reject a commit that would record a file over 5,000 tokens. Tokens are that blob's
+  bytes divided by 4, rounding down, so 20,000 through 20,003 bytes still pass and
+  20,004 bytes fails. Link
+  `scripts/check.sh` as `.git/hooks/pre-commit`. The check reads the index the commit
+  would record, including `git commit -a` and `git commit -- <path>`. Lockfiles,
+  generated code, vendored trees, and gitlinks are exempt. A clean checkout, including
+  CI, has nothing staged, so the cap does not re-check history. A rejection names the
+  file and says to split it on one seam of responsibility.
+- Point the template's own required check at the bash self-test. `./bootstrap` still
+  removes that lane (`scripts/selftest.bats`, `scripts/pregate-lane.sh`, and
+  `.gstack/pregate.json`) from a new project.
+
+### Changed
+- `ENGINEERING.md`, `CLAUDE.md`, and `TEMPLATE.md` explain the cap, the hook link, and
+  which template-only files bootstrap deletes.
+
 ## [0.4.0] - 2026-10-14
 
 ### Added

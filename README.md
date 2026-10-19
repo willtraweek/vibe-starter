@@ -35,7 +35,7 @@
   Every agent reads both files, regardless of its entry point.
 - `DOCTRINE.md` — the cross-project engineering ethos this repo inherits.
 - `TESTING.md` — the testing doctrine (tiers, gates, named invariants).
-- `ENGINEERING.md` — code-organization standards (file-size smells, rule-of-three).
+- `ENGINEERING.md` — code-organization standards (file-size smells, the agent token cap, rule-of-three).
 - `DESIGN.md` — design system (delete if this project has no UI).
 - `MISSION.md` — what this project is and what it guarantees (optional).
 - `docs/` — architecture, decisions, guides, and the `.context/` handoff workflow.

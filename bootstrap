@@ -471,7 +471,7 @@ fi
 # a project created from it. Keep this list in sync with TEMPLATE.md. template/
 # (the retry state) goes last and .bootstrapped after it, so a failed removal
 # can be retried.
-TEMPLATE_ONLY="TEMPLATE.md scripts/template-selftest.sh .github/workflows/template-selftest.yml plans template"
+TEMPLATE_ONLY="TEMPLATE.md scripts/template-selftest.sh scripts/selftest.bats scripts/pregate-lane.sh .gstack/pregate.json .github/workflows/template-selftest.yml plans template"
 for p in $TEMPLATE_ONLY; do rm -rf "$p"; done
 printf '%s from vibe-starter %s%s\n' "$(date +%Y-%m-%d)" "$TEMPLATE_VERSION" \
   "${STACK:+ with the $STACK stack pack}" > .bootstrapped
