@@ -1,0 +1,27 @@
+{
+  "tiers": {
+    "pure_logic": {
+      "title": "Pure logic",
+      "minimum": 100,
+      "target": 100,
+      "include": [
+        "src/logic/arena.gd",
+        "src/logic/orb_spawner.gd",
+        "src/logic/score.gd"
+      ]
+    },
+    "main_components": {
+      "title": "Main components: the scenes",
+      "minimum": 90,
+      "target": 90,
+      "include": [
+        "src/scenes/main.gd",
+        "src/scenes/orb.gd",
+        "src/scenes/player.gd"
+      ]
+    }
+  },
+  "journeys": [
+    "tests/journeys/test_collect_an_orb.gd::test_steering_to_the_orb_scores_a_point"
+  ]
+}

@@ -1,0 +1,19 @@
+[gd_scene format=3 uid="uid://bkw4bn3av88bp"]
+
+[ext_resource type="Script" uid="uid://dpjmbuibe32qt" path="res://src/scenes/main.gd" id="1_32aa5"]
+[ext_resource type="Script" uid="uid://chnex1jvhycgf" path="res://src/scenes/player.gd" id="2_5dlwx"]
+[ext_resource type="Script" uid="uid://rxwmlfn3u1cw" path="res://src/scenes/orb.gd" id="3_o81g6"]
+
+[node name="Main" type="Node2D" unique_id=1593718365]
+script = ExtResource("1_32aa5")
+
+[node name="Player" type="Node2D" parent="." unique_id=1503491921]
+script = ExtResource("2_5dlwx")
+
+[node name="Orb" type="Node2D" parent="." unique_id=2017847633]
+script = ExtResource("3_o81g6")
+
+[node name="Hud" type="CanvasLayer" parent="." unique_id=113179435]
+
+[node name="ScoreLabel" type="Label" parent="Hud" unique_id=960408569]
+text = "Score: 0"

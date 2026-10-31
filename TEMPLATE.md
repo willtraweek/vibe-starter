@@ -83,9 +83,11 @@ Available: `python` (uv, ruff, ty, pytest with separate 90% line and branch floo
 `omarchy-app` (an Omarchy app in its own window: Rust + GPUI + gpui-omarchy, with the Rust gates
 from `_rust-gates`), `omarchy-tui` (a terminal app for Omarchy: Rust + ratatui, with the Rust
 gates from `_rust-gates`), `omarchy-plugin` (an Omarchy 4 shell plugin: a QML bar widget,
-JavaScript logic at 100% coverage, Omarchy's own validator pinned) and `foldkit` (a browser app:
+JavaScript logic at 100% coverage, Omarchy's own validator pinned), `foldkit` (a browser app:
 Foldkit on Effect v4, TypeScript 7 with the Effect language service, Vite 8, Vitest 5 Story and
-Scene tests, Playwright journeys, pnpm 12, with per-tier line, branch and function floors).
+Scene tests, Playwright journeys, pnpm 12, with per-tier line, branch and function floors) and
+`godot` (a game: Godot 4.7.2 in typed GDScript, GDScript Formatter 0.27.0, headless unit, scene
+and journey tests, and 90% line and branch floors with per-tier gates).
 
 ### Omarchy apps: choose by what the app should do
 
@@ -118,6 +120,24 @@ version) and ships a reviewed `pnpm-lock.yaml`, so a new project installs exactl
 self-test built. Installs honor a 24-hour release age and deny dependency build scripts
 (`pnpm-workspace.yaml`). To move the train or the toolchain, follow the maintenance notes of
 `plans/011-stack-pack-foldkit.md`: never run pnpm inside `template/`.
+
+### Games: choose by what the game should do
+
+| The game should… | Pack | Stack |
+|---|---|---|
+| be a game, 2D or 3D: scenes built in an editor, rules in code | `godot` | Godot 4.7.2, typed GDScript, GDScript Formatter 0.27.0 |
+
+Every GDScript warning is an error in the new project, the typing ones included, so Godot's
+own analyzer is its type checker. Godot has no test runner or coverage tool of its own, so the
+pack ships both in the project's `tools/`: a headless runner that fails a test on any error
+Godot reports, and line and branch coverage measured on instrumented copies of `src/`. Its
+`docs/guides/godot.md` covers the layout and the gates. `scripts/godot-kit.sh` pins the engine
+and the formatter: each version with the SHA-512 sums from Godot's `SHA512-SUMS.txt` and the
+SHA-256 digests of the formatter's release assets. Bump each tool with all of its sums, and a new
+Godot minor version with the `"4.7"` at the start of `config/features` in the pack's
+`project.godot`. The pack ships the `.uid` and `.import` files Godot would write, so a new
+project's first import adds nothing for git; regenerate them with Godot when adding a script or
+an asset to the starter.
 
 ## Note
 
@@ -179,6 +199,9 @@ as skips. Build one locally with
 The omarchy-plugin heavy test also needs Node 22.8+ and a Qt 6 `qmltestrunner` (`QML_TEST_RUNNER`).
 The foldkit heavy tests need pnpm 12, Perl and the network: they install the pack's locked tree into
 your normal pnpm store, vendor Foldkit from GitHub and run Playwright's Chromium.
+The godot heavy tests need curl and unzip (or python3). They use a Godot 4.7.2 on your `PATH`, or
+download it (about 80 MB, 170 MB on macOS) and GDScript Formatter into one kit cache per run; set
+`SELFTEST_GODOT_KIT_DIR` to keep that cache between runs.
 
 ### Shipping with gstack
 

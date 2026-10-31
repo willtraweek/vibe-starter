@@ -1,0 +1,8 @@
+# --- Godot ---
+# Godot's import cache and editor state; ./scripts/import.sh rebuilds it
+.godot/
+# What ./scripts/build.sh exports and ./scripts/coverage.sh reports
+/build/
+/coverage/
+# The Android build template Godot's editor installs per machine
+/android/

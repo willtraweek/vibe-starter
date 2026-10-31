@@ -35,6 +35,7 @@ acceptance of the combined tree.
 | [009](009-omarchy-tui-pack.md) | `omarchy-tui` pack (Rust + ratatui); partial packs (`includes`) with the Rust gates kept once in `_rust-gates` | P2 | M | 008 | DONE (PR #22 integration; acceptance evidence below) |
 | [010](010-omarchy-plugin-pack.md) | `omarchy-plugin` pack (an Omarchy 4 shell plugin in QML), checked by Omarchy's own validator at a pinned commit | P2 | M | 008, 009 | DONE (PR #22 integration; acceptance evidence below) |
 | [011](011-stack-pack-foldkit.md) | `foldkit` pack: a browser app on Foldkit (Effect v4) with TypeScript 7 and the Effect rules, Vite 8, Vitest 5 Story/Scene tests, a Playwright journey and pnpm 12; a shipped lockfile and a Node tier checker | P2 | L | 006, 008, 010 | DONE (PR #22 integration; acceptance evidence below) |
+| [012](012-stack-pack-godot.md) | `godot` pack: a game in Godot 4.7.2 and typed GDScript (every warning an error), GDScript Formatter 0.27.0, a headless test runner and line and branch coverage in the project's `tools/`, a checksum-pinned kit for both tools | P2 | L | 006, 008 | DONE (a record written while building; evidence in the plan and its PR) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

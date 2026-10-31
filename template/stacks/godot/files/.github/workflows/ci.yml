@@ -1,0 +1,40 @@
+# CI for {{PROJECT_NAME}} (vibe-starter godot stack pack): the pinned Godot and GDScript
+# Formatter, the checks, every test under the coverage gate, then the build.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-test:
+    # Pinned, not ubuntu-latest: scripts/godot-kit.sh installs Godot's Linux x86_64 build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gitleaks
+        uses: ./.github/actions/install-gitleaks
+
+      - name: Godot and GDScript Formatter (pinned and checksum-verified by scripts/godot-kit.sh)
+        run: ./scripts/godot-kit.sh
+
+      - name: Checks (guards run before tests)
+        run: ./scripts/check.sh
+
+      - name: Tests with the coverage gate (90% line+branch floor, per-tier floors, journeys)
+        run: ./scripts/coverage.sh
+
+      - name: Coverage tiers never slip (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          ./scripts/coverage.sh --ratchet "origin/$GITHUB_BASE_REF"
+
+      - name: Build (export the game's pack and start it)
+        run: ./scripts/build.sh

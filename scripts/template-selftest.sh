@@ -7376,6 +7376,611 @@ test_heavy_stack_foldkit_guards_fail_closed() {
   (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
 }
 
+# --- tests: godot stack pack (plan 012) ---------------------------------------
+godot_project() {  # $1 = dir: a fresh copy bootstrapped as "Demo Game" with the godot pack
+  fresh_copy "$1" || return 1
+  run_bootstrap "$1" --name "Demo Game" --stack godot --yes \
+    || fail "bootstrap exited $?: $(tail -20 "$1.out")"
+}
+godot_bare() {  # run "$@" where no Godot or GDScript Formatter can be found: only system
+  # directories on PATH (a Homebrew or Steam Godot stays out), an empty kit cache, no overrides
+  env -u GODOT_BIN -u GDSCRIPT_FORMATTER_BIN GODOT_KIT_DIR="$WORK/godot-empty-kit" \
+    PATH="/usr/bin:/bin" "$@"
+}
+godot_platform() {  # the kit's name for this machine, or nothing where it pins no build
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64 | Linux/amd64) echo linux-x86_64 ;;
+    Linux/aarch64 | Linux/arm64) echo linux-aarch64 ;;
+    Darwin/arm64) echo macos-aarch64 ;;
+    Darwin/x86_64) echo macos-x86_64 ;;
+  esac
+}
+godot_stub() {  # $1 = path, $2 = the line its --version prints
+  mkdir -p "$(dirname "$1")" && printf '#!/bin/sh\necho "%s"\n' "$2" > "$1" && chmod +x "$1"
+}
+godot_guard() {  # $1 = project dir, rest = env assignments; the guard alone -> "$1.guard", its exit
+  local dir="$1" rc
+  shift
+  (cd "$dir" && godot_bare "$@" bash scripts/check.d/godot.sh) >"$dir.guard" 2>&1; rc=$?
+  return "$rc"
+}
+# Value: protects=--stack godot names the game in project.godot, the export and the build,
+# fills every command placeholder, keeps the scripts executable, and git commits each pack
+# file (the .uid and .import files Godot needs too) while ignoring Godot's cache and the build
+# and coverage output; fails_when=a pack file is ignored, a placeholder survives or a script
+# loses its exec bit; why_new=the pack is new; seam=none; no_claim=does not run Godot, which
+# the heavy tests do
+test_stack_godot_bootstrap_installs_the_pack() {
+  local d="$WORK/godot/demo-game" f s
+  godot_project "$d" || return 1
+  assert_contains "$d/project.godot" 'config/name="Demo Game"' || return 1
+  assert_contains "$d/export_presets.cfg" 'export_path="build/demo_game.x86_64"' || return 1
+  assert_contains "$d/scripts/build.sh" 'pck="build/demo_game.pck"' || return 1
+  for f in godot-kit.sh godot.sh import.sh test.sh coverage.sh build.sh format.sh; do
+    [ -x "$d/scripts/$f" ] || fail "scripts/$f lost its exec bit" || return 1
+  done
+  assert_contains "$d/CLAUDE.md" "Install / bootstrap: \`./scripts/godot-kit.sh\`" || return 1
+  assert_contains "$d/CLAUDE.md" "Tests: \`./scripts/test.sh\`" || return 1
+  assert_contains "$d/TESTING.md" "Tests: \`./scripts/test.sh\`" || return 1
+  assert_contains "$d/AGENTS.md" './scripts/check.sh && ./scripts/coverage.sh && ./scripts/build.sh' || return 1
+  assert_contains "$d/DESIGN.md" "# Design System — Demo Game" || return 1
+  assert_contains "$d/.editorconfig" "[*.gd]" || return 1
+  assert_contains "$d/.bootstrapped" "with the godot stack pack" || return 1
+  assert_exists "$d/.github/workflows/ci.yml" || return 1
+  assert_absent "$d/.github/workflows/ci.yml.example" || return 1
+  for s in '{{PACKAGE_NAME}}' '{{PROJECT_NAME}}' '{{TEST_CMD' TEMPLATE.md template/stacks template-selftest; do
+    assert_tree_lacks "$d" "$s" || return 1
+  done
+  (cd "$d" && git add -A) || fail "git add failed" || return 1
+  pack_files godot > "$d.expected" || return 1
+  assert_committed "$d" "$d.expected" || return 1
+  for f in .godot/uid_cache.bin build/demo_game.pck coverage/lcov.info android/build.gradle; do
+    git -C "$d" check-ignore -q -- "$f" || fail "git would commit $f" || return 1
+  done
+}
+# Value: protects=every platform the kit serves has a sum of the right length, and the Godot
+# and formatter versions that project.godot, the pack's --help line, its STACK, its guide and
+# TEMPLATE.md name are the kit's pins; fails_when=a pin moves in one place only;
+# why_new=the pins are new; seam=none; no_claim=does not prove the sums match the released
+# files (the heavy tests download them)
+test_stack_godot_kit_pins_agree_everywhere() {
+  local p="$REPO/template/stacks/godot" kit godot fmt minor name sum stale
+  kit="$p/files/scripts/godot-kit.sh"
+  godot="$(sed -n 's/^GODOT_VERSION=//p' "$kit")"
+  fmt="$(sed -n 's/^FORMATTER_VERSION=//p' "$kit")"
+  minor="${godot%.*}"
+  printf '%s\n' "$godot" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+-stable' \
+    || fail "GODOT_VERSION is not a stable release: $godot" || return 1
+  printf '%s\n' "$fmt" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || fail "FORMATTER_VERSION: $fmt" || return 1
+  for name in GODOT_SHA512_LINUX_X86_64 GODOT_SHA512_LINUX_ARM64 GODOT_SHA512_MACOS \
+    FORMATTER_SHA256_LINUX_X86_64 FORMATTER_SHA256_LINUX_AARCH64 FORMATTER_SHA256_MACOS_AARCH64 \
+    FORMATTER_SHA256_MACOS_X86_64; do
+    sum="$(sed -n "s/^$name=//p" "$kit")"
+    case "$name" in
+      GODOT_*) printf '%s\n' "$sum" | grep -Eqx '[0-9a-f]{128}' || fail "$name is not a SHA-512 sum" || return 1 ;;
+      *) printf '%s\n' "$sum" | grep -Eqx '[0-9a-f]{64}' || fail "$name is not a SHA-256 sum" || return 1 ;;
+    esac
+    grep -qF "sum=\$$name" "$kit" || fail "no platform uses $name" || return 1
+  done
+  assert_contains "$p/files/project.godot" "config/features=PackedStringArray(\"$minor\", " || return 1
+  assert_contains "$p/description" "Godot $minor:" || return 1
+  assert_contains "$p/commands" "A Godot $minor game (${godot%-stable}, " || return 1
+  assert_contains "$p/commands" "GDScript Formatter $fmt " || return 1
+  assert_contains "$p/files/docs/guides/godot.md" "is a Godot $minor game" || return 1
+  assert_contains "$p/files/docs/guides/godot.md" "export templates for ${godot%-stable} " || return 1
+  assert_contains "$REPO/TEMPLATE.md" "Godot ${godot%-stable}" || return 1
+  assert_contains "$REPO/TEMPLATE.md" "GDScript Formatter $fmt" || return 1
+  stale="$(grep -ohE 'Godot [0-9]+\.[0-9]+(\.[0-9]+)?' "$p/description" "$p/commands" \
+    "$p/files/docs/guides/godot.md" "$p/files/DESIGN.md" "$REPO/TEMPLATE.md" \
+    | grep -vxF -e "Godot $minor" -e "Godot ${godot%-stable}" || true)"
+  [ -z "$stale" ] || fail "a doc names another Godot than $godot: $(printf '%s' "$stale" | tr '\n' ' ')"
+}
+# Value: protects=the kit hands out only copies that report the pinned versions: a wrong
+# GODOT_BIN is refused rather than passed over, a wrong cached copy is refused, a wrong one on
+# PATH is ignored and a right one used; fails_when=the version check goes, or an override
+# falls through to another copy; why_new=the kit is new; seam=stub binaries print versions;
+# no_claim=never downloads (the next test and the heavy tests do)
+test_stack_godot_kit_accepts_only_the_pinned_versions() {
+  local d="$WORK/godot-kit-find/demo-game" b="$WORK/godot-kit-find/bin" kit="$WORK/godot-kit-find/kit"
+  local platform rc out
+  platform="$(godot_platform)"
+  [ -n "$platform" ] || { skip "the kit pins no build for $(uname -s) $(uname -m)"; return; }
+  godot_project "$d" || return 1
+  godot_stub "$b/wrong/godot" "4.6.3.stable.official.0123abcd" || return 1
+  godot_stub "$b/right/godot" "4.7.2.stable.official.ed1daf0bf" || return 1
+  godot_stub "$b/right/gdscript-formatter" "gdscript-formatter 0.27.0" || return 1
+  (cd "$d" && godot_bare PATH="$b/wrong:/usr/bin:/bin" ./scripts/godot-kit.sh godot) >"$d.k" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.k" "Godot 4.7.2-stable is not installed: run ./scripts/godot-kit.sh (or set GODOT_BIN)" || return 1
+  out="$(cd "$d" && godot_bare PATH="$b/right:/usr/bin:/bin" ./scripts/godot-kit.sh godot)" \
+    || fail "the right Godot on PATH was refused" || return 1
+  [ "$out" = "$b/right/godot" ] || fail "found $out, not $b/right/godot" || return 1
+  (cd "$d" && godot_bare GODOT_BIN="$b/wrong/godot" PATH="$b/right:/usr/bin:/bin" \
+    ./scripts/godot-kit.sh godot) >"$d.k" 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.k" "GODOT_BIN=$b/wrong/godot is not Godot 4.7.2-stable" || return 1
+  out="$(cd "$d" && godot_bare GODOT_BIN="$b/right/godot" ./scripts/godot-kit.sh godot)" || return 1
+  [ "$out" = "$b/right/godot" ] || fail "GODOT_BIN was not used: $out" || return 1
+  # A cached copy must be the pinned one too: a wrong one is refused, not passed over.
+  godot_stub "$kit/gdscript-formatter-0.27.0-$platform/gdscript-formatter-0.27.0-$platform" \
+    "gdscript-formatter 0.26.2" || return 1
+  (cd "$d" && godot_bare GODOT_KIT_DIR="$kit" PATH="$b/right:/usr/bin:/bin" \
+    ./scripts/godot-kit.sh formatter) >"$d.k" 2>&1; rc=$?
+  assert_exit 2 "$rc" || return 1
+  assert_contains "$d.k" "is not GDScript Formatter 0.27.0; delete it and run ./scripts/godot-kit.sh again" || return 1
+  godot_stub "$kit/gdscript-formatter-0.27.0-$platform/gdscript-formatter-0.27.0-$platform" \
+    "gdscript-formatter 0.27.0" || return 1
+  out="$(cd "$d" && godot_bare GODOT_KIT_DIR="$kit" ./scripts/godot-kit.sh formatter)" || return 1
+  [ "$out" = "$kit/gdscript-formatter-0.27.0-$platform/gdscript-formatter-0.27.0-$platform" ] \
+    || fail "the cached formatter was not used: $out"
+}
+# Value: protects=a download whose bytes do not match the pinned sum is refused and nothing
+# reaches the cache; fails_when=the sum check is skipped or runs after publishing;
+# why_new=the kit is new; seam=GODOT_KIT_MIRROR serves stand-in files over file://;
+# no_claim=the real downloads are the heavy tests'
+test_stack_godot_kit_refuses_a_download_that_fails_its_sum() {
+  local d="$WORK/godot-kit-sum/demo-game" m="$WORK/godot-kit-sum/mirror" kit="$WORK/godot-kit-sum/kit" rc f left
+  [ -n "$(godot_platform)" ] || { skip "the kit pins no build for $(uname -s) $(uname -m)"; return; }
+  command -v curl >/dev/null 2>&1 || { skip "curl not installed"; return; }
+  godot_project "$d" || return 1
+  mkdir -p "$m" || return 1
+  for f in linux.x86_64 linux.arm64 macos.universal; do
+    printf 'not Godot\n' > "$m/Godot_v4.7.2-stable_$f.zip" || return 1
+  done
+  (cd "$d" && godot_bare GODOT_KIT_DIR="$kit" GODOT_KIT_MIRROR="file://$m" ./scripts/godot-kit.sh) \
+    >"$d.k" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.k" "does not match its pinned SHA-512 sum; refusing it" || return 1
+  left="$(find "$kit" -mindepth 1 2>/dev/null)"
+  [ -z "$left" ] || fail "the refused download left files: $(printf '%s' "$left" | tr '\n' ' ')"
+}
+# Value: protects=without Godot or the formatter the guard skips their checks locally and
+# fails in CI, naming the missing tool; fails_when=CHECK_CI is ignored, or a missing tool
+# passes in CI; why_new=the guard is new; seam=a PATH with neither tool; no_claim=the checks
+# themselves are the heavy tests'
+test_stack_godot_guard_skips_missing_tools_locally_and_fails_in_ci() {
+  local d="$WORK/godot-guard-ci/demo-game" rc
+  godot_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  godot_guard "$d" CHECK_CI=0; rc=$?
+  assert_exit 0 "$rc" || { tail -5 "$d.guard"; return 1; }
+  assert_contains "$d.guard" "GDScript Formatter 0.27.0 is not installed" || return 1
+  assert_contains "$d.guard" "Godot 4.7.2-stable is not installed: run ./scripts/godot-kit.sh (or set GODOT_BIN) - skipping its checks" || return 1
+  godot_guard "$d" CHECK_CI=1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "REQUIRED in CI: install it in an earlier step"
+}
+# Value: protects=a colour written in a script or a scene under src/ fails the guard, naming
+# the line, while src/style.gd, comments and a theme stay free; fails_when=the token rule
+# (DESIGN.md) stops looking at scripts or scenes; why_new=the rule is new; seam=none;
+# no_claim=reads text, not types, as DESIGN.md says
+test_stack_godot_guard_keeps_colours_in_the_style_tokens() {
+  local d="$WORK/godot-guard-colour/demo-game" rc probe
+  godot_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  printf '\n# A Color(1, 0, 0) in a comment is fine.\n' >> "$d/src/scenes/orb.gd"
+  godot_guard "$d" CHECK_CI=0 || fail "the starter fails the colour rule: $(cat "$d.guard")" || return 1
+  for probe in 'const WARNING := Color(1, 0.4, 0.2)' 'const WARNING := Color8(255, 0, 0)' \
+    'const WARNING := Color.html("#ff0000")' 'const WARNING := Color.CORAL'; do
+    (cd "$d" && git checkout -q -- src) || return 1
+    printf '\n%s\n' "$probe" >> "$d/src/scenes/orb.gd"
+    godot_guard "$d" CHECK_CI=0; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $probe"; return 1; }
+    assert_contains "$d.guard" "src/scenes/orb.gd:11: $probe" || return 1
+    assert_contains "$d.guard" "name a Style token instead (DESIGN.md)" || return 1
+  done
+  (cd "$d" && git checkout -q -- src) || return 1
+  printf 'modulate = Color(1, 0, 0, 1)\n' >> "$d/src/scenes/main.tscn"
+  godot_guard "$d" CHECK_CI=0; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.guard" "src/scenes/main.tscn:" || return 1
+}
+# Value: protects=the guard holds project.godot to the pinned engine's feature version and
+# keeps the typing warnings errors, so Godot's analyzer stays the type checker;
+# fails_when=a warning drops to a warning, warnings are switched off, or the features name
+# another Godot; why_new=the rule is new; seam=none; no_claim=does not prove the analyzer
+# catches each case (the heavy test shows one)
+test_stack_godot_guard_keeps_typed_gdscript_and_the_engine_pin() {
+  local d="$WORK/godot-guard-typed/demo-game" rc edit
+  godot_project "$d" || return 1
+  (cd "$d" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  godot_guard "$d" CHECK_CI=0 || fail "the starter fails the guard: $(cat "$d.guard")" || return 1
+  for edit in 's/^gdscript\/warnings\/untyped_declaration=2$/gdscript\/warnings\/untyped_declaration=1/m' \
+    's/^gdscript\/warnings\/unsafe_call_argument=2\n//m' \
+    's/^\[debug\]\n/[debug]\n\ngdscript\/warnings\/enable=false\n/m' \
+    's/PackedStringArray\("4\.7", /PackedStringArray("4.6", /m'; do
+    (cd "$d" && git checkout -q -- project.godot) || return 1
+    EDIT="$edit" perl -0pi -e 'eval $ENV{EDIT}; die $@ if $@' "$d/project.godot" || return 1
+    ! git -C "$d" diff --quiet -- project.godot || fail "the edit changed nothing: $edit" || return 1
+    godot_guard "$d" CHECK_CI=0; rc=$?
+    assert_exit 1 "$rc" || { echo "    for: $edit"; return 1; }
+  done
+  (cd "$d" && git checkout -q -- project.godot) || return 1
+  perl -pi -e 's/^gdscript\/warnings\/untyped_declaration=2$/gdscript\/warnings\/untyped_declaration=1/' "$d/project.godot"
+  godot_guard "$d" CHECK_CI=0
+  assert_contains "$d.guard" "project.godot must keep gdscript/warnings/untyped_declaration=2 (an error)"
+}
+godot_heavy_ready() {  # why the heavy godot tests can't run here; empty = run them
+  if [ "${CI:-}" != "true" ] && [ "${SELFTEST_HEAVY:-}" != "1" ]; then
+    echo "runs Godot, downloading it (about 80 MB) unless 4.7.2 is installed: set SELFTEST_HEAVY=1 to run it here; CI runs it in the heavy job"
+    return
+  fi
+  local tool
+  for tool in curl git perl; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "$tool not installed"; return; }
+  done
+  command -v unzip >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 \
+    || { echo "neither unzip nor python3 is installed (the kit unpacks Godot with one)"; return; }
+  [ -n "$(godot_platform)" ] || echo "the kit pins no Godot build for $(uname -s) $(uname -m)"
+}
+godot_env() {  # run "$@" with one kit cache for every heavy test (Godot downloads once, or
+  # SELFTEST_GODOT_KIT_DIR keeps it across runs) and Godot's settings in a sandboxed home
+  env GODOT_KIT_DIR="${SELFTEST_GODOT_KIT_DIR:-$WORK/godot-kit}" HOME="$WORK/godot-home" \
+    XDG_CONFIG_HOME="$WORK/godot-home/.config" XDG_DATA_HOME="$WORK/godot-home/.local/share" \
+    XDG_CACHE_HOME="$WORK/godot-home/.cache" "$@"
+}
+godot_heavy_project() {  # $1 = dir: a committed godot project with its pinned tools installed
+  godot_project "$1" || return 1
+  (cd "$1" && git add -A && git commit -qm init) || fail "commit failed" || return 1
+  (cd "$1" && godot_env ./scripts/godot-kit.sh) >"$1.kit" 2>&1 \
+    || fail "the kit failed: $(tail -5 "$1.kit")"
+}
+godot_gd() {  # $1 = file; stdin = GDScript indented four spaces a level, written with tabs
+  mkdir -p "$(dirname "$1")" && perl -pe 's/^((?:    )+)/"\t" x (length($1) \/ 4)/e' > "$1"
+}
+# Value: protects=a new godot project's own gate passes for real: the kit installs the
+# pinned tools, then the checks, the tests, the coverage gate with its journey and the build,
+# and the tree is left as git has it (Godot's .uid and .import files shipped, its output
+# ignored); fails_when=a step of the new project's CI fails, or Godot writes a file the pack
+# should have shipped; why_new=the pack is new; seam=none; no_claim=covers the Linux x86_64
+# CI runner and the machine running the suite, not Windows
+test_heavy_stack_godot_project_is_green() {
+  local d="$WORK/heavy-godot/demo-game" why
+  why="$(godot_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  godot_heavy_project "$d" || return 1
+  (cd "$d" && godot_env env EDITORCONFIG_CHECKER_BIN=/nonexistent ./scripts/check.sh \
+    && godot_env ./scripts/test.sh && godot_env ./scripts/coverage.sh \
+    && godot_env ./scripts/build.sh) >"$d.gate.out" 2>&1 \
+    || fail "the new project's own gate failed: $(tail -30 "$d.gate.out")" || return 1
+  assert_contains "$d.gate.out" "OK: checks passed." || return 1
+  grep -Eq '^tests: [1-9][0-9]* passed, 0 failed$' "$d.gate.out" \
+    || fail "no clean test run: $(grep '^tests:' "$d.gate.out")" || return 1
+  assert_contains "$d.gate.out" "coverage: ok" || return 1
+  assert_contains "$d.gate.out" "build.sh: wrote build/demo_game.pck" || return 1
+  grep -A1 -F '"id": "tests/journeys/test_collect_an_orb.gd::test_steering_to_the_orb_scores_a_point"' \
+    "$d/coverage/results.json" | grep -qF '"passed": true' \
+    || fail "the starter's journey did not pass: $(cat "$d/coverage/results.json")" || return 1
+  [ -z "$(git -C "$d" status --porcelain)" ] \
+    || fail "the gate changed or added files: $(git -C "$d" status --porcelain | tr '\n' ' ')"
+}
+# Value: protects=the runner fails a test each way one can go wrong, naming it and its line:
+# a failed assertion, a script error, an expected error that never comes, a node left outside
+# the tree, a file that is not a TestCase, a test still running at the timeout, and a run of
+# no tests; an expected error that comes passes; fails_when=any of those passes or the run
+# exits 0; why_new=the runner is new; seam=--timeout shortens the wait; no_claim=one case each
+test_heavy_stack_godot_tests_fail_closed() {
+  local d="$WORK/heavy-godot-fail/demo-game" why rc line
+  why="$(godot_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  godot_heavy_project "$d" || return 1
+  godot_gd "$d/tests/unit/test_probes.gd" <<'EOF'
+extends TestCase
+
+
+func test_a_wrong_sum() -> void:
+    assert_eq(1 + 1, 3)
+
+
+func test_a_script_error() -> void:
+    var missing: Node = null
+    missing.queue_free()
+
+
+func test_an_expected_error() -> void:
+    expect_error("the disk is full")
+    push_error("the disk is full")
+
+
+func test_an_error_that_never_comes() -> void:
+    expect_error("never reported")
+
+
+func test_a_leaked_node() -> void:
+    var leaked := Node.new()
+    assert_not_null(leaked)
+EOF
+  godot_gd "$d/tests/unit/test_not_a_case.gd" <<'EOF'
+extends RefCounted
+
+
+func test_nothing() -> void:
+    pass
+EOF
+  (cd "$d" && godot_env ./scripts/test.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  for line in "  FAIL tests/unit/test_probes.gd::test_a_wrong_sum" \
+    "       expected 3, got 2 (tests/unit/test_probes.gd:5)" \
+    "  FAIL tests/unit/test_probes.gd::test_a_script_error" \
+    "       error: Cannot call method 'queue_free' on a null value. (tests/unit/test_probes.gd:10)" \
+    "  ok   tests/unit/test_probes.gd::test_an_expected_error" \
+    "  FAIL tests/unit/test_probes.gd::test_an_error_that_never_comes" \
+    "       expected an error containing \"never reported\"; none came" \
+    "  FAIL tests/unit/test_probes.gd::test_a_leaked_node" \
+    "       left 1 node(s) outside the tree: free them, or add() them" \
+    "  FAIL tests/unit/test_not_a_case.gd::test_nothing" \
+    "       res://tests/unit/test_not_a_case.gd does not extend TestCase"; do
+    grep -qxF -- "$line" "$d.out" || fail "missing from the run: $line" || { tail -40 "$d.out"; return 1; }
+  done
+  (cd "$d" && godot_env ./scripts/test.sh no_such_test) >"$d.none" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.none" "tests: no tests ran" || return 1
+  godot_gd "$d/tests/unit/test_forever.gd" <<'EOF'
+extends TestCase
+
+
+func test_that_never_ends() -> void:
+    while true:
+        await frames(1)
+EOF
+  (cd "$d" && godot_env ./scripts/test.sh --timeout 300 test_forever) >"$d.forever" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.forever" "still running after 300 ms" || return 1
+  ! grep -q '^tests: ' "$d.forever" || fail "the run went on after a stuck test: $(tail -5 "$d.forever")"
+}
+# Value: protects=the guard fails on code Godot's analyzer rejects (untyped here), naming the
+# file and line, and on GDScript that is not formatted, until ./scripts/format.sh formats it;
+# fails_when=warnings stop being errors when Godot loads a script, or the format check passes
+# unformatted code; why_new=the guard is new; seam=none; no_claim=one rule of each tool
+test_heavy_stack_godot_guard_refuses_untyped_and_unformatted_code() {
+  local d="$WORK/heavy-godot-guard/demo-game" why rc
+  why="$(godot_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  godot_heavy_project "$d" || return 1
+  godot_gd "$d/src/logic/untyped.gd" <<'EOF'
+extends RefCounted
+
+
+func double(value):
+    return value * 2
+EOF
+  (cd "$d" && godot_env bash scripts/check.d/godot.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "Godot cannot load everything (above)" || return 1
+  assert_contains "$d.out" "has no static return type. (Warning treated as error.) (src/logic/untyped.gd:4)" || return 1
+  rm -f "$d/src/logic/untyped.gd"
+  godot_gd "$d/src/logic/messy.gd" <<'EOF'
+extends RefCounted
+func twice(value: int) -> int: return value*2
+EOF
+  (cd "$d" && godot_env bash scripts/check.d/godot.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "GDScript is not formatted or not lint-clean (above): run ./scripts/format.sh" || return 1
+  (cd "$d" && godot_env ./scripts/format.sh) >"$d.fmt" 2>&1 || fail "format.sh failed: $(cat "$d.fmt")" || return 1
+  (cd "$d" && godot_env bash scripts/check.d/godot.sh) >"$d.out" 2>&1 \
+    || fail "formatted code still fails the guard: $(tail -10 "$d.out")"
+}
+# Value: protects=the coverage tool counts what it claims to in a script of awkward constructs
+# (accessors, a class-level lambda, chains with and without else, matches with and without a
+# catch-all and with a guard, loops, continued lines, strings full of # and :, an annotation,
+# await, an inner class): its copy compiles, each line and arm gets the right count, and the
+# gate fails below the floor naming every line and branch not run; fails_when=a probe lands in
+# the wrong place, breaks the copy, or miscounts; why_new=the tool is new; seam=none;
+# no_claim=a lambda inside a call's parentheses and class-level initializers stay unmeasured,
+# as the guide says
+test_heavy_stack_godot_coverage_counts_lines_and_branches() {
+  local d="$WORK/heavy-godot-coverage/demo-game" why rc record
+  why="$(godot_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  godot_heavy_project "$d" || return 1
+  godot_gd "$d/src/logic/fixture.gd" <<'EOF'
+class_name Fixture
+extends RefCounted
+## Constructs the coverage tool must handle.
+
+signal fired(value: int)
+
+enum Mode {
+    ONE,
+    TWO,
+}
+
+const TEXT := """a "quoted" # not a comment
+    still: the string"""
+
+var _x: int = 0
+var x: int:
+    get:
+        return _x
+    set(value):
+        _x = value
+var on_class_level := func(v: int) -> int:
+    return v + 1
+
+
+static func helper(v: int) -> int:
+    return v * 2
+
+
+func chain(v: int) -> String:
+    if v > 10:
+        return "big"
+    elif v > 5:
+        return "medium"
+    else:
+        return "small"
+
+
+func no_else(v: int) -> int:
+    var total := v
+    if v < 0:
+        total = -v
+    return total
+
+
+func patterns(v: Variant) -> String:
+    match v:
+        1, 2:
+            return "low"
+        var n when n is int and n > 100:
+            return "huge"
+        "text":
+            return "string"
+    return "none"
+
+
+func catch_all(v: int) -> String:
+    match v:
+        0:
+            return "zero"
+        _:
+            return "other"
+
+
+func loops(items: Array[int]) -> int:
+    var sum := 0
+    for item: int in items:
+        sum += item
+    while sum > 10:
+        sum -= 10
+    var data := { "a": [1, 2], "b": { "c": 3 } }
+    var long := 1 + \
+            2
+    return sum + data.size() + long
+
+
+func lambdas() -> int:
+    var double := func(v: int) -> int:
+        return v * 2
+    var inline := func(v: int) -> int:
+        return v + 1
+    var mapped: Array = [1, 2].map(
+        func(v: int) -> int:
+            return v * 3,
+    )
+    return double.call(1) + inline.call(1) + mapped.size()
+
+
+func annotated(a: int, b: int) -> int:
+    @warning_ignore("integer_division")
+    var q := a / b
+    return q
+
+
+func strings() -> String:
+    var s := "has # hash and : colon \" quote"
+    var r := r"raw \" text"
+    var name := &"string_name"
+    var path := ^"Node/Path"
+    # a comment at odd indentation
+    return s + r + str(name) + str(path)
+
+
+func waits(tree: SceneTree) -> int:
+    await tree.process_frame
+    fired.emit(1)
+    return 1
+
+
+func empty() -> void:
+    pass
+
+
+class Inner:
+    extends RefCounted
+
+    func value() -> int:
+        if true:
+            return Mode.TWO
+        return Mode.ONE
+EOF
+  godot_gd "$d/tests/unit/test_fixture.gd" <<'EOF'
+extends TestCase
+
+
+func test_everything_once() -> void:
+    var f := Fixture.new()
+    assert_eq(f.chain(20), "big")
+    assert_eq(f.chain(1), "small")
+    assert_eq(f.no_else(3), 3)
+    assert_eq(f.patterns(1), "low")
+    assert_eq(f.patterns(500), "huge")
+    assert_eq(f.patterns(7), "none")
+    assert_eq(f.catch_all(0), "zero")
+    assert_eq(f.loops([5, 9]), 9)
+    assert_eq(f.lambdas(), 6)
+    assert_eq(f.annotated(7, 2), 3)
+    assert_eq(f.strings().length() > 0, true)
+    f.x = 4
+    assert_eq(f.x, 4)
+    assert_eq(Fixture.helper(2), 4)
+    assert_eq(await f.waits(tree()), 1)
+    f.empty()
+    assert_eq(f.on_class_level.call(1), 2)
+    assert_eq(Fixture.Inner.new().value(), Fixture.Mode.TWO)
+EOF
+  # Formatted, so its line numbers are the formatter's. Not lint-clean: the else after a
+  # return is part of what it measures.
+  (cd "$d" && "$(godot_env ./scripts/godot-kit.sh formatter)" --check src/logic/fixture.gd \
+    tests/unit/test_fixture.gd) >"$d.fmt" 2>&1 \
+    || fail "the fixture is not formatted, so its line numbers would move: $(tail -5 "$d.fmt")" || return 1
+  (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || { tail -20 "$d.out"; return 1; }
+  assert_contains "$d.out" "  not run in src/logic/fixture.gd: 33, 41, 52, 61, 119, branch at 33, branch at 41, branch at 52, branch at 61, no-arm branch at 117" || return 1
+  assert_contains "$d.out" "coverage: overall: branches below 90%" || return 1
+  grep -qxF "  ok   tests/unit/test_fixture.gd::test_everything_once" "$d.out" \
+    || fail "the fixture's test failed, so its counts mean nothing: $(grep -A3 FAIL "$d.out")" || return 1
+  record="$(awk '/^SF:src\/logic\/fixture.gd$/ { on = 1 } on && /^(BRDA|BRF|BRH|LF|LH):/ { print } on && /^end_of_record$/ { exit }' \
+    "$d/coverage/lcov.info" | tr '\n' ' ')"
+  [ "$record" = "BRDA:30,0,0,1 BRDA:30,0,1,0 BRDA:30,0,2,1 BRDA:40,1,0,0 BRDA:40,1,1,1 BRDA:46,2,0,1 BRDA:46,2,1,1 BRDA:46,2,2,0 BRDA:46,2,3,1 BRDA:57,3,0,1 BRDA:57,3,1,0 BRDA:117,4,0,1 BRDA:117,4,1,0 BRF:13 BRH:8 LF:47 LH:42 " ] \
+    || fail "fixture.gd's coverage record: $record"
+}
+# Value: protects=coverage-tiers.json holds as TESTING.md says: a tier under its minimum fails,
+# a member naming no script fails the guard before any test runs, an unlisted journey fails,
+# and the ratchet refuses a lowered minimum or a dropped member unless it is retired;
+# fails_when=any of those passes; why_new=the gate is new; seam=none; no_claim=one case of each
+test_heavy_stack_godot_coverage_holds_tiers_journeys_and_the_ratchet() {
+  local d="$WORK/heavy-godot-tiers/demo-game" why rc
+  why="$(godot_heavy_ready)"
+  [ -z "$why" ] || { skip "$why"; return; }
+  godot_heavy_project "$d" || return 1
+  printf '\n\nfunc untested() -> int:\n\treturn points * 2\n' >> "$d/src/logic/score.gd"
+  (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "coverage: pure_logic: lines below 100%" || return 1
+  (cd "$d" && git checkout -q -- src) || return 1
+  perl -pi -e 's|"src/logic/score.gd"|"src/logic/gone.gd"|' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env bash scripts/check.d/godot.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "pure_logic: src/logic/gone.gd does not exist (renamed? list the old path in retired)" || return 1
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  godot_gd "$d/tests/journeys/test_second_journey.gd" <<'EOF'
+extends TestCase
+
+
+func test_an_unlisted_journey() -> void:
+    assert_true(true)
+EOF
+  (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "tests/journeys/test_second_journey.gd::test_an_unlisted_journey is a journey test missing from coverage-tiers.json" || return 1
+  rm -f "$d/tests/journeys/test_second_journey.gd"
+  perl -0pi -e 's/"minimum": 100,/"minimum": 99,/' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "coverage: pure_logic: minimum fell from 100 to 99" || return 1
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  perl -0pi -e 's/,\n\s*"src\/logic\/score.gd"//' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "pure_logic: src/logic/score.gd left the tier; list it in retired if it was renamed or deleted" || return 1
+  perl -0pi -e 's/"include": \[/"retired": ["src\/logic\/score.gd"],\n      "include": [/' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1 \
+    || fail "a retired member failed the ratchet: $(tail -5 "$d.out")" || return 1
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet no-such-ref) >"$d.out" 2>&1; rc=$?
+  assert_exit 2 "$rc"
+}
+
 # --- tests: staged file token cap ---------------------------------------------
 write_bytes() {  # $1 = path, $2 = byte count. Zeros, so the staged blob's size is exact.
   head -c "$2" /dev/zero > "$1"
