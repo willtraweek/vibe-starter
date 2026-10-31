@@ -49,8 +49,8 @@ class Chain:
 	var implicit := true
 
 
-## One logical line: where it starts and ends, its indentation and its code without
-## comments or the text of its strings.
+## One logical line: where it starts, its indentation and its code without comments or the
+## text of its strings.
 class Logical:
 	extends RefCounted
 	var first: int

@@ -37,7 +37,7 @@ case "$(uname -s)/$(uname -m)" in
   *) platform="" ;;
 esac
 
-# Sets asset, binary (inside the unpacked asset), sum and bits for tool $1 on this platform.
+# Sets asset, binary (inside the unpacked asset), sum, bits and url for tool $1 here.
 pick() {
   case "$1/$platform" in
     godot/linux-x86_64)
@@ -114,33 +114,35 @@ sha() {  # $1 = bits, $2 = file: its hex digest
 
 # Downloads tool $1, checks its sum and publishes it into the cache.
 install() {
-  local dest new
+  local dest new name unpacked
   pick "$1"
   dest="$(cached "$1")"
   mkdir -p "$kit"
   new="$(mktemp -d "$kit/.install.XXXXXX")"
+  name="${new##*/}"
+  unpacked="$new/$name"
   # A copy already at $dest (another install's, maybe in use) is never replaced. If one
   # appears first, the rename below lands inside it instead, and this removes that again.
-  trap 'rm -rf "$new" "$dest/${new##*/}"' EXIT
+  trap 'rm -rf "$new" "$dest/${name:?}"' EXIT
   echo "godot-kit: downloading $(version "$1") ($asset)..." >&2
   curl -fsSL --retry 3 -o "$new/$asset" "$url"
   if [ "$(sha "$bits" "$new/$asset")" != "$sum" ]; then
     echo "godot-kit: $asset does not match its pinned SHA-$bits sum; refusing it" >&2
     exit 1
   fi
-  mkdir "$new/files"
+  mkdir "$unpacked"
   if command -v unzip >/dev/null 2>&1; then
-    unzip -q "$new/$asset" -d "$new/files"
+    unzip -q "$new/$asset" -d "$unpacked"
   else
-    python3 -I -m zipfile -e "$new/$asset" "$new/files"
-    chmod +x "$new/files/$binary"
+    python3 -I -m zipfile -e "$new/$asset" "$unpacked"
+    chmod +x "$unpacked/$binary"
   fi
-  if ! reports "$1" "$new/files/$binary"; then
+  if ! reports "$1" "$unpacked/$binary"; then
     echo "godot-kit: the downloaded $asset does not run as $(version "$1") here" >&2
     exit 1
   fi
-  [ -e "$dest" ] || mv "$new/files" "$dest" 2>/dev/null || true
-  rm -rf "$new"
+  [ -e "$dest" ] || mv "$unpacked" "$dest" 2>/dev/null || true
+  rm -rf "$new" "$dest/${name:?}"
   trap - EXIT
 }
 
