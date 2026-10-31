@@ -44,8 +44,9 @@ func _init() -> void:
 	quit(0 if problems.is_empty() else 1)
 
 
-## What is wrong with the tier config [param config]: empty when nothing is.
-func validate(config: Variant) -> PackedStringArray:
+## What is wrong with the tier config [param config]: empty when nothing is. Without
+## [param check_files] (the base branch's copy), paths need not exist here.
+func validate(config: Variant, check_files: bool = true) -> PackedStringArray:
 	var problems: PackedStringArray = []
 	if typeof(config) != TYPE_DICTIONARY:
 		return ["coverage-tiers.json must hold a JSON object"]
@@ -60,7 +61,7 @@ func validate(config: Variant) -> PackedStringArray:
 	var owners := { }
 	var by_name: Dictionary = tiers
 	for name: Variant in by_name:
-		problems.append_array(_validate_tier(str(name), by_name[name], owners))
+		problems.append_array(_validate_tier(str(name), by_name[name], owners, check_files))
 	var journeys: Variant = top.get("journeys", [])
 	if typeof(journeys) != TYPE_ARRAY:
 		problems.append("journeys must be an array")
@@ -79,13 +80,18 @@ func validate(config: Variant) -> PackedStringArray:
 			)
 		elif seen.has(id):
 			problems.append("journey %s is listed twice" % id)
-		elif not FileAccess.file_exists("res://" + file):
+		elif check_files and not FileAccess.file_exists("res://" + file):
 			problems.append("journey %s: %s does not exist" % [id, file])
 		seen[id] = true
 	return problems
 
 
-func _validate_tier(name: String, tier: Variant, owners: Dictionary) -> PackedStringArray:
+func _validate_tier(
+	name: String,
+	tier: Variant,
+	owners: Dictionary,
+	check_files: bool,
+) -> PackedStringArray:
 	var problems: PackedStringArray = []
 	if typeof(tier) != TYPE_DICTIONARY:
 		return ["%s: a tier must be an object" % name]
@@ -126,7 +132,10 @@ func _validate_tier(name: String, tier: Variant, owners: Dictionary) -> PackedSt
 		else:
 			owners[path] = name
 	for path: Variant in members:
-		if _is_source_path(path) and not FileAccess.file_exists("res://" + str(path)):
+		if (
+			check_files and _is_source_path(path)
+			and not FileAccess.file_exists("res://" + str(path))
+		):
 			problems.append(
 				"%s: %s does not exist (renamed? list the old path in retired)" % [name, path]
 			)
@@ -135,9 +144,12 @@ func _validate_tier(name: String, tier: Variant, owners: Dictionary) -> PackedSt
 
 ## What [param config] loosens compared with the base branch's [param base]: empty when nothing.
 func ratchet(config: Dictionary, base: Variant) -> PackedStringArray:
+	# ./scripts/coverage.sh passes over a base without the file; a broken one still fails.
 	var problems: PackedStringArray = []
-	if typeof(base) != TYPE_DICTIONARY or validate(base).size() > 0:
-		return problems # The base predates the pack, or its config was broken: nothing to hold.
+	for problem: String in validate(base, false):
+		problems.append("base config: " + problem)
+	if not problems.is_empty():
+		return problems
 	var base_root: Dictionary = base
 	var base_tiers: Dictionary = base_root["tiers"]
 	var tiers: Dictionary = config["tiers"]
@@ -185,6 +197,10 @@ func _gate(config: Dictionary) -> PackedStringArray:
 		var entry: Dictionary = files[path]
 		stats[path] = _file_stats(entry, counts)
 		lcov += _lcov(path, entry, counts)
+		var unmeasured: int = entry["unmeasured"]
+		if unmeasured > 0:
+			var why := "%s: %d if or match chain(s) cannot be measured: run ./scripts/format.sh"
+			problems.append(why % [path, unmeasured])
 	var all := _sum(stats, files.keys())
 	print("coverage: %s overall (floor %d%%)" % [_show(all), int(GLOBAL_MINIMUM)])
 	problems.append_array(_floor("overall", all, GLOBAL_MINIMUM))
@@ -195,6 +211,11 @@ func _gate(config: Dictionary) -> PackedStringArray:
 		var tier: Dictionary = tiers[name]
 		var minimum: float = tier["minimum"]
 		var include: Array = tier["include"]
+		for member: Variant in include:
+			if not files.has(member):
+				problems.append(
+					"%s: %s is not measured (in a folder with a .gdignore?)" % [name, member]
+				)
 		var sum := _sum(stats, include)
 		print("  %-16s %s (minimum %s%%)" % [name, _show(sum), _number(minimum)])
 		problems.append_array(_floor(name, sum, minimum))

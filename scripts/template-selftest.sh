@@ -7762,8 +7762,9 @@ EOF
 }
 # Value: protects=the coverage tool counts what it claims to in a script of awkward constructs
 # (accessors, a class-level lambda, chains with and without else, matches with and without a
-# catch-all and with a guard, loops, continued lines, strings full of # and :, an annotation,
-# await, an inner class): its copy compiles, each line and arm gets the right count, and the
+# catch-all and with a guard, loops, continued lines, strings full of # and :, annotated
+# statements, one first in an arm, await, an inner class): its copy compiles, each line and
+# arm gets the right count, and the
 # gate fails below the floor naming every line and branch not run; fails_when=a probe lands in
 # the wrong place, breaks the copy, or miscounts; why_new=the tool is new; seam=none;
 # no_claim=a lambda inside a call's parentheses and class-level initializers stay unmeasured,
@@ -7893,6 +7894,13 @@ class Inner:
         if true:
             return Mode.TWO
         return Mode.ONE
+
+
+func annotated_arm(a: int, b: int) -> int:
+    if b != 0:
+        @warning_ignore("integer_division")
+        return a / b
+    return 0
 EOF
   godot_gd "$d/tests/unit/test_fixture.gd" <<'EOF'
 extends TestCase
@@ -7918,6 +7926,7 @@ func test_everything_once() -> void:
     f.empty()
     assert_eq(f.on_class_level.call(1), 2)
     assert_eq(Fixture.Inner.new().value(), Fixture.Mode.TWO)
+    assert_eq(f.annotated_arm(1, 0), 0)
 EOF
   # Formatted, so its line numbers are the formatter's. Not lint-clean: the else after a
   # return is part of what it measures.
@@ -7926,19 +7935,21 @@ EOF
     || fail "the fixture is not formatted, so its line numbers would move: $(tail -5 "$d.fmt")" || return 1
   (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
   assert_exit 1 "$rc" || { tail -20 "$d.out"; return 1; }
-  assert_contains "$d.out" "  not run in src/logic/fixture.gd: 33, 41, 52, 61, 119, branch at 33, branch at 41, branch at 52, branch at 61, no-arm branch at 117" || return 1
+  assert_contains "$d.out" "  not run in src/logic/fixture.gd: 33, 41, 52, 61, 119, 125, branch at 33, branch at 41, branch at 52, branch at 61, no-arm branch at 117, branch at 125" || return 1
   assert_contains "$d.out" "coverage: overall: branches below 90%" || return 1
   grep -qxF "  ok   tests/unit/test_fixture.gd::test_everything_once" "$d.out" \
     || fail "the fixture's test failed, so its counts mean nothing: $(grep -A3 FAIL "$d.out")" || return 1
   record="$(awk '/^SF:src\/logic\/fixture.gd$/ { on = 1 } on && /^(BRDA|BRF|BRH|LF|LH):/ { print } on && /^end_of_record$/ { exit }' \
     "$d/coverage/lcov.info" | tr '\n' ' ')"
-  [ "$record" = "BRDA:30,0,0,1 BRDA:30,0,1,0 BRDA:30,0,2,1 BRDA:40,1,0,0 BRDA:40,1,1,1 BRDA:46,2,0,1 BRDA:46,2,1,1 BRDA:46,2,2,0 BRDA:46,2,3,1 BRDA:57,3,0,1 BRDA:57,3,1,0 BRDA:117,4,0,1 BRDA:117,4,1,0 BRF:13 BRH:8 LF:47 LH:42 " ] \
+  [ "$record" = "BRDA:30,0,0,1 BRDA:30,0,1,0 BRDA:30,0,2,1 BRDA:40,1,0,0 BRDA:40,1,1,1 BRDA:46,2,0,1 BRDA:46,2,1,1 BRDA:46,2,2,0 BRDA:46,2,3,1 BRDA:57,3,0,1 BRDA:57,3,1,0 BRDA:117,4,0,1 BRDA:117,4,1,0 BRDA:123,5,0,0 BRDA:123,5,1,1 BRF:15 BRH:9 LF:51 LH:45 " ] \
     || fail "fixture.gd's coverage record: $record"
 }
 # Value: protects=coverage-tiers.json holds as TESTING.md says: a tier under its minimum fails,
-# a member naming no script fails the guard before any test runs, an unlisted journey fails,
-# and the ratchet refuses a lowered minimum or a dropped member unless it is retired;
-# fails_when=any of those passes; why_new=the gate is new; seam=none; no_claim=one case of each
+# a member naming no script fails the guard before any test runs, a member that is not
+# measured fails, an unlisted journey fails, and the ratchet refuses a lowered minimum or a
+# dropped member unless it is retired, after a rename too, and a broken base, while a base
+# without the file passes; fails_when=any of those passes; why_new=the gate is new; seam=none;
+# no_claim=one case of each
 test_heavy_stack_godot_coverage_holds_tiers_journeys_and_the_ratchet() {
   local d="$WORK/heavy-godot-tiers/demo-game" why rc
   why="$(godot_heavy_ready)"
@@ -7954,6 +7965,24 @@ test_heavy_stack_godot_coverage_holds_tiers_journeys_and_the_ratchet() {
   assert_exit 1 "$rc" || return 1
   assert_contains "$d.out" "pure_logic: src/logic/gone.gd does not exist (renamed? list the old path in retired)" || return 1
   (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  # Regression test: a member in a folder Godot ignores (.gdignore) was never measured, and
+  # added nothing to its tier's counts, so the tier passed.
+  mkdir -p "$d/src/ignored" && : > "$d/src/ignored/.gdignore"
+  printf 'extends RefCounted\n\n\nfunc untested() -> int:\n\treturn 1\n' > "$d/src/ignored/hidden.gd"
+  perl -0pi -e 's|"src/logic/score.gd"|"src/logic/score.gd",\n        "src/ignored/hidden.gd"|' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "pure_logic: src/ignored/hidden.gd is not measured (in a folder with a .gdignore?)" || return 1
+  rm -rf "$d/src/ignored"
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  # A chain with an arm on its condition's line (code the formatter would split) cannot be
+  # measured: the gate fails rather than leave it out.
+  printf 'extends RefCounted\n\n\nfunc sign_of(v: int) -> int:\n\tif v > 0:\n\t\treturn 1\n\telse: return 0\n' \
+    > "$d/src/logic/inline.gd"
+  (cd "$d" && godot_env ./scripts/coverage.sh) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "src/logic/inline.gd: 1 if or match chain(s) cannot be measured: run ./scripts/format.sh" || return 1
+  rm -f "$d/src/logic/inline.gd"
   godot_gd "$d/tests/journeys/test_second_journey.gd" <<'EOF'
 extends TestCase
 
@@ -7977,6 +8006,29 @@ EOF
   perl -0pi -e 's/"include": \[/"retired": ["src\/logic\/score.gd"],\n      "include": [/' "$d/coverage-tiers.json"
   (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1 \
     || fail "a retired member failed the ratchet: $(tail -5 "$d.out")" || return 1
+  (cd "$d" && git checkout -q -- coverage-tiers.json) || return 1
+  # Regression test: renaming a member made the base config fail validation here, which
+  # switched the whole ratchet off, so a lowered minimum passed too.
+  (cd "$d" && git mv src/logic/arena.gd src/logic/field.gd && git mv src/logic/arena.gd.uid src/logic/field.gd.uid) \
+    || return 1
+  perl -0pi -e 's|"src/logic/arena.gd"|"src/logic/field.gd"|; s/"minimum": 100,/"minimum": 99,/' "$d/coverage-tiers.json"
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "coverage: pure_logic: minimum fell from 100 to 99" || return 1
+  assert_contains "$d.out" "pure_logic: src/logic/arena.gd left the tier" || return 1
+  (cd "$d" && git reset -q --hard) || return 1
+  # Only a base without the file passes; a base with a broken one fails.
+  (cd "$d" && git rm -q coverage-tiers.json && git commit -qm "no tiers") || return 1
+  (cd "$d" && git checkout -q HEAD~1 -- coverage-tiers.json) || return 1
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1 \
+    || fail "a base without coverage-tiers.json failed the ratchet: $(tail -5 "$d.out")" || return 1
+  assert_contains "$d.out" "coverage: no coverage-tiers.json at HEAD; nothing to ratchet against" || return 1
+  printf '{ "tiers": "broken" }\n' > "$d/coverage-tiers.json"
+  (cd "$d" && git add coverage-tiers.json && git commit -qm "broken tiers") || return 1
+  (cd "$d" && git checkout -q HEAD~2 -- coverage-tiers.json) || return 1
+  (cd "$d" && godot_env ./scripts/coverage.sh --ratchet HEAD) >"$d.out" 2>&1; rc=$?
+  assert_exit 1 "$rc" || return 1
+  assert_contains "$d.out" "coverage: base config: tiers must be a nonempty object" || return 1
   (cd "$d" && godot_env ./scripts/coverage.sh --ratchet no-such-ref) >"$d.out" 2>&1; rc=$?
   assert_exit 2 "$rc"
 }

@@ -10,22 +10,28 @@
 set -euo pipefail
 CDPATH='' cd -- "$(dirname -- "$0")/.."   # a CDPATH entry must not pick the directory
 root="$(pwd -P)"
-./scripts/import.sh
 
 if [ "${1:-}" = --ratchet ]; then
-  if [ -z "${2:-}" ] || ! git rev-parse --verify --quiet "${2}^{commit}" >/dev/null; then
+  ref="${2:-}"
+  # rev-parse first: it also refuses a ref that git would read as an option.
+  if [ -z "$ref" ] || ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
     echo "coverage.sh: --ratchet needs a git ref that exists here (fetch the base branch first)" >&2
     exit 2
   fi
+  # Only a confirmed absence passes: a base from before this pack has nothing to hold.
+  listed="$(git ls-tree --name-only "$ref" -- coverage-tiers.json)"
+  if [ -z "$listed" ]; then
+    echo "coverage: no coverage-tiers.json at $ref; nothing to ratchet against"
+    exit 0
+  fi
   base="$(mktemp "${TMPDIR:-/tmp}/coverage-base.XXXXXX")"
   trap 'rm -f "$base"' EXIT
-  # A base without the file predates this pack: there is nothing to hold yet.
-  if git cat-file -e "$2:coverage-tiers.json" 2>/dev/null; then
-    git show "$2:coverage-tiers.json" >"$base"
-  fi
+  git show "$ref:coverage-tiers.json" >"$base"
   ./scripts/godot.sh --headless -s res://tools/coverage/report.gd -- --ratchet "$base"
   exit
 fi
+
+./scripts/import.sh
 
 [ -d src ] || { echo "coverage.sh: there is no src/ to measure" >&2; exit 1; }
 out="$root/coverage"
