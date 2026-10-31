@@ -16,3 +16,8 @@ indent_style = tab
 
 [*.{py,go,rs}]
 indent_size = 4
+
+# GDScript's style guide, which Godot's editor and GDScript Formatter follow.
+[*.gd]
+indent_style = tab
+indent_size = 4

@@ -1,0 +1,11 @@
+# KEY=value lines. ./bootstrap --stack godot replaces {{KEY}} and {{KEY: description}}
+# placeholders in the project's docs with these values.
+INSTALL_CMD=./scripts/godot-kit.sh
+DEV_CMD=./scripts/godot.sh
+BUILD_CMD=./scripts/build.sh
+CHECK_CMD=./scripts/check.sh
+TEST_CMD=./scripts/test.sh
+SHIP_GATE=./scripts/check.sh && ./scripts/coverage.sh && ./scripts/build.sh
+STACK=A Godot 4.7 game (4.7.2, pinned and checksum-verified by scripts/godot-kit.sh) in typed GDScript, with every typing warning an error so Godot's analyzer is the type checker; GDScript Formatter 0.27.0 for format and lint; headless unit, scene and journey tests (tools/test) at a fixed 60 fps; line and branch coverage (tools/coverage); ./scripts/build.sh exports the game's .pck and starts it.
+COVERAGE_ENFORCEMENT=./scripts/coverage.sh: every test runs against instrumented copies of the scripts under src/ (tools/coverage), then tools/coverage/report.gd enforces 90% lines and 90% branches overall and each tier's floor from coverage-tiers.json, fails a tier member that names no script, and requires every named journey to run and pass; CI runs it fail-closed, with a ratchet on pull requests
+RELEVANT_DOCS=docs/guides/godot.md (layout, test helpers, coverage, exports), DESIGN.md, ENGINEERING.md and TESTING.md

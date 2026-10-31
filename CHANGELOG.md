@@ -3,6 +3,29 @@
 All notable changes to the vibe-starter template itself, newest first. gstack `/ship` adds each
 release entry. New projects start from their own blank changelog (`template/skeleton/CHANGELOG.md`).
 
+## [0.6.0] - 2026-10-30
+
+### Added
+- Start a game with `./bootstrap --stack godot`: a Godot 4.7 project in typed GDScript, where
+  every GDScript warning is an error, so Godot's own analyzer is the type checker.
+  `./scripts/godot-kit.sh` installs Godot 4.7.2 and GDScript Formatter 0.27.0 after checking each
+  download against its release checksum, and uses a copy you already have if it is that version.
+  <!-- wstack-release:godot-stack-pack -->
+- Test the game headless with `./scripts/test.sh`: unit, scene and journey tests at a fixed 60
+  frames a second. A test fails on a failed assertion, on any error Godot reports, on a node it
+  leaves outside the tree, or when it hangs. `./scripts/coverage.sh` measures line and branch
+  coverage on instrumented copies of `src/` and holds 90% overall, each tier of
+  `coverage-tiers.json` and every named journey, with a ratchet on pull requests.
+- `./scripts/build.sh` exports the game's `.pck` and starts it, so a scene or script the export
+  left out fails the build. The new project's CI runs the kit, the checks (format and lint, the
+  typing settings, colours only from the style tokens, and Godot loading every script and scene),
+  the coverage gate and the build. The starter is a small arena game with its tests, a `DESIGN.md`
+  for its tokens and `docs/guides/godot.md`.
+
+### Changed
+- New projects indent GDScript with tabs (`.editorconfig`), as Godot's style guide and
+  GDScript Formatter do.
+
 ## [0.5.0] - 2026-10-18
 
 ### Added

@@ -136,6 +136,27 @@ here).
 **Priority:** P3
 **Depends on:** None
 
+### godot pack follow-ups
+
+**What:** Three things the first version of the `godot` pack (plan 012) leaves out, each done
+when its check holds:
+1. Native exports in CI: install Godot's export templates (about 1.3 GB, pinned by SHA-512 like
+   the engine, and cached) and export one platform's executable. Done when a heavy test runs the
+   exported binary.
+2. Coverage of lambdas passed in a call's parentheses and of class-level initializers. Done when
+   the coverage fixture in `test_heavy_stack_godot_coverage_counts_lines_and_branches` measures
+   both.
+3. A C# variant (Godot's .NET build): a separate pack, chosen when a game needs .NET libraries.
+
+**Why:** Each is a gap a game project may hit, but none blocks the pack.
+
+**Context:** See plan 012's "Out of scope". The kit's pins and the starter's generated files are
+maintained as its "Maintenance" section says.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### Opt-in stack packs (Python, Rust)
